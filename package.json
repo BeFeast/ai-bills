@@ -1,0 +1,29 @@
+{
+  "name": "ai-bills",
+  "version": "2.0.0",
+  "private": true,
+  "description": "AI usage and billing dashboard \u2014 Next.js client-server app",
+  "scripts": {
+    "dev": "next dev -p 18088",
+    "build": "next build",
+    "start": "next start -p 18088",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@openai/codex": "0.144.6",
+    "next": "^15.4.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "smol-toml": "^1.3.1",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/ws": "8.18.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.0"
+  }
+}

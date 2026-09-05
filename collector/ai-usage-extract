@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""ai-usage-extract — emit local AI-client token usage as JSONL on stdout.
+
+Runs ON each client host; ai-usage-collect-direct pulls it over SSH.
+Only reports traffic the CLIProxy tap cannot see:
+  * Claude Code  — ~/.claude/projects/**/*.jsonl, per-assistant-message `usage`.
+                   Proxied sessions are filtered collector-side by requestId.
+  * Codex        — ~/.codex/sessions/**/*.jsonl, `token_count` events. Sessions
+                   whose session_meta says model_provider=cliproxy are skipped
+                   outright: those are already in the ledger via the tap.
+"""
+import argparse, glob, json, os, sys, time
+
+def recent(pattern, since_epoch):
+    for path in glob.glob(os.path.expanduser(pattern), recursive=True):
+        try:
+            if os.path.getmtime(path) >= since_epoch:
+                yield path
+        except OSError:
+            continue
+
+def claude_rows(since_ts, since_epoch):
+    for path in recent("~/.claude/projects/**/*.jsonl", since_epoch):
+        try:
+            fh = open(path, errors="ignore")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get("type") != "assistant":
+                    continue
+                msg = d.get("message") or {}
+                u = msg.get("usage")
+                if not u or (d.get("timestamp") or "") < since_ts:
+                    continue
+                yield {
+                    "kind": "claude",
+                    "id": d.get("uuid"),
+                    "request_id": d.get("requestId"),
+                    "ts": d.get("timestamp"),
+                    "model": msg.get("model"),
+                    "tool": d.get("entrypoint") or "claude",
+                    "session": d.get("sessionId"),
+                    "in_uncached": u.get("input_tokens") or 0,
+                    "cache_read": u.get("cache_read_input_tokens") or 0,
+                    "cache_write": u.get("cache_creation_input_tokens") or 0,
+                    "out_total": u.get("output_tokens") or 0,
+                    "out_reasoning": 0,
+                }
+
+def codex_rows(since_ts, since_epoch):
+    for path in recent("~/.codex/sessions/**/*.jsonl", since_epoch):
+        try:
+            fh = open(path, errors="ignore")
+        except OSError:
+            continue
+        with fh:
+            session = model = tool = None
+            idx = 0
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                p = d.get("payload") or {}
+                kind = d.get("type")
+                if kind == "session_meta":
+                    if p.get("model_provider") == "cliproxy":
+                        break  # already counted by the proxy tap
+                    session = p.get("session_id") or p.get("id")
+                    # session_meta.model is routinely null; turn_context carries the
+                    # real one. originator names the front-end (codex-tui, zed,
+                    # t3code_desktop), which is the Codex analogue of Claude's entrypoint.
+                    model = p.get("model")
+                    tool = p.get("originator") or "codex"
+                    continue
+                if kind == "turn_context":
+                    # Re-read every turn: the model can change mid-session.
+                    model = p.get("model") or model
+                    continue
+                if p.get("type") != "token_count":
+                    continue
+                last = ((p.get("info") or {}).get("last_token_usage")) or {}
+                if not last or (d.get("timestamp") or "") < since_ts:
+                    continue
+                idx += 1
+                yield {
+                    "kind": "codex",
+                    "id": f"{session}:{idx}",
+                    "request_id": None,
+                    "ts": d.get("timestamp"),
+                    "model": model or "codex-unknown",
+                    "tool": tool or "codex",
+                    "session": session,
+                    "in_uncached": last.get("input_tokens") or 0,
+                    "cache_read": last.get("cached_input_tokens") or 0,
+                    "cache_write": last.get("cache_write_input_tokens") or 0,
+                    "out_total": last.get("output_tokens") or 0,
+                    "out_reasoning": last.get("reasoning_output_tokens") or 0,
+                }
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--since", required=True, help="ISO timestamp watermark")
+    ap.add_argument("--mtime-days", type=float, default=2.0,
+                    help="only open files touched within this many days; widen for backfills")
+    args = ap.parse_args()
+    # mtime is coarse and sessions get appended late, so this window is slack around
+    # --since, not a second filter on it. Too narrow and a file that stopped being
+    # written just before the cutoff is invisible.
+    since_epoch = time.time() - 86400 * args.mtime_days
+    for row in list(claude_rows(args.since, since_epoch)) + list(codex_rows(args.since, since_epoch)):
+        if row.get("id"):
+            print(json.dumps(row, ensure_ascii=False))
+
+if __name__ == "__main__":
+    sys.exit(main())

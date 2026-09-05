@@ -1,0 +1,56 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.log
+*.sqlite
+*.db
+*.pem
+*.key
+*.p12
+*.pfx
+**/auth.json
+**/cookies*.txt
+**/*cookie*
+**/*session*
+**/*token*
+**/*secret*
+**/*credential*
+
+# generated verification artifacts
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Private operator state
+config.local.toml
+.env*
+!.env.example
+data/
+codex-profiles/
+*.jsonl
+payments.yml
+
+/node_modules

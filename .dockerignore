@@ -1,0 +1,10 @@
+# Build context: repo root
+node_modules
+.next
+.git
+legacy
+coverage
+*.log
+.env
+.env.*
+config/local*.toml

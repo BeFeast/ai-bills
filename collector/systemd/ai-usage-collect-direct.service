@@ -1,0 +1,7 @@
+[Unit]
+Description=AI usage — collect direct (non-proxy) client token usage
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ai-usage-collect-direct

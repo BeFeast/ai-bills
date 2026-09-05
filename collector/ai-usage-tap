@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""ai-usage-tap — drain CLIProxyAPI's usage queue into an append-only token ledger.
+
+CLIProxy keeps per-request token accounting in memory and exposes it at
+GET /v0/management/usage-queue. Reading DRAINS the queue, so this must be the
+ONLY consumer of that endpoint — a second poller silently steals records.
+Anything not drained within `redis-usage-queue-retention-seconds` is lost.
+
+The ledger stores tokens only, never money: prices change, facts don't.
+Cost is computed at read time from AI/Areas/Providers/pricing.yml.
+API keys are never written out — they are mapped to a client label via keymap.json.
+"""
+import json, os, sys, time, urllib.request, urllib.error
+from datetime import datetime, timezone
+
+MGMT_URL = os.environ.get("AI_USAGE_MGMT_URL", "http://127.0.0.1:23020/v0/management/usage-queue")
+KEYS_FILE = os.environ.get("AI_USAGE_KEYS_FILE", "/opt/cliproxyapi/.keys")
+KEYMAP = os.path.expanduser(os.environ.get("AI_USAGE_KEYMAP", "~/.config/ai-usage/keymap.json"))
+LEDGER_DIR = os.path.expanduser(os.environ.get("AI_USAGE_LEDGER_DIR", "~/.local/state/ai-usage"))
+INTERVAL = float(os.environ.get("AI_USAGE_INTERVAL", "20"))
+
+def log(msg):
+    print(f"[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] {msg}", flush=True)
+
+def mgmt_token():
+    with open(KEYS_FILE) as fh:
+        for line in fh:
+            if line.startswith("MGMT="):
+                return line.split("=", 1)[1].strip()
+    raise SystemExit(f"no MGMT= in {KEYS_FILE}")
+
+def load_keymap():
+    """api-key -> client label. Reloaded each tick so new keys need no restart."""
+    try:
+        with open(KEYMAP) as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        log(f"keymap unreadable ({exc}); falling back to unlabelled")
+        return {}
+
+def drain(token):
+    req = urllib.request.Request(MGMT_URL, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.load(resp)
+
+def project(rec, keymap):
+    """Slim, stable projection. Raw api_key and response headers are dropped."""
+    tb = rec.get("token_breakdown") or {}
+    inp = tb.get("input") or {}
+    out = tb.get("output") or {}
+    legacy = rec.get("tokens") or {}
+    key = rec.get("api_key") or ""
+    # Upstream provider request id — the join key against client-side logs
+    # (Claude Code writes the same value as its requestId field), so a proxied session
+    # is not double-counted when the direct collector reads its JSONL.
+    hdrs = rec.get("response_headers") or {}
+    upstream = (hdrs.get("Request-Id") or hdrs.get("request-id") or [None])[0]
+    return {
+        "upstream_request_id": upstream,
+        "ts": rec.get("timestamp"),
+        "via": "proxy",
+        "client": keymap.get(key, "unattributed"),
+        "provider": rec.get("provider"),
+        "model": rec.get("model"),
+        "alias": rec.get("alias"),
+        "endpoint": rec.get("endpoint"),
+        "account": rec.get("source"),
+        "auth_type": rec.get("auth_type"),
+        "auth_index": rec.get("auth_index"),
+        "failed": bool(rec.get("failed")),
+        "status": (rec.get("fail") or {}).get("status_code"),
+        "latency_ms": rec.get("latency_ms"),
+        "ttft_ms": rec.get("ttft_ms"),
+        # token_breakdown v2 is authoritative; `tokens` is the legacy flat view.
+        "in_uncached": inp.get("uncached_tokens", legacy.get("input_tokens")),
+        "cache_read": inp.get("cache_read_tokens", legacy.get("cache_read_tokens")),
+        "cache_write": inp.get("cache_write_tokens", legacy.get("cache_creation_tokens")),
+        "out_total": out.get("total_tokens", legacy.get("output_tokens")),
+        "out_reasoning": out.get("reasoning_tokens", legacy.get("reasoning_tokens")),
+        "total": tb.get("total_tokens", legacy.get("total_tokens")),
+        "quality": tb.get("quality"),
+        "schema": tb.get("schema_version"),
+        "request_id": rec.get("request_id"),
+    }
+
+def ledger_path(ts):
+    month = (ts or "")[:7] or datetime.now(timezone.utc).strftime("%Y-%m")
+    return os.path.join(LEDGER_DIR, f"ledger-{month}.jsonl")
+
+def write(records, keymap):
+    by_file = {}
+    for rec in records:
+        row = project(rec, keymap)
+        by_file.setdefault(ledger_path(row["ts"]), []).append(row)
+    for path, rows in by_file.items():
+        with open(path, "a") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+def main():
+    os.makedirs(LEDGER_DIR, exist_ok=True)
+    token = mgmt_token()
+    log(f"tap started: {MGMT_URL} every {INTERVAL}s -> {LEDGER_DIR}")
+    backoff, total = INTERVAL, 0
+    while True:
+        try:
+            records = drain(token)
+            if records:
+                write(records, load_keymap())
+                total += len(records)
+                log(f"+{len(records)} records (session total {total})")
+            backoff = INTERVAL
+        except Exception as exc:
+            # Never die: a dead tap loses every request until it is noticed.
+            log(f"drain failed: {exc}")
+            backoff = min(backoff * 2, 300)
+        time.sleep(backoff)
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,32 @@
+# Example only. Copy outside git and set AI_BILLS_CONFIG to the operator file.
+# Account identifiers, private endpoints and credentials belong in that file.
+accounts = []
+
+[server]
+port = 18088
+host = "0.0.0.0"
+timezone = "UTC"
+usage_refresh_seconds = 60
+billing_fetch_timeout_ms = 1500
+idle_timeout_seconds = 60
+
+[infisical]
+api_url = ""
+workspace_id = ""
+environment = "prod"
+
+[secrets]
+runpod_api_key = { env = "RUNPOD_API_KEY" }
+vast_api_key = { env = "VAST_API_KEY" }
+
+[billing]
+snapshot_path = "/data/snapshot.json"
+history_path = "/data/history.jsonl"
+
+# Example account block (enable only after supplying your own account).
+# [[accounts]]
+# key = "codex-personal"
+# provider = "codex"
+# label = "Codex"
+# email = "operator@example.com"
+# codex_home = "/codex-profiles/personal"

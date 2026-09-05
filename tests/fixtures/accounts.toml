@@ -1,0 +1,45 @@
+# Synthetic accounts for isolated tests; never production configuration.
+
+[[accounts]]
+key = "claude-personal"
+provider = "claude"
+label = "Claude · Personal"
+email = "claude-personal@example.com"
+cdp_http = "http://127.0.0.1:18802"
+claude_org_id = "test-claude-personal"
+
+[[accounts]]
+key = "claude-work"
+provider = "claude"
+label = "Claude · Work"
+email = "claude-work@example.com"
+cdp_http = "http://127.0.0.1:18802"
+claude_org_id = "test-claude-work"
+
+[[accounts]]
+key = "codex-personal"
+provider = "codex"
+label = "Codex · Personal"
+email = "codex-personal@example.com"
+codex_home = "/tmp/ai-bills-test-profiles/codex-personal"
+
+[[accounts]]
+key = "codex-work"
+provider = "codex"
+label = "Codex · Work"
+email = "codex-work@example.com"
+codex_home = "/tmp/ai-bills-test-profiles/codex-work"
+
+[[accounts]]
+key = "kimi-work"
+provider = "kimi"
+label = "Kimi Code"
+email = "kimi-work@example.com"
+cdp_http = "http://127.0.0.1:18802"
+
+[[accounts]]
+key = "cursor"
+provider = "cursor"
+label = "Cursor"
+email = "cursor@example.com"
+cdp_http = "http://127.0.0.1:18802"

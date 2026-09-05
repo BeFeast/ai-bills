@@ -1,0 +1,10 @@
+[Unit]
+Description=Pull client-side AI token usage from fleet hosts
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

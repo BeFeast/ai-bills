@@ -1,0 +1,14 @@
+[Unit]
+Description=AI usage tap — drain CLIProxyAPI usage queue into token ledger
+After=network-online.target
+# Losing the loop loses data, so restart hard and often.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ai-usage-tap
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

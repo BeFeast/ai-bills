@@ -1,0 +1,19 @@
+# Operator example; source publication does not deploy or change the live stack.
+services:
+  ai-bills:
+    build: ..
+    image: ai-bills:local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      AI_BILLS_CONFIG: /app/config.toml
+      HOSTNAME: "0.0.0.0"
+      PORT: "18088"
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${AI_BILLS_PORT:-13180}:18088"
+    volumes:
+      - ${AI_BILLS_CONFIG_FILE:?Set AI_BILLS_CONFIG_FILE}:/app/config.toml:ro
+      - ${AI_BILLS_DATA_DIR:?Set AI_BILLS_DATA_DIR}:/data
+      - ${AI_BILLS_CODEX_PROFILES_DIR:?Set AI_BILLS_CODEX_PROFILES_DIR}:/codex-profiles

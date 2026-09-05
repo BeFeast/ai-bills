@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""ai-usage-collect-direct — pull client-side token usage from fleet hosts.
+
+The CLIProxy tap only sees traffic routed through the proxy. Claude Code and
+Codex used directly (official apps keep claude.ai connectors working, which
+ANTHROPIC_BASE_URL disables) never touch it. This ships ai-usage-extract to each
+host over SSH and merges what it finds into the same ledger with via="direct".
+
+Double-counting guard: a Claude Code session routed through the proxy writes the
+upstream requestId into its own JSONL, and the tap stores the same value as
+upstream_request_id — matching rows are dropped here. Codex is filtered on the
+host by its session_meta model_provider.
+"""
+import argparse, json, os, subprocess, sys, glob
+from datetime import datetime, timezone, timedelta
+
+LEDGER_DIR = os.path.expanduser("~/.local/state/ai-usage")
+STATE = os.path.join(LEDGER_DIR, "direct-state.json")
+HOSTS_CFG = os.path.expanduser("~/.config/ai-usage/hosts.json")
+EXTRACTOR = os.path.expanduser("~/.local/bin/ai-usage-extract")
+SEEN_CAP = 200_000
+
+def log(m): print(f"[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] {m}", flush=True)
+
+def load_state():
+    try:
+        with open(STATE) as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return {"hosts": {}, "seen": []}
+
+def save_state(st):
+    st["seen"] = st["seen"][-SEEN_CAP:]
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(st, fh)
+    os.replace(tmp, STATE)
+
+def hosts():
+    try:
+        with open(HOSTS_CFG) as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return ["localhost"]
+
+def proxy_request_ids():
+    """Upstream ids already accounted for by the tap."""
+    ids = set()
+    for path in glob.glob(os.path.join(LEDGER_DIR, "ledger-*.jsonl")):
+        with open(path, errors="ignore") as fh:
+            for line in fh:
+                if '"upstream_request_id"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("via") == "proxy" and r.get("upstream_request_id"):
+                    ids.add(r["upstream_request_id"])
+    return ids
+
+def host_spec(entry):
+    """A host is either an alias string or {host, shell} for odd transports
+    (a Windows client may be reachable only via WSL)."""
+    if isinstance(entry, str):
+        return entry, "python3 - --since {since}"
+    return entry["host"], entry.get("shell", "python3 - --since {since}")
+
+def pull(host, shell, since, mtime_days=None):
+    """Feed the extractor over stdin — no staging file, no Windows path games."""
+    script = open(EXTRACTOR).read()
+    remote = shell.format(since=since)
+    if mtime_days and "--mtime-days" not in remote:
+        # The mtime window is slack around --since, not a second filter on it:
+        # a file that stopped being written before the cutoff is never opened.
+        remote += f" --mtime-days {mtime_days}"
+    if host in ("localhost", "self"):
+        cmd = ["bash", "-lc", remote]
+    else:
+        cmd = ["ssh", "-o", "ConnectTimeout=10", host, remote]
+    out = subprocess.run(cmd, input=script, capture_output=True, text=True, timeout=1800)
+    rows = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    if not rows and out.returncode != 0:
+        raise RuntimeError((out.stderr or "").strip().splitlines()[-1:] or [f"exit {out.returncode}"])
+    return rows
+
+def ledger_path(ts):
+    month = (ts or "")[:7] or datetime.now(timezone.utc).strftime("%Y-%m")
+    return os.path.join(LEDGER_DIR, f"ledger-{month}.jsonl")
+
+def main():
+    ap = argparse.ArgumentParser(description="pull client-side token usage into the ledger")
+    ap.add_argument("--since", help="override every host watermark (ISO ts) — for backfills")
+    ap.add_argument("--mtime-days", type=float,
+                    help="widen the extractor's file-mtime window — required for backfills")
+    args = ap.parse_args()
+
+    os.makedirs(LEDGER_DIR, exist_ok=True)
+    st = load_state()
+    seen = set(st["seen"])
+    known_proxy = proxy_request_ids()
+    default_since = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    written = collected = 0
+
+    for entry in hosts():
+        host, shell = host_spec(entry)
+        since = args.since or st["hosts"].get(host, {}).get("watermark", default_since)
+        try:
+            rows = pull(host, shell, since, args.mtime_days)
+        except Exception as exc:
+            log(f"{host}: skipped ({type(exc).__name__}: {exc})")
+            continue
+        collected += len(rows)
+        fresh, newest = [], since
+        for r in rows:
+            uid = f"{host}:{r.get('id')}"
+            if uid in seen:
+                continue
+            if r.get("request_id") and r["request_id"] in known_proxy:
+                continue  # same request already counted via the proxy tap
+            seen.add(uid)
+            st["seen"].append(uid)
+            newest = max(newest, r.get("ts") or "")
+            fresh.append({
+                "ts": r.get("ts"),
+                "via": "direct",
+                "client": f"{host}:{r.get('tool')}",
+                # Which log a row came from does not identify the upstream: a
+                # Claude Code session can be pointed at kimi-k3 or gpt-5.6-sol.
+                # The model name is the fact; provider is resolved from pricing.yml.
+                "provider": None,
+                "model": r.get("model"),
+                "alias": r.get("model"),
+                "endpoint": None,
+                "account": None,
+                "auth_type": "native",
+                "auth_index": None,
+                "failed": False,
+                "status": 200,
+                "latency_ms": None,
+                "ttft_ms": None,
+                "in_uncached": r.get("in_uncached"),
+                "cache_read": r.get("cache_read"),
+                "cache_write": r.get("cache_write"),
+                "out_total": r.get("out_total"),
+                "out_reasoning": r.get("out_reasoning"),
+                "total": sum(r.get(k) or 0 for k in
+                             ("in_uncached", "cache_read", "cache_write", "out_total")),
+                "quality": "client-log",
+                "schema": 2,
+                "request_id": r.get("request_id"),
+                "upstream_request_id": r.get("request_id"),
+                "session": r.get("session"),
+            })
+        by_file = {}
+        for row in fresh:
+            by_file.setdefault(ledger_path(row["ts"]), []).append(row)
+        for path, rws in by_file.items():
+            with open(path, "a") as fh:
+                for row in rws:
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        prev = st["hosts"].get(host, {}).get("watermark", "")
+        st["hosts"].setdefault(host, {})["watermark"] = max(newest, prev)
+        written += len(fresh)
+        log(f"{host}: {len(rows)} seen, {len(fresh)} new -> watermark {newest[:19]}")
+
+    save_state(st)
+    log(f"done: {collected} rows scanned, {written} written")
+
+if __name__ == "__main__":
+    sys.exit(main())
