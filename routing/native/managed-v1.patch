@@ -1,0 +1,1570 @@
+diff --git a/internal/api/managed.go b/internal/api/managed.go
+new file mode 100644
+index 0000000..b9c440c
+--- /dev/null
++++ b/internal/api/managed.go
+@@ -0,0 +1,87 @@
++package api
++
++import (
++	"crypto/subtle"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
++	"net/http"
++	"os"
++	"regexp"
++	"strconv"
++	"strings"
++)
++
++var managedUUID = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
++
++func managedMiddleware() gin.HandlerFunc {
++	return func(c *gin.Context) {
++		token := c.GetHeader("X-AI-Bills-Token")
++		configured := os.Getenv("AI_BILLS_MANAGED_TOKEN")
++		valid := configured != "" && len(token) == len(configured) && subtle.ConstantTimeCompare([]byte(token), []byte(configured)) == 1
++		c.Set("ai-bills-private", valid)
++		flag := c.GetHeader("X-AI-Bills-Managed")
++		attempt := c.GetHeader("X-AI-Bills-Attempt-ID")
++		authID := c.GetHeader("X-AI-Bills-Auth-ID")
++		upstreamModel := c.GetHeader("X-AI-Bills-Upstream-Model")
++		requestID := c.GetHeader("X-AI-Bills-Request-ID")
++		maxOutputText := c.GetHeader("X-AI-Bills-Max-Output")
++		maxOutput, capErr := strconv.ParseInt(maxOutputText, 10, 64)
++		tier := c.GetHeader("X-AI-Bills-Service-Tier")
++		for _, name := range []string{"X-AI-Bills-Managed", "X-AI-Bills-Token", "X-AI-Bills-Attempt-ID", "X-AI-Bills-Auth-ID", "X-AI-Bills-Request-ID", "X-AI-Bills-Max-Output", "X-AI-Bills-Service-Tier", "X-AI-Bills-Upstream-Model"} {
++			c.Request.Header.Del(name)
++		}
++		if flag == "" {
++			c.Next()
++			return
++		}
++		if maxOutputText != "" && (capErr != nil || maxOutput <= 0) {
++			c.AbortWithStatusJSON(400, gin.H{"error": "invalid managed output bound"})
++			return
++		}
++		if !valid {
++			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "managed authentication required"})
++			return
++		}
++		path := c.Request.URL.Path
++		if flag != "1" || c.Request.Method != "POST" || (path != "/v1/chat/completions" && path != "/v1/responses" && path != "/v1/messages") || !managedUUID.MatchString(attempt) || strings.TrimSpace(authID) == "" || len(authID) > 512 {
++			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "unsupported managed request"})
++			return
++		}
++		a, err := managed.New(attempt, authID, func(actual, model string) {
++			c.Header("X-AI-Bills-Managed-Version", "1")
++			c.Header("X-AI-Bills-Attempt-ID", attempt)
++			c.Header("X-AI-Bills-Auth-ID", actual)
++			c.Header("X-AI-Bills-Model", model)
++		})
++		if err != nil {
++			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": err.Error()})
++			return
++		}
++		a.UpstreamModel = strings.TrimSpace(upstreamModel)
++		a.RequestID = requestID
++		a.MaxOutput = maxOutput
++		a.ServiceTier = tier
++		c.Request = c.Request.WithContext(managed.With(c.Request.Context(), a))
++		c.Next()
++	}
++}
++func (s *Server) managedRoutes() {
++	private := func(c *gin.Context) {
++		if !c.GetBool("ai-bills-private") {
++			c.AbortWithStatusJSON(401, gin.H{"error": "managed authentication required"})
++			return
++		}
++		c.Next()
++	}
++	s.engine.GET("/v0/management/ai-bills-capabilities", AuthMiddleware(s.accessManager), private, func(c *gin.Context) {
++		c.JSON(200, gin.H{"version": 1, "exact_account": true, "single_attempt": true, "usage_receipts": true, "providers": gin.H{"codex": true, "claude": true, "kimi": true, "openai-compatibility": true, "antigravity": false}, "transports": []string{"http"}, "usage_receipts_durable": false})
++	})
++	s.engine.GET("/v0/management/ai-bills-receipts/:attemptID", AuthMiddleware(s.accessManager), private, func(c *gin.Context) {
++		receipt, ok := managed.Receipt(c.Param("attemptID"))
++		if !ok {
++			c.JSON(404, gin.H{"error": "receipt unavailable"})
++			return
++		}
++		c.JSON(200, receipt)
++	})
++}
+diff --git a/internal/api/managed_test.go b/internal/api/managed_test.go
+new file mode 100644
+index 0000000..bf71295
+--- /dev/null
++++ b/internal/api/managed_test.go
+@@ -0,0 +1,49 @@
++package api
++
++import (
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++func TestManagedMiddlewarePrivateHeadersAndReceipt(t *testing.T) {
++	t.Setenv("AI_BILLS_MANAGED_TOKEN", "test-private-token")
++	gin.SetMode(gin.TestMode)
++	r := gin.New()
++	r.Use(managedMiddleware())
++	r.POST("/v1/messages", func(c *gin.Context) {
++		if c.GetHeader("X-AI-Bills-Token") != "" {
++			t.Error("secret leaked")
++		}
++		a := managed.From(c.Request.Context())
++		if a == nil {
++			t.Error("missing context")
++			return
++		}
++		a.Accept(a.AuthID, "model")
++		c.Status(200)
++	})
++	request := func(token, id string) *httptest.ResponseRecorder {
++		q := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"model"}`))
++		q.Header.Set("X-AI-Bills-Managed", "1")
++		q.Header.Set("X-AI-Bills-Token", token)
++		q.Header.Set("X-AI-Bills-Auth-ID", "actual-auth-id")
++		q.Header.Set("X-AI-Bills-Attempt-ID", id)
++		w := httptest.NewRecorder()
++		r.ServeHTTP(w, q)
++		return w
++	}
++	id := "01234567-0000-0000-0000-000000000001"
++	if w := request("wrong", id); w.Code != http.StatusUnauthorized || w.Header().Get("X-AI-Bills-Managed-Version") != "" {
++		t.Fatalf("invalid auth receipt %d", w.Code)
++	}
++	if w := request("test-private-token", id); w.Code != 200 || w.Header().Get("X-AI-Bills-Auth-ID") != "actual-auth-id" {
++		t.Fatalf("missing actual receipt %d", w.Code)
++	}
++	if w := request("test-private-token", id); w.Code != 409 {
++		t.Fatalf("duplicate accepted %d", w.Code)
++	}
++}
+diff --git a/internal/api/server.go b/internal/api/server.go
+index f12ff4b..fa3eeef 100644
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -134,6 +134,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
+ 	}
+ 
+ 	// Add middleware
++	engine.Use(managedMiddleware())
+ 	engine.Use(logging.GinLogrusLogger())
+ 	engine.Use(logging.GinLogrusRecovery())
+ 	engine.Use(logging.CPATraceIDMiddleware())
+diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
+index 1c6ce6d..2478814 100644
+--- a/internal/api/server_routes.go
++++ b/internal/api/server_routes.go
+@@ -40,6 +40,7 @@ const codexAlphaSearchSourceFormat = "codex-alpha-search"
+ // setupRoutes configures the API routes for the server.
+ // It defines the endpoints and associates them with their respective handlers.
+ func (s *Server) setupRoutes() {
++	s.managedRoutes()
+ 	healthzHandler := func(c *gin.Context) {
+ 		if c.Request.Method == http.MethodHead {
+ 			c.Status(http.StatusOK)
+diff --git a/internal/redisqueue/plugin.go b/internal/redisqueue/plugin.go
+index 119557b..8f9ddea 100644
+--- a/internal/redisqueue/plugin.go
++++ b/internal/redisqueue/plugin.go
+@@ -119,6 +119,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ 	}
+ 
+ 	payload, err := json.Marshal(queuedUsageDetail{
++		AttemptID: record.ManagedAttemptID, ManagedRequestID: record.ManagedRequestID,
+ 		requestDetail:       detail,
+ 		AccountingVersion:   coreusage.TokenAccountingSchemaVersion,
+ 		TokenBreakdown:      usageDetail.TokenBreakdown,
+@@ -143,6 +144,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ }
+ 
+ type queuedUsageDetail struct {
++	AttemptID        string `json:"attempt_id,omitempty"`
++	ManagedRequestID string `json:"managed_request_id,omitempty"`
+ 	requestDetail
+ 	AccountingVersion   int                      `json:"accounting_version"`
+ 	TokenBreakdown      coreusage.TokenBreakdown `json:"token_breakdown"`
+diff --git a/internal/runtime/executor/helps/managed_responses.go b/internal/runtime/executor/helps/managed_responses.go
+new file mode 100644
+index 0000000..545b612
+--- /dev/null
++++ b/internal/runtime/executor/helps/managed_responses.go
+@@ -0,0 +1,42 @@
++package helps
++
++import (
++	"context"
++	"encoding/json"
++	codexchat "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/codex/openai/chat-completions"
++	"github.com/tidwall/gjson"
++	"github.com/tidwall/sjson"
++)
++
++// ManagedChatToResponses reuses structural messages/tools conversion, then removes
++// Codex-only defaults and restores generic Responses generation parameters.
++func ManagedChatToResponses(model string, raw []byte, stream bool) []byte {
++	out := codexchat.ConvertOpenAIRequestToCodex(model, raw, stream)
++	for _, key := range []string{"include", "parallel_tool_calls", "store"} {
++		out, _ = sjson.DeleteBytes(out, key)
++		if v := gjson.GetBytes(raw, key); v.Exists() {
++			out, _ = sjson.SetRawBytes(out, key, []byte(v.Raw))
++		}
++	}
++	if !gjson.GetBytes(raw, "reasoning_effort").Exists() {
++		out, _ = sjson.DeleteBytes(out, "reasoning.effort")
++	}
++	for _, key := range []string{"temperature", "top_p", "service_tier", "n", "best_of"} {
++		if v := gjson.GetBytes(raw, key); v.Exists() {
++			out, _ = sjson.SetRawBytes(out, key, []byte(v.Raw))
++		}
++	}
++	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
++		if v := gjson.GetBytes(raw, key); v.Exists() {
++			out, _ = sjson.SetRawBytes(out, "max_output_tokens", []byte(v.Raw))
++		}
++	}
++	return out
++}
++func ManagedResponsesToChat(ctx context.Context, model string, original, request, body []byte, param *any) []byte {
++	wrapped, _ := json.Marshal(map[string]any{"type": "response.completed", "response": json.RawMessage(body)})
++	return codexchat.ConvertCodexResponseToOpenAINonStream(ctx, model, original, request, wrapped, param)
++}
++func ManagedResponsesToChatStream(ctx context.Context, model string, original, request, line []byte, param *any) [][]byte {
++	return codexchat.ConvertCodexResponseToOpenAI(ctx, model, original, request, line, param)
++}
+diff --git a/internal/runtime/executor/helps/proxy_helpers.go b/internal/runtime/executor/helps/proxy_helpers.go
+index 572f87c..540ceb2 100644
+--- a/internal/runtime/executor/helps/proxy_helpers.go
++++ b/internal/runtime/executor/helps/proxy_helpers.go
+@@ -8,6 +8,7 @@ import (
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
+ 	log "github.com/sirupsen/logrus"
+ )
+@@ -47,7 +48,11 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
+ 		transport := buildProxyTransport(proxyURL)
+ 		if transport != nil {
+ 			httpClient.Transport = transport
+-			return httpClient
++			authID := ""
++			if auth != nil {
++				authID = auth.ID
++			}
++			return managed.GuardAccount(ctx, httpClient, authID)
+ 		}
+ 		// If proxy setup failed, log and fall through to context RoundTripper
+ 		log.Debugf("failed to setup proxy from URL: %s, falling back to context transport", proxyutil.Redact(proxyURL))
+@@ -58,7 +63,11 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
+ 		httpClient.Transport = rt
+ 	}
+ 
+-	return httpClient
++	authID := ""
++	if auth != nil {
++		authID = auth.ID
++	}
++	return managed.GuardAccount(ctx, httpClient, authID)
+ }
+ 
+ // buildProxyTransport creates an HTTP transport configured for the given proxy URL.
+diff --git a/internal/runtime/executor/helps/utls_client.go b/internal/runtime/executor/helps/utls_client.go
+index 9508320..70e220e 100644
+--- a/internal/runtime/executor/helps/utls_client.go
++++ b/internal/runtime/executor/helps/utls_client.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/httpwire"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
+ 	log "github.com/sirupsen/logrus"
+ 	"golang.org/x/net/http2"
+@@ -403,5 +404,9 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+ 	if timeout > 0 {
+ 		client.Timeout = timeout
+ 	}
+-	return client
++	authID := ""
++	if auth != nil {
++		authID = auth.ID
++	}
++	return managed.GuardAccount(ctx, client, authID)
+ }
+diff --git a/internal/runtime/executor/managed_executor.go b/internal/runtime/executor/managed_executor.go
+new file mode 100644
+index 0000000..f4ec902
+--- /dev/null
++++ b/internal/runtime/executor/managed_executor.go
+@@ -0,0 +1,17 @@
++package executor
++
++import auth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++
++func (e *OpenAICompatExecutor) ManagedHTTPExecutor() auth.ProviderExecutor { return e }
++func (e *ClaudeExecutor) ManagedHTTPExecutor() auth.ProviderExecutor       { return e }
++func (e *CodexExecutor) ManagedHTTPExecutor() auth.ProviderExecutor        { return e }
++func (e *CodexAutoExecutor) ManagedHTTPExecutor() auth.ProviderExecutor    { return e.httpExec }
++
++// Embedded CodexExecutor must never implicitly opt its websocket wrapper in.
++func (e *CodexWebsocketsExecutor) ManagedHTTPExecutor() auth.ProviderExecutor { return e.CodexExecutor }
++
++// Kimi embeds ClaudeExecutor but must retain its own endpoint/model semantics.
++func (e *KimiExecutor) ManagedHTTPExecutor() auth.ProviderExecutor { return e }
++func (e *KimiExecutor) ManagedCanonicalModel(model string) string {
++	return normalizeKimiUpstreamModel(model)
++}
+diff --git a/internal/runtime/executor/managed_executor_test.go b/internal/runtime/executor/managed_executor_test.go
+new file mode 100644
+index 0000000..b4dc805
+--- /dev/null
++++ b/internal/runtime/executor/managed_executor_test.go
+@@ -0,0 +1,179 @@
++package executor
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	auth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	ex "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
++	translator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"testing"
++)
++
++func TestManagedRealHTTPExecutorsSingleRequestOnErrors(t *testing.T) {
++	for _, provider := range []string{"claude", "codex", "kimi", "openai-compatibility"} {
++		for _, stream := range []bool{false, true} {
++			for _, status := range []int{401, 429, 500} {
++				t.Run(fmt.Sprintf("%s/%t/%d", provider, stream, status), func(t *testing.T) {
++					calls := 0
++					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++						calls++
++						if r.Header.Get("X-AI-Bills-Token") != "" {
++							t.Error("private token leaked")
++						}
++						w.WriteHeader(status)
++						fmt.Fprint(w, `{"error":{"message":"fixture failure"}}`)
++					}))
++					defer server.Close()
++					cfg := &config.Config{}
++					var executor auth.ProviderExecutor
++					switch provider {
++					case "claude":
++						executor = NewClaudeExecutor(cfg)
++					case "kimi":
++						executor = NewKimiExecutor(cfg).ManagedHTTPExecutor()
++					case "codex":
++						executor = NewCodexAutoExecutor(cfg).ManagedHTTPExecutor()
++					default:
++						executor = NewOpenAICompatExecutor("fixture", cfg)
++					}
++					a := &auth.Auth{ID: "fixture-account", Provider: provider, Attributes: map[string]string{"api_key": "fixture-key", "base_url": server.URL}}
++					attempt, err := managed.New(t.Name(), a.ID, nil)
++					if err != nil {
++						t.Fatal(err)
++					}
++					attempt.Accept(a.ID, "fixture-model")
++					ctx := managed.With(context.Background(), attempt)
++					if provider == "kimi" {
++						target, _ := url.Parse(server.URL)
++						ctx = context.WithValue(ctx, "cliproxy.roundtripper", managedFixtureTransport{target: target, base: server.Client().Transport})
++					}
++					req := ex.Request{Model: "fixture-model", Payload: []byte(`{"model":"fixture-model","messages":[{"role":"user","content":"test"}],"max_tokens":8}`)}
++					opts := ex.Options{SourceFormat: translator.FromString("openai"), Stream: stream}
++					if stream {
++						_, err = executor.ExecuteStream(ctx, a, req, opts)
++					} else {
++						_, err = executor.Execute(ctx, a, req, opts)
++					}
++					if err == nil || calls != 1 {
++						t.Fatalf("calls=%d error=%v", calls, err)
++					}
++				})
++			}
++		}
++	}
++}
++
++func TestManagedResponsesOnlyExecutorUsesGenericResponses(t *testing.T) {
++	for _, source := range []translator.Format{translator.FormatOpenAIResponse, translator.FormatOpenAI} {
++		for _, stream := range []bool{false, true} {
++			t.Run(fmt.Sprintf("%s/%t", source, stream), func(t *testing.T) {
++				t.Setenv("AI_BILLS_RESPONSES_AUTH_IDS", "fixture-responses")
++				calls := 0
++				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					calls++
++					if r.URL.Path != "/responses" {
++						t.Errorf("wrong upstream protocol: %s", r.URL.Path)
++					}
++					var body map[string]any
++					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
++						t.Fatal(err)
++					}
++					if _, ok := body["input"]; !ok {
++						t.Error("missing Responses input")
++					}
++					if _, ok := body["messages"]; ok {
++						t.Error("chat payload sent to Responses")
++					}
++					if body["max_output_tokens"] != float64(8) {
++						t.Errorf("lost output cap: %v", body)
++					}
++					if source == translator.FormatOpenAI {
++						if _, ok := body["include"]; ok {
++							t.Error("Codex-only defaults leaked")
++						}
++					}
++					response := `{"id":"resp_fixture","object":"response","model":"fixture-model","status":"completed","output":[{"type":"message","id":"msg_fixture","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}`
++					if stream {
++						w.Header().Set("Content-Type", "text/event-stream")
++						fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":%s}\n\n", response)
++					} else {
++						w.Header().Set("Content-Type", "application/json")
++						fmt.Fprint(w, response)
++					}
++				}))
++				defer server.Close()
++				account := &auth.Auth{ID: "fixture-responses", Provider: "fixture", Attributes: map[string]string{"api_key": "fixture-key", "base_url": server.URL}}
++				a, _ := managed.New(t.Name(), account.ID, nil)
++				a.Accept(account.ID, "fixture-model")
++				ctx := managed.With(context.Background(), a)
++				executor := NewOpenAICompatExecutor("fixture", &config.Config{})
++				request := ex.Request{Model: "fixture-model", Payload: []byte(`{"model":"fixture-model","input":"hello","max_output_tokens":8}`)}
++				if source == translator.FormatOpenAI {
++					request.Payload = []byte(`{"model":"fixture-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8}`)
++				}
++				opts := ex.Options{SourceFormat: source, Stream: stream}
++				if stream {
++					result, err := executor.ExecuteStream(ctx, account, request, opts)
++					if err != nil {
++						t.Fatal(err)
++					}
++					chunks := 0
++					for chunk := range result.Chunks {
++						if chunk.Err != nil {
++							t.Fatal(chunk.Err)
++						}
++						chunks++
++					}
++					if chunks == 0 {
++						t.Fatal("no stream chunks")
++					}
++				} else {
++					if _, err := executor.Execute(ctx, account, request, opts); err != nil {
++						t.Fatal(err)
++					}
++				}
++				if calls != 1 {
++					t.Fatalf("calls=%d", calls)
++				}
++				receipt, _ := managed.Receipt(a.ID)
++				if receipt["usage_complete"] != true {
++					t.Fatalf("missing usage: %v", receipt)
++				}
++			})
++		}
++	}
++}
++
++type managedFixtureTransport struct {
++	target *url.URL
++	base   http.RoundTripper
++}
++
++func (f managedFixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
++	c := r.Clone(r.Context())
++	u := *r.URL
++	u.Scheme = f.target.Scheme
++	u.Host = f.target.Host
++	c.URL = &u
++	c.Host = f.target.Host
++	base := f.base
++	if base == nil {
++		base = http.DefaultTransport
++	}
++	return base.RoundTrip(c)
++}
++func TestManagedKimiExecutorRetainsCanonicalProtocol(t *testing.T) {
++	e := NewKimiExecutor(&config.Config{})
++	if e.ManagedHTTPExecutor() != e {
++		t.Fatal("embedded Claude executor substituted")
++	}
++	if got := e.ManagedCanonicalModel("kimi-k2.7-code-highspeed"); got != "kimi-for-coding-highspeed" {
++		t.Fatalf("model=%s", got)
++	}
++}
+diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
+index acf2d9a..5eb8654 100644
+--- a/internal/runtime/executor/openai_compat_executor.go
++++ b/internal/runtime/executor/openai_compat_executor.go
+@@ -6,6 +6,7 @@ import (
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	"io"
+ 	"mime"
+ 	"mime/multipart"
+@@ -104,7 +105,14 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
+ 	from := opts.SourceFormat
+ 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+ 	to := sdktranslator.FromString("openai")
++	responsesOnly := auth != nil && managed.ResponsesAccount(ctx, auth.ID)
++	if responsesOnly {
++		to = sdktranslator.FormatOpenAIResponse
++	}
+ 	endpoint := "/chat/completions"
++	if responsesOnly {
++		endpoint = "/responses"
++	}
+ 	if opts.Alt == "responses/compact" {
+ 		to = sdktranslator.FromString("openai-response")
+ 		endpoint = "/responses/compact"
+@@ -117,6 +125,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
+ 	isCompat := helps.APIKeyModelIsCompat(req)
+ 	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, opts.Stream, isCompat)
+ 	translated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, opts.Stream, isCompat)
++	if responsesOnly && from == sdktranslator.FormatOpenAI {
++		originalTranslated = helps.ManagedChatToResponses(baseModel, originalPayload, opts.Stream)
++		translated = helps.ManagedChatToResponses(baseModel, req.Payload, opts.Stream)
++	}
+ 
+ 	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
+ 	if err != nil {
+@@ -129,7 +141,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
+ 	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
+ 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
+ 	}
+-	if opts.Alt != "responses/compact" {
++	if opts.Alt != "responses/compact" && !responsesOnly {
+ 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
+ 		if err != nil {
+ 			return resp, err
+@@ -208,6 +220,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
+ 	// Translate response back to source format when needed
+ 	var param any
+ 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, body, &param)
++	if responsesOnly && responseFormat == sdktranslator.FormatOpenAI {
++		out = helps.ManagedResponsesToChat(ctx, req.Model, opts.OriginalRequest, translated, body, &param)
++	}
+ 	if responseFormat == sdktranslator.FormatOpenAIResponse {
+ 		out = helps.EnsureResponsesUsageDetails(out)
+ 	}
+@@ -323,6 +338,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
+ 	from := opts.SourceFormat
+ 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+ 	to := sdktranslator.FromString("openai")
++	responsesOnly := auth != nil && managed.ResponsesAccount(ctx, auth.ID)
++	if responsesOnly {
++		to = sdktranslator.FormatOpenAIResponse
++	}
+ 	originalPayloadSource := req.Payload
+ 	if len(opts.OriginalRequest) > 0 {
+ 		originalPayloadSource = opts.OriginalRequest
+@@ -331,6 +350,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
+ 	isCompat := helps.APIKeyModelIsCompat(req)
+ 	originalTranslated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, true, isCompat)
+ 	translated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, true, isCompat)
++	if responsesOnly && from == sdktranslator.FormatOpenAI {
++		originalTranslated = helps.ManagedChatToResponses(baseModel, originalPayload, true)
++		translated = helps.ManagedChatToResponses(baseModel, req.Payload, true)
++	}
+ 
+ 	translated, err = helps.ApplyRequestThinking(translated, req, opts, from.String(), to.String(), e.Identifier())
+ 	if err != nil {
+@@ -343,7 +366,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
+ 	if helps.ShouldNormalizeOpenAIToolResultsForModel(e.resolveCompatConfig(auth), baseModel, requestedModel) {
+ 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
+ 	}
+-	if opts.Alt != "responses/compact" {
++	if opts.Alt != "responses/compact" && !responsesOnly {
+ 		translated, err = e.applyPromptCacheKey(ctx, auth, from, baseModel, req, opts, translated)
+ 		if err != nil {
+ 			return nil, err
+@@ -352,10 +375,16 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
+ 
+ 	// Request usage data in the final streaming chunk so that token statistics
+ 	// are captured even when the upstream is an OpenAI-compatible provider.
+-	translated = helps.SetBoolIfDifferent(translated, "stream_options.include_usage", true)
++	if !responsesOnly {
++		translated = helps.SetBoolIfDifferent(translated, "stream_options.include_usage", true)
++	}
+ 	reporter.SetTranslatedReasoningEffort(translated, to.String())
+ 
+-	url := strings.TrimSuffix(baseURL, "/") + "/chat/completions"
++	endpoint := "/chat/completions"
++	if responsesOnly {
++		endpoint = "/responses"
++	}
++	url := strings.TrimSuffix(baseURL, "/") + endpoint
+ 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
+ 	if err != nil {
+ 		return nil, err
+@@ -465,6 +494,14 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
+ 			}
+ 			dataPayload := bytes.TrimSpace(bytes.Join(dataLines, []byte("\n")))
+ 			isDone := bytes.Equal(dataPayload, []byte("[DONE]"))
++			responsesComplete := responsesOnly && gjson.GetBytes(dataPayload, "type").String() == "response.completed"
++			if responsesOnly && gjson.GetBytes(dataPayload, "type").String() == "response.incomplete" {
++				publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream Responses generation incomplete"}, false)
++				return true
++			}
++			if responsesComplete {
++				streamUsage.Observe(helps.ParseCodexUsage(dataPayload))
++			}
+ 			if isDone && openAICompatErrorEvent(eventName) {
+ 				publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream error event ended before [DONE]"}, false)
+ 				return true
+@@ -482,6 +519,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
+ 
+ 			streamLine := append([]byte("data: "), dataPayload...)
+ 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, streamLine, &param, claudeInputTokens)
++			if responsesOnly && responseFormat == sdktranslator.FormatOpenAI {
++				chunks = helps.ManagedResponsesToChatStream(ctx, req.Model, opts.OriginalRequest, translated, streamLine, &param)
++			}
+ 			for i := range chunks {
+ 				select {
+ 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+@@ -490,7 +530,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
+ 					return true
+ 				}
+ 			}
+-			if isDone {
++			if isDone || responsesComplete {
+ 				seenDone = true
+ 				return true
+ 			}
+@@ -542,7 +582,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
+ 		} else if !seenDone {
+ 			// Responses clients require an explicit terminal event. Treat a clean
+ 			// upstream EOF without [DONE] as a failed stream instead of completing it.
+-			if responseFormat == sdktranslator.FormatOpenAIResponse {
++			if responseFormat == sdktranslator.FormatOpenAIResponse || responsesOnly {
+ 				streamErr := statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before [DONE]"}
+ 				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+ 				reporter.PublishFailure(ctx, streamErr)
+@@ -693,6 +733,10 @@ func (e *OpenAICompatExecutor) CountTokens(ctx context.Context, auth *cliproxyau
+ 	from := opts.SourceFormat
+ 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+ 	to := sdktranslator.FromString("openai")
++	responsesOnly := auth != nil && managed.ResponsesAccount(ctx, auth.ID)
++	if responsesOnly {
++		to = sdktranslator.FormatOpenAIResponse
++	}
+ 	isCompat := helps.APIKeyModelIsCompat(req)
+ 	translated := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false, isCompat)
+ 
+diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+index 24c8044..f388503 100644
+--- a/sdk/api/handlers/handlers.go
++++ b/sdk/api/handlers/handlers.go
+@@ -21,6 +21,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+ 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+ 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+@@ -444,6 +445,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
+ 			parentCtx = logging.WithRequestID(parentCtx, requestID)
+ 		}
+ 	}
++	parentCtx = managed.Copy(parentCtx, requestCtx)
+ 	newCtx, cancel := context.WithCancel(parentCtx)
+ 
+ 	endpoint := ""
+diff --git a/sdk/api/handlers/handlers_interceptors.go b/sdk/api/handlers/handlers_interceptors.go
+index 1f1cc6a..058fe74 100644
+--- a/sdk/api/handlers/handlers_interceptors.go
++++ b/sdk/api/handlers/handlers_interceptors.go
+@@ -1,6 +1,7 @@
+ package handlers
+ 
+ import (
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	"net/http"
+ 	"sync"
+ 	"time"
+@@ -465,6 +466,9 @@ func interceptStreamChunk(ctx context.Context, host PluginInterceptorHost, req p
+ }
+ 
+ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context, handlerType, requestedModel, requestID string, req coreexecutor.Request, opts coreexecutor.Options, skipPluginID string) (coreexecutor.Request, coreexecutor.Options, *interfaces.ErrorMessage) {
++	if managed.From(ctx) != nil {
++		return req, opts, nil
++	}
+ 	host := h.interceptorHost()
+ 	if !requestInterceptorsEnabled(host) {
+ 		return req, opts, nil
+diff --git a/sdk/api/handlers/handlers_routing.go b/sdk/api/handlers/handlers_routing.go
+index fe1ec6f..9fcbbc8 100644
+--- a/sdk/api/handlers/handlers_routing.go
++++ b/sdk/api/handlers/handlers_routing.go
+@@ -13,6 +13,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+ 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+ 	"golang.org/x/net/context"
+ )
+@@ -324,6 +325,9 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
+ 
+ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
+ 	var decision modelRouteDecision
++	if managed.From(ctx) != nil {
++		return decision
++	}
+ 	host := h.modelRouterHost()
+ 	if host == nil || !modelRoutersEnabled(host, execOptions.SkipRouterPluginID) {
+ 		return decision
+diff --git a/sdk/api/handlers/handlers_stream.go b/sdk/api/handlers/handlers_stream.go
+index 49ea7fe..ef40d01 100644
+--- a/sdk/api/handlers/handlers_stream.go
++++ b/sdk/api/handlers/handlers_stream.go
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"encoding/json"
+ 	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	"net/http"
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+@@ -555,7 +556,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
+ 		if streamCanceledBeforeRead || bootstrapErr != nil || bootstrapStreamErr == nil {
+ 			break
+ 		}
+-		if bootstrapRetries >= maxBootstrapRetries || !bootstrapEligible(bootstrapStreamErr) {
++		if managed.From(ctx) != nil || bootstrapRetries >= maxBootstrapRetries || !bootstrapEligible(bootstrapStreamErr) {
+ 			bootstrapErr = executionErrorMessage(bootstrapStreamErr)
+ 			break
+ 		}
+diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
+index be113d1..c4086bf 100644
+--- a/sdk/cliproxy/auth/conductor_execution.go
++++ b/sdk/cliproxy/auth/conductor_execution.go
+@@ -17,6 +17,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+@@ -119,6 +120,9 @@ func preferredExecutionAttemptError(fallback, upstream error) error {
+ // Execute performs a non-streaming execution using the configured selector and executor.
+ // It supports multiple providers for the same model and round-robins the starting provider per model.
+ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	if managed.From(ctx) != nil {
++		return m.executeManaged(ctx, req, opts)
++	}
+ 	req, opts = cliproxysession.Enrich(req, opts)
+ 	normalized := m.normalizeProviders(providers)
+ 	if len(normalized) == 0 {
+@@ -230,6 +234,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
+ // ExecuteStream performs a streaming execution using the configured selector and executor.
+ // It supports multiple providers for the same model and round-robins the starting provider per model.
+ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	if managed.From(ctx) != nil {
++		return m.streamManaged(ctx, req, opts)
++	}
+ 	req, opts = cliproxysession.Enrich(req, opts)
+ 	if m.HomeEnabled() {
+ 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
+@@ -1444,6 +1451,11 @@ func (m *Manager) prepareHomeRequestAuth(ctx context.Context, executor ProviderE
+ }
+ 
+ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {
++	if auth != nil {
++		if err := managed.RequireAccount(ctx, auth.ID); err != nil {
++			return nil, err
++		}
++	}
+ 	if m == nil || executor == nil || auth == nil {
+ 		return auth, nil
+ 	}
+@@ -1482,6 +1494,11 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
+ }
+ 
+ func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {
++	if auth != nil {
++		if err := managed.RequireAccount(ctx, auth.ID); err != nil {
++			return nil, err
++		}
++	}
+ 	if m == nil || executor == nil || auth == nil {
+ 		return auth, nil
+ 	}
+diff --git a/sdk/cliproxy/auth/managed_execution.go b/sdk/cliproxy/auth/managed_execution.go
+new file mode 100644
+index 0000000..a1498ee
+--- /dev/null
++++ b/sdk/cliproxy/auth/managed_execution.go
+@@ -0,0 +1,113 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
++	ex "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
++)
++
++// ManagedHTTPExecutor opts in only audited HTTP generation implementations.
++type ManagedHTTPExecutor interface{ ManagedHTTPExecutor() ProviderExecutor }
++type managedCanonicalModel interface{ ManagedCanonicalModel(string) string }
++
++func (m *Manager) managedSelection(ctx context.Context, req ex.Request, opts ex.Options) (ProviderExecutor, *Auth, error) {
++	a := managed.From(ctx)
++	if a == nil || !a.Claim() {
++		return nil, nil, managed.ErrReplay
++	}
++	auth, ok := m.GetByID(a.AuthID)
++	if !ok || auth.Disabled {
++		return nil, nil, fmt.Errorf("managed account unavailable")
++	}
++	executor := m.executorFor(executorKeyFromAuth(auth))
++	supported, ok := executor.(ManagedHTTPExecutor)
++	if !ok {
++		return nil, nil, fmt.Errorf("managed single-attempt executor unsupported")
++	}
++	executor = supported.ManagedHTTPExecutor()
++	if executor == nil {
++		return nil, nil, fmt.Errorf("managed executor unavailable")
++	}
++	if !registry.GetGlobalRegistry().ClientSupportsModel(auth.ID, req.Model) {
++		return nil, nil, fmt.Errorf("managed exact model not registered for account")
++	}
++	if err := managed.RequireAccount(ctx, auth.ID); err != nil {
++		return nil, nil, err
++	}
++	candidates, _, _, _ := m.executionModelCandidatesWithAlias(auth, req.Model)
++	canonical := a.UpstreamModel
++	if canonical == "" {
++		canonical = req.Model
++		if normalizer, ok := executor.(managedCanonicalModel); ok {
++			canonical = normalizer.ManagedCanonicalModel(canonical)
++		}
++	}
++	found := false
++	for _, candidate := range candidates {
++		if normalizer, ok := executor.(managedCanonicalModel); ok {
++			candidate = normalizer.ManagedCanonicalModel(candidate)
++		}
++		if candidate == canonical {
++			found = true
++			break
++		}
++	}
++	if !found {
++		return nil, nil, fmt.Errorf("managed canonical model not mapped for account")
++	}
++	a.UpstreamModel = canonical
++	a.Accept(auth.ID, canonical)
++	return executor, auth.Clone(), nil
++}
++func (m *Manager) executeManaged(ctx context.Context, req ex.Request, opts ex.Options) (ex.Response, error) {
++	a := managed.From(ctx)
++	executor, auth, err := m.managedSelection(ctx, req, opts)
++	if err != nil {
++		if !errors.Is(err, managed.ErrReplay) {
++			a.Finish(true)
++		}
++		return ex.Response{}, err
++	}
++	req.Model = a.UpstreamModel
++	// No model pools, auth refresh, conductor retries or plugin after-auth mutation.
++	resp, err := executor.Execute(ctx, auth, req, opts)
++	a.Finish(err != nil)
++	return resp, err
++}
++func (m *Manager) streamManaged(ctx context.Context, req ex.Request, opts ex.Options) (*ex.StreamResult, error) {
++	a := managed.From(ctx)
++	executor, auth, err := m.managedSelection(ctx, req, opts)
++	if err != nil {
++		if !errors.Is(err, managed.ErrReplay) {
++			a.Finish(true)
++		}
++		return nil, err
++	}
++	req.Model = a.UpstreamModel
++	result, err := executor.ExecuteStream(ctx, auth, req, opts)
++	if err != nil || result == nil {
++		a.Finish(true)
++		return result, err
++	}
++	out := make(chan ex.StreamChunk)
++	go func() {
++		defer close(out)
++		failed := false
++		defer func() { a.Finish(failed) }()
++		for chunk := range result.Chunks {
++			if chunk.Err != nil {
++				failed = true
++			}
++			select {
++			case out <- chunk:
++			case <-ctx.Done():
++				failed = true
++				return
++			}
++		}
++	}()
++	return &ex.StreamResult{Headers: result.Headers, Chunks: out}, nil
++}
+diff --git a/sdk/cliproxy/auth/managed_execution_test.go b/sdk/cliproxy/auth/managed_execution_test.go
+new file mode 100644
+index 0000000..323d808
+--- /dev/null
++++ b/sdk/cliproxy/auth/managed_execution_test.go
+@@ -0,0 +1,113 @@
++package auth
++
++import (
++	"context"
++	"fmt"
++	ex "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
++	"testing"
++)
++
++type managedFake struct {
++	*unauthorizedRefreshExecutor
++	status        int
++	streamFailure bool
++}
++
++func (e *managedFake) ManagedHTTPExecutor() ProviderExecutor { return e }
++func (e *managedFake) Execute(ctx context.Context, a *Auth, r ex.Request, o ex.Options) (ex.Response, error) {
++	e.mu.Lock()
++	e.executeCalls = append(e.executeCalls, a.ID)
++	e.mu.Unlock()
++	if e.status > 0 {
++		return ex.Response{}, &Error{HTTPStatus: e.status, Message: "fixture failure"}
++	}
++	return ex.Response{Payload: []byte(a.ID)}, nil
++}
++func (e *managedFake) ExecuteStream(ctx context.Context, a *Auth, r ex.Request, o ex.Options) (*ex.StreamResult, error) {
++	e.mu.Lock()
++	e.streamCalls = append(e.streamCalls, a.ID)
++	e.mu.Unlock()
++	ch := make(chan ex.StreamChunk, 2)
++	ch <- ex.StreamChunk{Payload: []byte("first tool delta")}
++	if e.streamFailure {
++		ch <- ex.StreamChunk{Err: &Error{HTTPStatus: 429, Message: "fixture stream failure"}}
++	}
++	close(ch)
++	return &ex.StreamResult{Chunks: ch}, nil
++}
++func TestManagedExactAccountSingleInvocation(t *testing.T) {
++	for _, status := range []int{0, 401, 429, 500} {
++		t.Run(fmt.Sprint(status), func(t *testing.T) {
++			m, base, primary, _, model := newUnauthorizedRefreshFixture(t, false)
++			f := &managedFake{unauthorizedRefreshExecutor: base, status: status}
++			m.RegisterExecutor(f)
++			a, err := managed.New("auth-test-"+t.Name(), primary.ID, nil)
++			if err != nil {
++				t.Fatal(err)
++			}
++			ctx := managed.With(context.Background(), a)
++			_, err = m.Execute(ctx, []string{"codex"}, ex.Request{Model: model}, ex.Options{})
++			if (err != nil) != (status != 0) {
++				t.Fatalf("wrong error %v", err)
++			}
++			_, _ = m.Execute(ctx, []string{"codex"}, ex.Request{Model: model}, ex.Options{})
++			if len(f.executeCalls) != 1 || f.executeCalls[0] != primary.ID || f.RefreshCalls() != 0 {
++				t.Fatalf("replayed or changed account: %v refresh=%d", f.executeCalls, f.RefreshCalls())
++			}
++		})
++	}
++}
++func TestManagedStreamDoesNotReplayAfterPartialFailure(t *testing.T) {
++	m, base, primary, _, model := newUnauthorizedRefreshFixture(t, false)
++	f := &managedFake{unauthorizedRefreshExecutor: base, streamFailure: true}
++	m.RegisterExecutor(f)
++	a, _ := managed.New("auth-stream-test", primary.ID, nil)
++	ctx := managed.With(context.Background(), a)
++	result, err := m.ExecuteStream(ctx, []string{"codex"}, ex.Request{Model: model}, ex.Options{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	chunks := 0
++	for range result.Chunks {
++		chunks++
++	}
++	_, _ = m.ExecuteStream(ctx, []string{"codex"}, ex.Request{Model: model}, ex.Options{})
++	if chunks != 2 || len(f.streamCalls) != 1 || f.RefreshCalls() != 0 {
++		t.Fatalf("unexpected replay %d/%d", chunks, len(f.streamCalls))
++	}
++}
++func TestManagedUnsupportedAndWrongAuthFailClosed(t *testing.T) {
++	m, base, primary, _, model := newUnauthorizedRefreshFixture(t, false)
++	for _, id := range []string{primary.ID, "not-real-auth-id"} {
++		a, _ := managed.New("auth-unsupported-"+id, id, nil)
++		if _, err := m.Execute(managed.With(context.Background(), a), []string{"codex"}, ex.Request{Model: model}, ex.Options{}); err == nil {
++			t.Fatal("unsupported route executed")
++		}
++	}
++	if len(base.executeCalls) != 0 {
++		t.Fatal("unexpected upstream call")
++	}
++}
++
++func TestManagedUnmappedCanonicalModelRejectedBeforeExecutor(t *testing.T) {
++	m, base, primary, _, model := newUnauthorizedRefreshFixture(t, false)
++	f := &managedFake{unauthorizedRefreshExecutor: base}
++	m.RegisterExecutor(f)
++	a, _ := managed.New(t.Name(), primary.ID, nil)
++	a.UpstreamModel = "different-unmapped-model"
++	_, err := m.Execute(managed.With(context.Background(), a), []string{"codex"}, ex.Request{Model: model}, ex.Options{})
++	if err == nil || len(f.executeCalls) != 0 {
++		t.Fatal("unmapped upstream executed")
++	}
++}
++func TestManagedOnlyAccountDeniedDuringOrdinaryPreparation(t *testing.T) {
++	m, base, primary, _, _ := newUnauthorizedRefreshFixture(t, false)
++	t.Setenv("AI_BILLS_MANAGED_ONLY_AUTH_IDS", primary.ID)
++	if _, err := m.prepareRequestAuth(context.Background(), base, primary); err == nil {
++		t.Fatal("ordinary paid account admitted")
++	}
++	if _, err := m.prepareHomeAuthSnapshot(context.Background(), base, primary); err == nil {
++		t.Fatal("Home paid account admitted")
++	}
++}
+diff --git a/sdk/cliproxy/managed/managed.go b/sdk/cliproxy/managed/managed.go
+new file mode 100644
+index 0000000..616dfc9
+--- /dev/null
++++ b/sdk/cliproxy/managed/managed.go
+@@ -0,0 +1,346 @@
++// Package managed implements the bounded AI Bills admission contract.
++package managed
++
++import (
++	"bytes"
++	"compress/gzip"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"math"
++	"net/http"
++	"os"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"time"
++)
++
++var ErrReplay = errors.New("managed execution replay denied")
++
++type key struct{}
++type Attempt struct {
++	ID            string
++	AuthID        string
++	UpstreamModel string
++	RequestID     string
++	MaxOutput     int64
++	ServiceTier   string
++	accepted      func(string, string)
++	execution     atomic.Bool
++	dispatch      atomic.Bool
++	mu            sync.Mutex
++	receipt       map[string]any
++}
++
++var store = struct {
++	sync.RWMutex
++	rows map[string]*Attempt
++}{rows: make(map[string]*Attempt)}
++
++func New(id, authID string, accepted func(string, string)) (*Attempt, error) {
++	store.Lock()
++	defer store.Unlock()
++	if _, exists := store.rows[id]; exists {
++		return nil, errors.New("managed attempt already exists")
++	}
++	if len(store.rows) >= 100000 {
++		return nil, errors.New("managed receipt capacity reached")
++	}
++	a := &Attempt{ID: id, AuthID: authID, accepted: accepted, receipt: map[string]any{"attempt_id": id, "auth_id": authID, "accepted": false, "complete": false, "usage_known": false, "usage_complete": false, "terminal": false, "started": false, "observed_at": time.Now().UTC().Format(time.RFC3339Nano)}}
++	store.rows[id] = a
++	return a, nil
++}
++func With(ctx context.Context, a *Attempt) context.Context { return context.WithValue(ctx, key{}, a) }
++func From(ctx context.Context) *Attempt {
++	if ctx == nil {
++		return nil
++	}
++	a, _ := ctx.Value(key{}).(*Attempt)
++	return a
++}
++func Copy(to, from context.Context) context.Context {
++	if a := From(from); a != nil {
++		return With(to, a)
++	}
++	return to
++}
++func (a *Attempt) Claim() bool { return a.execution.CompareAndSwap(false, true) }
++func (a *Attempt) Accept(authID, model string) {
++	a.mu.Lock()
++	a.receipt["accepted"] = true
++	a.receipt["auth_id"] = authID
++	a.receipt["model"] = model
++	a.mu.Unlock()
++	if a.accepted != nil {
++		a.accepted(authID, model)
++	}
++}
++func (a *Attempt) Usage(authID, model string, failed bool, detail map[string]any) {
++	if authID != a.AuthID {
++		return
++	}
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	a.receipt["model"] = model
++	a.receipt["failed"] = failed
++	a.receipt["usage"] = detail
++	total, _ := detail["total_tokens"].(int64)
++	quality, _ := detail["quality_complete"].(bool)
++	a.receipt["usage_known"] = !failed && total > 0 && quality
++	a.receipt["usage_complete"] = !failed && total > 0 && quality
++}
++func (a *Attempt) Finish(failed bool) {
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	a.receipt["complete"] = true
++	a.receipt["terminal"] = true
++	a.receipt["billable_zero"] = failed && !a.dispatch.Load()
++	a.receipt["failed"] = failed
++}
++func Receipt(id string) (map[string]any, bool) {
++	store.RLock()
++	a, ok := store.rows[id]
++	store.RUnlock()
++	if !ok {
++		return nil, false
++	}
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	r := make(map[string]any, len(a.receipt))
++	for k, v := range a.receipt {
++		r[k] = v
++	}
++	return r, true
++}
++
++// Guard applies to every managed HTTP client, including per-provider inner retries.
++func Guard(ctx context.Context, client *http.Client) *http.Client {
++	a := From(ctx)
++	if a == nil {
++		return client
++	}
++	clone := *client
++	base := clone.Transport
++	if base == nil {
++		base = http.DefaultTransport
++	}
++	clone.Transport = transport{base: base, attempt: a}
++	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("managed redirects disabled") }
++	return &clone
++}
++
++type transport struct {
++	base    http.RoundTripper
++	attempt *Attempt
++}
++
++func (t transport) RoundTrip(r *http.Request) (*http.Response, error) {
++	if err := t.attempt.validateRequest(r); err != nil {
++		return nil, err
++	}
++	if !t.attempt.dispatch.CompareAndSwap(false, true) {
++		return nil, errors.New("managed upstream replay denied")
++	}
++	t.attempt.mu.Lock()
++	t.attempt.receipt["started"] = true
++	t.attempt.mu.Unlock()
++	clone := r.Clone(r.Context())
++	clone.Header = r.Header.Clone()
++	for _, name := range []string{"X-AI-Bills-Managed", "X-AI-Bills-Token", "X-AI-Bills-Auth-ID", "X-AI-Bills-Attempt-ID", "X-AI-Bills-Request-ID", "X-AI-Bills-Max-Output", "X-AI-Bills-Service-Tier", "X-AI-Bills-Upstream-Model"} {
++		clone.Header.Del(name)
++	}
++	// Go's transport cannot transparently replay this request body on a reused connection.
++	clone.GetBody = nil
++	return t.base.RoundTrip(clone)
++}
++
++// Validate the final translated payload, not merely the original client request.
++func (a *Attempt) validateRequest(r *http.Request) error {
++	if r.Body == nil {
++		return errors.New("managed request body required")
++	}
++	raw, err := io.ReadAll(io.LimitReader(r.Body, 64*1024*1024+1))
++	if err != nil {
++		return err
++	}
++	r.Body.Close()
++	r.Body = io.NopCloser(bytes.NewReader(raw))
++	if len(raw) > 64*1024*1024 {
++		return errors.New("managed request body too large")
++	}
++	body := raw
++	if r.Header.Get("Content-Encoding") == "gzip" {
++		reader, err := gzip.NewReader(bytes.NewReader(raw))
++		if err != nil {
++			return err
++		}
++		body, err = io.ReadAll(io.LimitReader(reader, 64*1024*1024+1))
++		reader.Close()
++		if err != nil || len(body) > 64*1024*1024 {
++			return errors.New("managed compressed body invalid")
++		}
++	}
++	var value map[string]any
++	if json.Unmarshal(body, &value) != nil {
++		return errors.New("managed JSON body required")
++	}
++	a.mu.Lock()
++	model, _ := a.receipt["model"].(string)
++	a.mu.Unlock()
++	if model != "" && value["model"] != model {
++		return errors.New("managed transformed model mismatch")
++	}
++	if a.MaxOutput <= 0 {
++		return nil
++	}
++	for _, field := range []string{"n", "best_of", "candidate_count"} {
++		if raw, exists := value[field]; exists && raw != float64(1) {
++			return errors.New("managed multiple generations denied")
++		}
++	}
++	if value["speed"] == "fast" {
++		return errors.New("managed unpriced fast service denied")
++	}
++	for _, key := range []string{"previous_response_id", "conversation", "background", "audio", "prediction"} {
++		if raw, exists := value[key]; exists && raw != nil && raw != false && raw != "" {
++			return errors.New("managed unbounded context or unpriced feature denied")
++		}
++	}
++	if raw, exists := value["modalities"]; exists {
++		modes, ok := raw.([]any)
++		if !ok {
++			return errors.New("managed malformed modalities")
++		}
++		for _, mode := range modes {
++			if mode != "text" {
++				return errors.New("managed unpriced output modality")
++			}
++		}
++	}
++	if unpricedContent(value) {
++		return errors.New("managed unpriced content denied")
++	}
++	fields := []string{}
++	switch {
++	case strings.HasSuffix(r.URL.Path, "/messages"):
++		fields = []string{"max_tokens"}
++	case strings.HasSuffix(r.URL.Path, "/responses"):
++		fields = []string{"max_output_tokens"}
++	case strings.HasSuffix(r.URL.Path, "/chat/completions"):
++		fields = []string{"max_tokens", "max_completion_tokens"}
++	default:
++		return errors.New("managed unpriced endpoint denied")
++	}
++	bounded := false
++	for _, field := range fields {
++		if raw, ok := value[field]; ok {
++			limit, ok := raw.(float64)
++			if !ok || limit <= 0 || math.Trunc(limit) != limit || limit > float64(a.MaxOutput) {
++				return errors.New("managed transformed output limit exceeds reservation")
++			}
++			bounded = true
++		}
++	}
++	if !bounded {
++		return errors.New("managed transformed output limit absent")
++	}
++	tier, _ := value["service_tier"].(string)
++	if tier == "" {
++		tier = "default"
++	}
++	expected := a.ServiceTier
++	if expected == "" {
++		expected = "default"
++	}
++	if tier != expected {
++		return errors.New("managed transformed service tier differs from reservation")
++	}
++	// Paid v1 initially admits text + client-side function tools only.
++	if raw, exists := value["tools"]; exists && raw != nil {
++		tools, ok := raw.([]any)
++		if !ok {
++			return errors.New("managed malformed tools denied")
++		}
++		for _, raw := range tools {
++			tool, valid := raw.(map[string]any)
++			if !valid {
++				return errors.New("managed malformed tool denied")
++			}
++			kind, _ := tool["type"].(string)
++			if kind != "" && kind != "function" && kind != "custom" {
++				return errors.New("managed unpriced provider tool denied")
++			}
++		}
++	}
++	return nil
++}
++
++// Only explicitly enrolled paid account IDs require the budget authority. Other
++// accounts keep their existing behavior. This does not change credential ownership.
++func RequireAccount(ctx context.Context, authID string) error {
++	for _, id := range strings.Split(os.Getenv("AI_BILLS_MANAGED_ONLY_AUTH_IDS"), ",") {
++		if id = strings.TrimSpace(id); id != "" && id == authID {
++			a := From(ctx)
++			if a == nil || a.AuthID != authID || a.MaxOutput <= 0 {
++				return errors.New("paid account requires managed budget admission")
++			}
++		}
++	}
++	return nil
++}
++
++// Responses-only upstreams are explicitly bound to account IDs, never inferred
++// from a model display name or silently substituted for chat/completions.
++func ResponsesAccount(ctx context.Context, authID string) bool {
++	if From(ctx) == nil {
++		return false
++	}
++	for _, id := range strings.Split(os.Getenv("AI_BILLS_RESPONSES_AUTH_IDS"), ",") {
++		if strings.TrimSpace(id) == authID && authID != "" {
++			return true
++		}
++	}
++	return false
++}
++
++// GuardAccount also covers executor HTTPCall paths that bypass normal selection.
++func GuardAccount(ctx context.Context, client *http.Client, authID string) *http.Client {
++	if err := RequireAccount(ctx, authID); err != nil {
++		clone := *client
++		clone.Transport = deniedTransport{err: err}
++		return &clone
++	}
++	return Guard(ctx, client)
++}
++
++type deniedTransport struct{ err error }
++
++func (d deniedTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, d.err }
++
++func unpricedContent(value any) bool {
++	switch node := value.(type) {
++	case map[string]any:
++		kind, _ := node["type"].(string)
++		switch kind {
++		case "image_url", "input_image", "input_audio", "audio", "image", "document", "file", "input_file", "computer", "web_search", "web_search_preview", "file_search", "code_interpreter":
++			return true
++		}
++		if _, ok := node["source"].(map[string]any); ok {
++			return true
++		}
++		for _, child := range node {
++			if unpricedContent(child) {
++				return true
++			}
++		}
++	case []any:
++		for _, child := range node {
++			if unpricedContent(child) {
++				return true
++			}
++		}
++	}
++	return false
++}
+diff --git a/sdk/cliproxy/managed/managed_test.go b/sdk/cliproxy/managed/managed_test.go
+new file mode 100644
+index 0000000..b79a2b1
+--- /dev/null
++++ b/sdk/cliproxy/managed/managed_test.go
+@@ -0,0 +1,125 @@
++package managed
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++func TestManagedHTTPGuardPreventsReplayAndStripsPrivateHeaders(t *testing.T) {
++	calls := 0
++	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls++
++		if r.Header.Get("X-AI-Bills-Token") != "" {
++			t.Error("leaked token")
++		}
++		w.WriteHeader(429)
++	}))
++	defer s.Close()
++	a, _ := New(t.Name(), "auth", nil)
++	ctx := With(context.Background(), a)
++	client := Guard(ctx, s.Client())
++	for i := 0; i < 2; i++ {
++		r, _ := http.NewRequestWithContext(ctx, "POST", s.URL, strings.NewReader("{}"))
++		r.Header.Set("X-AI-Bills-Token", "private")
++		resp, err := client.Do(r)
++		if resp != nil {
++			io.Copy(io.Discard, resp.Body)
++			resp.Body.Close()
++		}
++		if i == 1 && err == nil {
++			t.Error("replay accepted")
++		}
++	}
++	if calls != 1 {
++		t.Fatalf("calls %d", calls)
++	}
++}
++func TestManagedReceiptSeparatesCompletionFromBillingEvidence(t *testing.T) {
++	a, _ := New(t.Name(), "auth", nil)
++	a.Accept("auth", "model")
++	a.Usage("auth", "model", true, map[string]any{"total_tokens": int64(0)})
++	a.Finish(true)
++	r, _ := Receipt(a.ID)
++	if r["usage_complete"] != false || r["terminal"] != true {
++		t.Fatal(r)
++	}
++}
++func TestManagedFinalOutputAndTierGuard(t *testing.T) {
++	for name, body := range map[string]string{"cap": `{"model":"model","max_tokens":101}`, "missing": `{"model":"model"}`, "tier": `{"model":"model","max_tokens":100,"service_tier":"priority"}`, "model": `{"model":"other","max_tokens":100}`, "tool": `{"model":"model","max_tokens":100,"tools":[{"type":"web_search"}]}`} {
++		t.Run(name, func(t *testing.T) {
++			a, _ := New(t.Name(), "auth", nil)
++			a.Accept("auth", "model")
++			a.MaxOutput = 100
++			r, _ := http.NewRequest("POST", "http://example.invalid", strings.NewReader(body))
++			if err := a.validateRequest(r); err == nil {
++				t.Fatal("unsafe transformed payload accepted")
++			}
++		})
++	}
++}
++
++func TestManagedMultiplicityAndToolShapeBounds(t *testing.T) {
++	for _, suffix := range []string{`,"n":2`, `,"n":1.5`, `,"best_of":2`, `,"candidate_count":2`, `,"tools":{}`, `,"tools":[42]`} {
++		a, _ := New(t.Name()+suffix, "account", nil)
++		a.Accept("account", "model")
++		a.MaxOutput = 100
++		r, _ := http.NewRequest("POST", "http://example.invalid", strings.NewReader(`{"model":"model","max_tokens":100`+suffix+`}`))
++		if err := a.validateRequest(r); err == nil {
++			t.Fatalf("unsafe bound accepted: %s", suffix)
++		}
++	}
++}
++func TestManagedOnlyAccountRequiresBudgetAdmission(t *testing.T) {
++	t.Setenv("AI_BILLS_MANAGED_ONLY_AUTH_IDS", "paid-account, other-paid")
++	ctx := context.Background()
++	if RequireAccount(ctx, "paid-account") == nil {
++		t.Fatal("unmanaged paid account admitted")
++	}
++	if err := RequireAccount(ctx, "subscription"); err != nil {
++		t.Fatal(err)
++	}
++	a, _ := New(t.Name(), "paid-account", nil)
++	ctx = With(ctx, a)
++	if RequireAccount(ctx, "paid-account") == nil {
++		t.Fatal("paid account without reservation admitted")
++	}
++	a.MaxOutput = 10
++	if err := RequireAccount(ctx, "paid-account"); err != nil {
++		t.Fatal(err)
++	}
++	if RequireAccount(ctx, "other-paid") == nil {
++		t.Fatal("wrong managed account admitted")
++	}
++}
++
++func TestManagedEndpointCapAndFinalContent(t *testing.T) {
++	cases := []struct {
++		path, body string
++		valid      bool
++	}{
++		{"/v1/messages", `{"model":"model","max_tokens":8}`, true},
++		{"/v1/messages", `{"model":"model","max_output_tokens":8}`, false},
++		{"/v1/responses", `{"model":"model","max_tokens":8}`, false},
++		{"/v1/responses", `{"model":"model","max_output_tokens":8}`, true},
++		{"/v1/chat/completions", `{"model":"model","max_tokens":8}`, true},
++		{"/v1/chat/completions", `{"model":"model","max_completion_tokens":8}`, true},
++		{"/v1/chat/completions", `{"model":"model","max_completion_tokens":7.5}`, false},
++		{"/v1/chat/completions", `{"model":"model","max_tokens":8,"audio":{"voice":"alloy"}}`, false},
++		{"/v1/responses", `{"model":"model","max_output_tokens":8,"previous_response_id":"resp_old"}`, false},
++		{"/v1/messages", `{"model":"model","max_tokens":8,"messages":[{"content":[{"type":"image","source":{"data":"x"}}]}]}`, false},
++	}
++	for i, c := range cases {
++		a, _ := New(fmt.Sprintf("%s/%d", t.Name(), i), "account", nil)
++		a.Accept("account", "model")
++		a.MaxOutput = 8
++		r, _ := http.NewRequest("POST", "http://example.invalid"+c.path, strings.NewReader(c.body))
++		if err := a.validateRequest(r); (err == nil) != c.valid {
++			t.Fatalf("case %d valid=%t error=%v", i, c.valid, err)
++		}
++	}
++}
+diff --git a/sdk/cliproxy/usage/manager.go b/sdk/cliproxy/usage/manager.go
+index e9fd8cf..a241c16 100644
+--- a/sdk/cliproxy/usage/manager.go
++++ b/sdk/cliproxy/usage/manager.go
+@@ -7,6 +7,7 @@ import (
+ 	"sync"
+ 	"time"
+ 
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/managed"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -20,7 +21,9 @@ const AutoServiceTier = "auto"
+ 
+ // Record contains the usage statistics captured for a single provider request.
+ type Record struct {
+-	Provider string
++	ManagedAttemptID string
++	ManagedRequestID string
++	Provider         string
+ 	// ExecutorType stores the concrete executor type that handled the request.
+ 	ExecutorType    string
+ 	Model           string
+@@ -338,6 +341,13 @@ func (m *Manager) RegisterNamed(name string, plugin Plugin) {
+ // Publish enqueues a usage record for processing. If no plugin is registered
+ // the record will be discarded downstream.
+ func (m *Manager) Publish(ctx context.Context, record Record) {
++	if a := managed.From(ctx); a != nil {
++		record.ManagedAttemptID = a.ID
++		record.ManagedRequestID = a.RequestID
++		detail := EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
++		b := detail.TokenBreakdown
++		a.Usage(record.AuthID, record.Model, record.Failed, map[string]any{"input_tokens": b.Input.UncachedTokens, "output_tokens": b.Output.TotalTokens, "reasoning_tokens": b.Output.ReasoningTokens, "cache_read_tokens": b.Input.CacheReadTokens, "cache_write_tokens": b.Input.CacheWriteTokens, "total_tokens": b.TotalTokens, "token_breakdown": b, "quality_complete": b.Valid() && b.Quality == TokenAccountingQualityComplete, "request_id": record.ResponseHeaders.Get("Request-Id")})
++	}
+ 	if m == nil {
+ 		return
+ 	}

@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -77,7 +78,8 @@ def evaluate(base, key, model):
         if args.get('marker') != 'ROUTING_OK' or not args.get('cause') or not isinstance(args.get('code'), str):
             receipt['failure'] = 'instruction or explanation missing'
             return receipt
-        checked = subprocess.run([sys.executable, '-I', '-c', HARNESS], input=json.dumps(args['code']), text=True, capture_output=True, timeout=3)
+        with tempfile.TemporaryDirectory(prefix='model-repair-check-') as directory:
+            checked = subprocess.run([sys.executable, '-I', '-c', HARNESS], input=json.dumps(args['code']), text=True, capture_output=True, timeout=3, env={}, cwd=directory)
         receipt['coding_tests_passed'] = checked.returncode == 0
         if checked.returncode:
             receipt['failure'] = 'code repair failed isolated tests'

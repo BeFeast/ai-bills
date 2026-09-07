@@ -87,6 +87,7 @@ def project(rec, keymap):
         "request_id": rec.get("request_id"),
         # Optional routing metadata; these are identifiers, never prompt content.
         "attempt_id": rec.get("attempt_id"),
+        "managed_request_id": rec.get("managed_request_id"),
         "policy_version": rec.get("policy_version"),
         "role": rec.get("role"),
         "session_id": rec.get("session_id"),

@@ -22,9 +22,11 @@ class CollectorTests(unittest.TestCase):
 
     def test_tap_preserves_full_request_id_and_drops_secrets(self):
         tap = module('ai-usage-tap')
-        row = tap.project({'api_key': 'secret-value', 'response_headers': {'request-id': 'full-request'}, 'attempt_id': 'attempt-1', 'role': 'coding-fast'}, {})
+        row = tap.project({'api_key': 'secret-value', 'response_headers': {'request-id': 'full-request'}, 'attempt_id': 'attempt-1', 'managed_request_id': 'gateway-request', 'request_id': 'provider-request', 'role': 'coding-fast'}, {})
         self.assertEqual(row['upstream_request_id'], 'full-request')
         self.assertEqual(row['attempt_id'], 'attempt-1')
+        self.assertEqual(row['managed_request_id'], 'gateway-request')
+        self.assertEqual(row['request_id'], 'provider-request')
         self.assertNotIn('secret-value', json.dumps(row))
 
     def test_report_reconciles_native_proxy_and_never_inferrs_account_cost_from_model(self):
