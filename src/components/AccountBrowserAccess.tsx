@@ -74,24 +74,29 @@ export function AccountBrowserAccess({ subscription, account, children }: Access
     {account ? <small>Provider website · separate browser sign-in</small> : null}
     <div className="row-actions">
       {state?.configured ? <button className="small-button" disabled={busy || state.status === 'unavailable'} onClick={openAccount} title={`${provider} · ${state.intendedEmail || label}`}>
-        {busy ? 'Opening…' : ready ? 'Manage account ↗' : 'Open account browser ↗'}
+        {busy ? 'Opening…' : ready ? 'Manage account ↗' : subscription ? 'Open browser ↗' : 'Open account browser ↗'}
       </button> : state?.status === 'unconfigured' ? <>
         {subscription?.loginUrl ? <a className="action-link" href={subscription?.loginUrl} target="_blank" rel="noreferrer">Sign in ↗</a> : null}
         {subscription?.manageUrl ? <a href={subscription?.manageUrl} target="_blank" rel="noreferrer" title={`Current browser session. Check the signed-in account: ${label}.`}>Billing ↗</a> : null}
       </> : null}
       {children}
     </div>
-    {state?.configured && state.intendedEmail ? <small>For {provider} · {state.intendedEmail}</small> : null}
-    <small className={`account-browser-status ${ready ? 'verified' : ''}`} role="status">{status}</small>
-    {state?.status === 'unconfigured' && (subscription?.loginUrl || subscription?.manageUrl) ? <small>Current browser session</small> : null}
-    {state?.status === 'mismatch' && state.verifiedEmail ? <small>Signed in as {state.verifiedEmail}</small> : null}
-    {state?.observedAt ? <small title={state.observedAt}>Checked {fresh ? 'just now' : 'earlier'} · {new Date(state.observedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small> : null}
-    {state?.proxyAccountId && state.proxy ? <details className="account-browser-proxy"><summary>Proxy · {state.proxy.status === 'linked' ? 'linked' : state.proxy.status === 'not_found' ? 'not in policy' : state.proxy.status === 'unavailable' ? 'status unavailable' : 'not linked'}</summary>
-      <small>Routing {state.proxy.enabled === null ? 'unknown' : state.proxy.enabled ? 'enabled' : 'disabled'}{state.proxy.policyVersion === null ? '' : ` · policy ${state.proxy.policyVersion}`}</small>
-      <small>{state.proxy.nativeBound === null ? 'Proxy binding unknown' : state.proxy.nativeBound ? 'Proxy binding configured' : 'Proxy binding missing'} · quota {state.proxy.quotaState || 'unknown'}</small>
-      {state.proxy.observedAt ? <small>Proxy checked {new Date(state.proxy.observedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small> : null}
-    </details> : null}
+    <div className="account-browser-meta">
+      <small className={`account-browser-status ${ready ? 'verified' : ''}`} role="status">{state?.status === 'unconfigured' && (subscription?.loginUrl || subscription?.manageUrl) ? 'Current browser session' : status}</small>
+      <button className="account-browser-refresh" onClick={() => void refresh()} disabled={busy} aria-label={`Refresh ${provider} account browser status`} title="Check account status again">↻</button>
+      {state ? <details className="account-browser-details"><summary>Details</summary><div>
+        {state.configured && state.intendedEmail ? <small>For {provider} · {state.intendedEmail}</small> : null}
+        {state.status === 'unconfigured' ? <small>{labels.unconfigured}</small> : null}
+        {state.observedAt ? <small title={state.observedAt}>Checked {fresh ? 'just now' : 'earlier'} · {new Date(state.observedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small> : null}
+        {state.proxyAccountId && state.proxy ? <>
+          <small>Proxy · {state.proxy.status === 'linked' ? 'linked' : state.proxy.status === 'not_found' ? 'not in policy' : state.proxy.status === 'unavailable' ? 'status unavailable' : 'not linked'}</small>
+          <small>Routing {state.proxy.enabled === null ? 'unknown' : state.proxy.enabled ? 'enabled' : 'disabled'}{state.proxy.policyVersion === null ? '' : ` · policy ${state.proxy.policyVersion}`}</small>
+          <small>{state.proxy.nativeBound === null ? 'Proxy binding unknown' : state.proxy.nativeBound ? 'Proxy binding configured' : 'Proxy binding missing'} · quota {state.proxy.quotaState || 'unknown'}</small>
+          {state.proxy.observedAt ? <small>Proxy checked {new Date(state.proxy.observedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small> : null}
+        </> : null}
+      </div></details> : null}
+    </div>
+    {state?.status === 'mismatch' && state.verifiedEmail ? <small className="account-browser-mismatch">Signed in as {state.verifiedEmail}</small> : null}
     {error && state ? <small role="alert">{error}</small> : null}
-    {error || state?.status === 'unavailable' || state?.status === 'identity_unknown' || state?.status === 'login_required' || state?.status === 'mismatch' || (state?.status === 'ready' && !fresh) ? <button className="text-button" onClick={() => void refresh()} disabled={busy}>Check again</button> : null}
   </div>;
 }
