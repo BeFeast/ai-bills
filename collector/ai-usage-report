@@ -7,7 +7,8 @@ fixing a price re-prices history. Two figures per row:
   marginal       — estimated additional usage (unknown without account billing evidence)
 A model absent from pricing.yml is reported as UNPRICED, never as $0.
 """
-import argparse, glob, json, os, re, sys, collections
+import argparse, glob, json, os, re, sys, collections, sqlite3
+from pathlib import Path
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ def local_day(ts=None):
 
 LEDGER_DIR = os.path.expanduser(os.environ.get("AI_USAGE_LEDGER_DIR", "~/.local/state/ai-usage"))
 PRICING = os.environ.get("AI_USAGE_PRICING", os.path.expanduser("~/.config/ai-usage/pricing.yml"))
+ROUTING_DB = os.environ.get("AI_USAGE_ROUTING_DB")
 
 def load_pricing():
     import yaml
@@ -82,6 +84,70 @@ def cost(row, defaults, models):
     marginal = 0.0 if mode == "included" else api if mode == "metered" else None
     return api, marginal, True
 
+def attribute_routing(records):
+    """Enrich the read projection only, using exact managed attempt/request IDs."""
+    managed = [row for row in records if row.get("attempt_id") or row.get("managed_request_id")]
+    if not managed:
+        return records
+    matches = {}
+    by_request = collections.defaultdict(list)
+    status = "unconfigured" if not ROUTING_DB else "unavailable"
+    if ROUTING_DB:
+        try:
+            # mode=ro never creates a missing database or modifies gateway state.
+            uri = Path(ROUTING_DB).expanduser().resolve().as_uri() + "?mode=ro"
+            db = sqlite3.connect(uri, uri=True, timeout=1)
+            try:
+                db.row_factory = sqlite3.Row
+                db.execute("PRAGMA query_only=ON")
+                attempt_ids = {r["attempt_id"] for r in managed if r.get("attempt_id")}
+                request_ids = {r["managed_request_id"] for r in managed if not r.get("attempt_id") and r.get("managed_request_id")}
+                for field, identifiers in (("id", attempt_ids), ("request_id", request_ids)):
+                    identifiers = sorted(identifiers)
+                    for start in range(0, len(identifiers), 400):
+                        batch = identifiers[start:start + 400]
+                        query = ("SELECT id,request_id,client_id,session_id,role,account_id,billing,"
+                                 "model,policy_version,fallback_reason FROM attempts WHERE " + field
+                                 + " IN (" + ",".join("?" for _ in batch) + ")")
+                        for result in db.execute(query, batch):
+                            matches[result["id"]] = dict(result)
+                for result in matches.values():
+                    by_request[result["request_id"]].append(result)
+                status = "unmatched"
+            finally:
+                db.close()
+        except (sqlite3.Error, OSError, ValueError):
+            matches.clear()
+            by_request.clear()
+            print("Routing attribution unavailable; preserving original ledger metadata", file=sys.stderr)
+    projected = []
+    for original in records:
+        if not (original.get("attempt_id") or original.get("managed_request_id")):
+            projected.append(original)
+            continue
+        row = dict(original, routing_attribution=status)
+        attempt = matches.get(row.get("attempt_id"))
+        if not row.get("attempt_id") and row.get("managed_request_id"):
+            candidates = by_request[row["managed_request_id"]]
+            if len(candidates) == 1:
+                attempt = candidates[0]
+            elif len(candidates) > 1:
+                row["routing_attribution"] = "ambiguous"
+        if attempt and row.get("managed_request_id") not in (None, "", attempt["request_id"]):
+            row["routing_attribution"] = "id-mismatch"
+            attempt = None
+        if attempt:
+            row.update(client=attempt["client_id"], account=attempt["account_id"],
+                       attempt_id=attempt["id"], managed_request_id=attempt["request_id"],
+                       session_id=attempt["session_id"], role=attempt["role"],
+                       routing_model=attempt["model"], policy_version=attempt["policy_version"],
+                       fallback_reason=attempt["fallback_reason"], routing_attribution="joined")
+            mode = {"included": "included", "paid": "metered"}.get(attempt["billing"])
+            if mode:
+                row["billing_mode"] = mode
+        projected.append(row)
+    return projected
+
 def rows_for(day):
     # Preserve raw ledger; reconcile observations in the read projection only.
     if not os.path.isdir(LEDGER_DIR):
@@ -101,7 +167,7 @@ def rows_for(day):
     # carries selected account/attempt metadata. Do not merge separate attempts.
     proxy_ids = {r.get("upstream_request_id") for r in records if r.get("via") == "proxy" and r.get("upstream_request_id")}
     seen = set()
-    for row in records:
+    for row in attribute_routing(records):
         upstream = row.get("upstream_request_id")
         if row.get("via") != "proxy" and upstream and upstream in proxy_ids:
             continue

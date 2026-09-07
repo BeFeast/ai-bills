@@ -154,4 +154,68 @@ class TapBatchTests(unittest.TestCase):
             self.assertEqual([row['attempt_id'] for row in stored], ['attempt-0', 'attempt-1', 'attempt-2'])
             self.assertEqual([row['managed_request_id'] for row in stored], ['request-0', 'request-1', 'request-2'])
 
+class RoutingAttributionTests(unittest.TestCase):
+    def database(self, path):
+        import sqlite3
+        db = sqlite3.connect(path)
+        db.execute('CREATE TABLE attempts(id TEXT PRIMARY KEY, request_id TEXT, client_id TEXT, session_id TEXT, role TEXT, account_id TEXT, billing TEXT, model TEXT, policy_version INTEGER, fallback_reason TEXT)')
+        db.executemany('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)', [
+            ('a-t3', 'r-t3', 't3-code', 'session-t3', 'coding-fast', 'included-account', 'included', 'approved-alias', 3, None),
+            ('a-api', 'r-api', 'direct-api', 'session-api', 'deep-reasoning', 'paid-account', 'paid', 'approved-alias', 3, 'quota'),
+            ('a-retry-1', 'r-retry', 't3-code', 'session-retry', 'coding-fast', 'included-account', 'included', 'approved-alias', 3, None),
+            ('a-retry-2', 'r-retry', 't3-code', 'session-retry', 'coding-fast', 'paid-account', 'paid', 'approved-alias', 3, 'quota'),
+        ])
+        db.commit()
+        db.close()
+
+    def test_exact_attempt_join_distinguishes_clients_without_rewriting_ledger(self):
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            report.ROUTING_DB = str(Path(directory) / 'routing.sqlite')
+            report.LEDGER_DIR = directory
+            self.database(report.ROUTING_DB)
+            records = [dict(ts='2026-09-07T10:00:00Z', client='shared-gateway-key',
+                            attempt_id=attempt, managed_request_id=request, via='proxy',
+                            model='actual-upstream-model', in_uncached=100, cache_read=0, cache_write=0, out_total=10)
+                       for attempt, request in [('a-t3', 'r-t3'), ('a-api', 'r-api')]]
+            path = Path(directory) / 'ledger-fixture.jsonl'
+            path.write_text('\n'.join(json.dumps(row) for row in records))
+            before = path.read_bytes()
+            result = list(report.rows_for(None))
+            self.assertEqual([r['client'] for r in result], ['t3-code', 'direct-api'])
+            self.assertEqual([r['billing_mode'] for r in result], ['included', 'metered'])
+            self.assertEqual([r['role'] for r in result], ['coding-fast', 'deep-reasoning'])
+            self.assertEqual([r['account'] for r in result], ['included-account', 'paid-account'])
+            self.assertEqual([r['model'] for r in result], ['actual-upstream-model'] * 2)
+            self.assertEqual(result[1]['fallback_reason'], 'quota')
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(records[0]['client'], 'shared-gateway-key')
+
+    def test_request_only_join_rejects_retries_and_mismatched_identifiers(self):
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            report.ROUTING_DB = str(Path(directory) / 'routing.sqlite')
+            self.database(report.ROUTING_DB)
+            original = [dict(client='original', managed_request_id='r-t3'),
+                        dict(client='original', managed_request_id='r-retry'),
+                        dict(client='original', attempt_id='a-t3', managed_request_id='r-api'),
+                        dict(client='original', attempt_id='missing', managed_request_id='r-t3')]
+            result = report.attribute_routing(original)
+            self.assertEqual(result[0]['client'], 't3-code')
+            self.assertEqual([r['routing_attribution'] for r in result], ['joined', 'ambiguous', 'id-mismatch', 'unmatched'])
+            self.assertEqual([r['client'] for r in result[1:]], ['original'] * 3)
+
+    def test_unavailable_database_preserves_usage_without_creating_database(self):
+        from contextlib import redirect_stderr
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'missing.sqlite'
+            report.ROUTING_DB = str(path)
+            original = dict(attempt_id='a-t3', client='shared', model='upstream', in_uncached=17)
+            with redirect_stderr(io.StringIO()):
+                result = report.attribute_routing([original])[0]
+            self.assertEqual(result, dict(original, routing_attribution='unavailable'))
+            self.assertFalse(path.exists())
+            self.assertNotIn('routing_attribution', original)
+
 if __name__ == '__main__': unittest.main()
