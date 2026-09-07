@@ -64,12 +64,11 @@ export function usageEvidence(result: ProviderUsage, now: number, maxAgeSeconds 
 }
 
 function UnknownUsageCard({ result, now, tz, onAuthorized, evidence }: CardProps & { evidence: UsageEvidence }) {
-  const { state, start, starting } = useCodexAuth(result.account.key, onAuthorized);
   return <article className={cardClass(result, evidence.state === 'error' ? 'danger' : 'warn')}>
     <div className="card-head"><div className="card-title"><p className="eyebrow">{result.account.provider} · {result.account.label}</p><h2>{result.account.email}</h2><AvailabilityPill tone="warn" label="Availability unknown" detail={evidence.message} /></div><span className={`pill ${evidence.state === 'error' ? 'danger' : 'warn'}`}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</span></div>
     <p className="status warn">{evidence.message}</p>
     <div className="kv"><span>Quota remaining</span><strong>Unknown</strong><span>Last observation</span><strong>{fmtDate(result.fetchedAt, tz)}</strong><span>HTTP status</span><strong>{result.status ?? 'Unknown'}</strong></div>
-    {result.account.provider === 'codex' ? <><button className="small-button" type="button" disabled={starting} onClick={start}>Connect account</button><CodexAuthBox state={state} now={now} tz={tz} /></> : null}
+    {result.account.provider === 'codex' ? <CodexConnect result={result} now={now} tz={tz} onAuthorized={onAuthorized} /> : null}
   </article>;
 }
 
@@ -455,6 +454,20 @@ function CodexCreditsAccordion({ data }: { data?: CodexUsagePayload }) {
   );
 }
 
+function LocalCodexConnect({ result, now, tz, onAuthorized }: CardProps) {
+  const { state, start, starting } = useCodexAuth(result.account.key, onAuthorized);
+  return <><button type="button" className="small-button" onClick={start} disabled={starting}>{result.ok ? 'Reconnect' : 'Connect account'}</button><CodexAuthBox state={state} now={now} tz={tz} /></>;
+}
+
+function CodexConnect(props: CardProps) {
+  if (props.result.account.authOwner !== 'cliproxy') return <LocalCodexConnect {...props} />;
+  const url = props.result.account.authManagementUrl;
+  return <div className="codex-auth">
+    {url ? <a className="small-button" href={url} target="_blank" rel="noopener noreferrer">Reconnect in CLIProxyAPI</a> : <span className="muted">Reconnect through CLIProxyAPI management.</span>}
+    <p className="muted">CLIProxyAPI owns this account connection. Select Codex OAuth and sign in to the same provider account.</p>
+  </div>;
+}
+
 function CodexCard({ result, now, tz, onAuthorized }: CardProps) {
   const data = result.data as CodexUsagePayload | undefined;
   const availability = deriveCodexAvailability(data, result.status);
@@ -464,8 +477,6 @@ function CodexCard({ result, now, tz, onAuthorized }: CardProps) {
   const windowLabel = codexWindowDurationLabel(primary);
   const cardState = result.ok ? severityClass(pct) : 'danger';
   const additionalLimits = data?.additional_rate_limits ?? [];
-  const identity = result.account.key;
-  const { state: authState, start, starting } = useCodexAuth(identity, onAuthorized);
 
   return (
     <article className={cardClass(result, cardState)}>
@@ -477,14 +488,11 @@ function CodexCard({ result, now, tz, onAuthorized }: CardProps) {
         actions={
           <div className="card-actions">
             <LiveBadge ok={result.ok} />
-            <button type="button" className="small-button" onClick={start} disabled={starting}>
-              {result.ok ? 'Reconnect' : 'Connect'}
-            </button>
+            <CodexConnect result={result} now={now} tz={tz} onAuthorized={onAuthorized} />
           </div>
         }
       />
       <ErrorLine result={result} fallback="WHAM request failed" />
-      <CodexAuthBox state={authState} now={now} tz={tz} />
       <CodexUsageBlock label={windowLabel} pct={pct} resetIso={resetIso} rl={data?.rate_limit} now={now} tz={tz} />
       {additionalLimits.map((limit, i) => (
         <CodexAdditionalLimit key={i} limit={limit} now={now} tz={tz} />

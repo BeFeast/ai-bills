@@ -151,6 +151,11 @@ export type CursorPlanTier = 'free' | 'pro' | 'pro_plus' | 'ultra' | 'team' | 'u
 
 export type ProviderConfig = AccountConfig;
 
+export type PublicUsageAccount = Pick<AccountConfig, 'key' | 'provider' | 'label' | 'email'> & {
+  authOwner?: 'local' | 'cliproxy';
+  authManagementUrl?: string;
+};
+
 export type CodexRateWindow = {
   used_percent: number;
   limit_window_seconds: number;
@@ -204,7 +209,7 @@ export type CodexUsagePayload = {
 };
 
 export type ProviderUsage = {
-  account: ProviderConfig;
+  account: PublicUsageAccount;
   ok: boolean;
   status?: number;
   statusText?: string;

@@ -25,6 +25,7 @@ export type AppConfig = {
     usage_refresh_seconds: number;
     billing_fetch_timeout_ms: number;
     idle_timeout_seconds: number;
+    codex_proxy_management_url?: string;
   };
   infisical: {
     api_url: string;

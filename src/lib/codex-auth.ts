@@ -100,6 +100,7 @@ export class CodexAuthManager {
 
   start(identity: string): CodexDeviceFlowPublicState {
     const account = this.codexAccount(identity);
+    if (account.quota_snapshot_key) throw new ProxyOwnedCodexAuthError();
     const existing = this.flows.get(identity);
     if (existing && existing.state === 'pending') return this.publicState(existing, 'Login already in progress for this identity.');
 
@@ -231,6 +232,12 @@ export class CodexAuthManager {
     };
     consume(state.process?.stdout ?? null);
     consume(state.process?.stderr ?? null);
+  }
+}
+
+export class ProxyOwnedCodexAuthError extends Error {
+  constructor() {
+    super('This account is managed by CLIProxyAPI. Reconnect it in the proxy management interface.');
   }
 }
 
