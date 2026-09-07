@@ -1,0 +1,32 @@
+{
+  "listen": "127.0.0.1",
+  "port": 8318,
+  "database": "/var/lib/example-routing/state.sqlite",
+  "control_token_env": "ROUTING_CONTROL_TOKEN",
+  "native": {
+    "base_url": "http://127.0.0.1:8317",
+    "api_key_env": "NATIVE_API_KEY",
+    "managed_token_env": "NATIVE_MANAGED_TOKEN"
+  },
+  "clients": {
+    "example-client": {
+      "api_key_env": "EXAMPLE_CLIENT_KEY"
+    }
+  },
+  "accounts": {
+    "subscription-a": {
+      "auth_id": "example-subscription-auth"
+    },
+    "api-a": {
+      "auth_id": "example-api-auth",
+      "quota_mode": "metered",
+      "provider": "openai-compatibility",
+      "verified_input_limits": {
+        "example-coder": {
+          "tokens": 32000,
+          "evidence": "Fictional provider-enforced maximum context; replace with verified provider documentation"
+        }
+      }
+    }
+  }
+}

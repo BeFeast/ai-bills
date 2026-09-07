@@ -10,7 +10,7 @@ The ledger stores tokens only, never money: prices change, facts don't.
 Cost is computed at read time from AI/Areas/Providers/pricing.yml.
 API keys are never written out — they are mapped to a client label via keymap.json.
 """
-import json, os, sys, time, urllib.request, urllib.error
+import json, os, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone
 
 MGMT_URL = os.environ.get("AI_USAGE_MGMT_URL", "http://127.0.0.1:23020/v0/management/usage-queue")
@@ -18,6 +18,7 @@ KEYS_FILE = os.environ.get("AI_USAGE_KEYS_FILE", "/opt/cliproxyapi/.keys")
 KEYMAP = os.path.expanduser(os.environ.get("AI_USAGE_KEYMAP", "~/.config/ai-usage/keymap.json"))
 LEDGER_DIR = os.path.expanduser(os.environ.get("AI_USAGE_LEDGER_DIR", "~/.local/state/ai-usage"))
 INTERVAL = float(os.environ.get("AI_USAGE_INTERVAL", "20"))
+BATCH_SIZE = max(1, min(10_000, int(os.environ.get("AI_USAGE_BATCH_SIZE", "1000"))))
 
 def log(msg):
     print(f"[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] {msg}", flush=True)
@@ -41,7 +42,12 @@ def load_keymap():
         return {}
 
 def drain(token):
-    req = urllib.request.Request(MGMT_URL, headers={"Authorization": f"Bearer {token}"})
+    # The native endpoint defaults to ONE record, not the whole queue.
+    parsed = urllib.parse.urlsplit(MGMT_URL)
+    query = dict(urllib.parse.parse_qsl(parsed.query))
+    query.setdefault("count", str(BATCH_SIZE))
+    url = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.load(resp)
 
@@ -56,7 +62,9 @@ def project(rec, keymap):
     # (Claude Code writes the same value as its requestId field), so a proxied session
     # is not double-counted when the direct collector reads its JSONL.
     hdrs = rec.get("response_headers") or {}
-    upstream = (hdrs.get("Request-Id") or hdrs.get("request-id") or [None])[0]
+    upstream = hdrs.get("Request-Id") or hdrs.get("request-id")
+    if isinstance(upstream, list):
+        upstream = upstream[0] if upstream else None
     return {
         "upstream_request_id": upstream,
         "ts": rec.get("timestamp"),
@@ -83,6 +91,15 @@ def project(rec, keymap):
         "quality": tb.get("quality"),
         "schema": tb.get("schema_version"),
         "request_id": rec.get("request_id"),
+        # Optional routing metadata; these are identifiers, never prompt content.
+        "attempt_id": rec.get("attempt_id"),
+        "managed_request_id": rec.get("managed_request_id"),
+        "policy_version": rec.get("policy_version"),
+        "role": rec.get("role"),
+        "session_id": rec.get("session_id"),
+        "reservation_id": rec.get("reservation_id"),
+        "billing_mode": rec.get("billing_mode"),
+        "fallback_reason": rec.get("fallback_reason"),
     }
 
 def ledger_path(ts):
@@ -114,6 +131,8 @@ def main():
                 total += len(records)
                 log(f"+{len(records)} records (session total {total})")
             backoff = INTERVAL
+            if len(records) >= BATCH_SIZE:
+                continue  # Catch up a backlog before retention expires.
         except Exception as exc:
             # Never die: a dead tap loses every request until it is noticed.
             log(f"drain failed: {exc}")

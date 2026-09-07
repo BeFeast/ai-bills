@@ -3,16 +3,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BillingSnapshot } from '@/lib/billing';
 import type { UsageResponseBody } from '@/lib/usage-service';
-import { DEFAULT_TZ, fmtDate, fmtMoney, fmtPct, fmtTokens } from './format';
-import { Metric } from './ui';
+import { DEFAULT_TZ, fmtDate } from './format';
+import { ProductOverviewPanel } from './ProductOverviewPanel';
+import type { ProductOverview } from '@/lib/overview';
 import { UsageCard } from './UsageCard';
 import { BillingSection } from './BillingSection';
+import { AccountOverview } from './AccountOverview';
+import { RoutingSection } from './RoutingSection';
 
 const AUTO_REFRESH_MS = 60_000;
 
 type StatusTone = '' | 'ok' | 'warn' | 'danger';
 
 export function Dashboard() {
+  const [view, setView] = useState<'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details'>('overview');
+  const [overview, setOverview] = useState<ProductOverview | null>(null);
+  const [overviewError, setOverviewError] = useState('');
   const [usage, setUsage] = useState<UsageResponseBody | null>(null);
   const [billing, setBilling] = useState<BillingSnapshot | null>(null);
   const [status, setStatus] = useState<{ text: string; tone: StatusTone }>({ text: 'Loading live usage…', tone: '' });
@@ -24,22 +30,22 @@ export function Dashboard() {
 
   const tz = usage?.timezone || DEFAULT_TZ;
 
+  const refreshOverview = useCallback(async () => {
+    try {
+      const res = await fetch('/api/overview', { cache: 'no-store' });
+      if (!res.ok) throw new Error('Subscription overview could not be loaded');
+      setOverview(await res.json()); setOverviewError('');
+    } catch (error) { setOverviewError(msg(error)); }
+  }, []);
+
   const refresh = useCallback(async (force: boolean) => {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     setRefreshing(true);
-    setStatus({ text: 'Loading live usage from CDP-backed providers…', tone: '' });
-    try {
-      const res = await fetch(`/api/usage${force ? '?refresh=1' : ''}`, { cache: 'no-store' });
-      const data = (await res.json()) as UsageResponseBody;
-      setUsage(data);
-      const ok = data.accounts.filter((a) => a.ok).length;
-      const total = data.accounts.length;
-      setStatus({
-        text: `${ok}/${total} provider cards loaded · generated ${fmtDate(data.generatedAt, data.timezone)}`,
-        tone: ok === total ? 'ok' : ok ? 'warn' : 'danger',
-      });
-      // Billing loads independently so a slow/failed billing source never blocks usage.
+    setStatus({ text: 'Refreshing provider quotas…', tone: '' });
+    const overviewRefresh = refreshOverview();
+    const billingRefresh = (async () => {
+      // Start billing immediately, independently of provider quota latency.
       try {
         const bres = await fetch('/api/billing', { cache: 'no-store' });
         setBilling((await bres.json()) as BillingSnapshot);
@@ -59,15 +65,27 @@ export function Dashboard() {
           diagnostics: [{ level: 'danger', message: `Billing API error: ${msg(error)}`, source: 'billing-fetch' }],
         });
       }
+    })();
+    try {
+      const res = await fetch(`/api/usage${force ? '?refresh=1' : ''}`, { cache: 'no-store' });
+      const data = (await res.json()) as UsageResponseBody;
+      setUsage(data);
+      const ok = data.accounts.filter((a) => a.ok).length;
+      const total = data.accounts.length;
+      setStatus({
+        text: `${ok}/${total} provider cards loaded · generated ${fmtDate(data.generatedAt, data.timezone)}`,
+        tone: ok === total ? 'ok' : ok ? 'warn' : 'danger',
+      });
       nextRefreshAt.current = Date.now() + AUTO_REFRESH_MS;
     } catch (error) {
       setStatus({ text: `Dashboard API error: ${msg(error)}`, tone: 'danger' });
       nextRefreshAt.current = Date.now() + AUTO_REFRESH_MS;
     } finally {
+      await Promise.all([billingRefresh, overviewRefresh]);
       refreshingRef.current = false;
       setRefreshing(false);
     }
-  }, []);
+  }, [refreshOverview]);
 
   useEffect(() => {
     setNow(Date.now());
@@ -86,15 +104,13 @@ export function Dashboard() {
   }, [refresh]);
 
   const secondsLeft = nextRefreshAt.current && now ? Math.max(0, Math.ceil((nextRefreshAt.current - now) / 1000)) : 60;
-  const c = usage?.combined;
-
   return (
-    <main className="shell">
+    <main className="shell product-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">Live CDP / local LAN dashboard</p>
-          <h1>AI usage + billing</h1>
-          <p className="muted">Usage cards plus sanitized ai-bill spend signals. No secrets leave this server.</p>
+          <p className="eyebrow">Your AI spending, in one place</p>
+          <h1>AI bills</h1>
+          <p className="muted">Subscriptions, renewal dates and where your usage goes.</p>
         </div>
         <div className="actions">
           <button type="button" onClick={() => refresh(true)} disabled={refreshing}>
@@ -104,48 +120,30 @@ export function Dashboard() {
         </div>
       </header>
 
-      {/* Only surfaces when something needs attention: a green "6/6 loaded" line
-          every 60s is noise, but a partial load or an API error must not be
-          silent — the provider-cards tile alone would not show a fetch failure. */}
-      {status.tone === 'warn' || status.tone === 'danger' ? (
-        <section className={`status ${status.tone}`} aria-live="polite">
-          {status.text}
+      <nav className="product-nav" aria-label="Dashboard sections">
+        {([['overview', 'Overview'], ['subscriptions', 'Subscriptions'], ['accounts', 'Accounts & sign-in'], ['usage', 'Usage'], ['routing', 'Models & routing'], ['details', 'Accounting details']] as const).map(([id, label]) => <button key={id} type="button" aria-current={view === id ? 'page' : undefined} onClick={() => setView(id)}>{label}</button>)}
+      </nav>
+
+      {overview && overviewError ? <p className="data-note" role="status">{overviewError}. Showing the last loaded overview.</p> : null}
+      <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} />
+
+      {view === 'accounts' ? <>
+        <section className="product-panel">
+          <div className="section-heading"><div><h2>Accounts & sign-in</h2><p>Connect an account, renew access or check its remaining allowance.</p></div></div>
+          <div className="provider-access">{overview?.subscriptions.filter(s => s.loginUrl).map(s => <a key={s.id} href={s.loginUrl!} target="_blank" rel="noreferrer"><strong>{s.label}</strong><span>Sign in ↗</span></a>)}</div>
         </section>
-      ) : null}
-
-      {c ? (
-        <section className="overview" aria-label="Combined overview">
-          <Metric tone="live" label="Live provider cards" value={`${c.okAccounts}/${c.totalAccounts}`} note="Successful provider refreshes" />
-          <Metric tone="live" label="Coding available" value={`${c.availableProviders}/${c.totalAccounts}`} note="Providers currently usable for coding" />
-          <Metric tone="claude" label="Avg Claude session" value={fmtPct(c.averageSessionUtilization)} note="Claude-only session utilization" />
-          <Metric tone="claude" label="Avg Claude weekly-all" value={fmtPct(c.averageWeeklyAllUtilization)} note="Claude-only weekly all-model utilization" />
-          <Metric tone="codex" label="Avg Codex usage" value={fmtPct(c.averageCodexUtilization)} note="Codex WHAM primary-window utilization" />
-          <Metric tone="cursor" label="Avg Cursor usage" value={fmtPct(c.averageCursorUtilization)} note="Cursor subscription utilization" />
-          <Metric tone="billing" label="Fixed subs" value={fmtMoney(billing?.summary.monthlyFixedUsd ?? null)} note="Monthly billing baseline" />
-          <Metric tone="billing" label="Tokens today" value={fmtTokens(billing?.ledger?.tokensTotal ?? null)} note="Every request — proxy and direct" />
-          <Metric tone="billing" label="If billed by API" value={fmtMoney(billing?.ledger?.apiEquivalentUsd ?? null)} note="List price for today's tokens" />
-          <Metric tone="billing" label="Actually charged" value={fmtMoney(billing?.ledger?.marginalUsd ?? null)} note="Pay-per-token only; subs cost $0/token" />
-        </section>
-      ) : null}
-
-      <section className="panel-section">
-        <h2>Usage accounts</h2>
-        <div className="grid" aria-label="Provider usage cards">
-          {usage?.accounts.map((result) => (
-            <UsageCard key={result.account.key} result={result} now={now} tz={tz} onAuthorized={() => refresh(true)} />
-          ))}
-        </div>
-      </section>
-
-      <BillingSection data={billing ?? undefined} tz={tz} />
-
-      <details className="diagnostics">
-        <summary>Diagnostics</summary>
-        <pre>{diagnosticsJson(usage, billing)}</pre>
-      </details>
+        {(status.tone === 'warn' || status.tone === 'danger') ? <p className="data-note" role="status">Some quota connections need attention. Use the controls below to reconnect.</p> : null}
+        <div className="grid" aria-label="Provider usage cards">{usage?.accounts.map(result => <UsageCard key={result.account.key} result={result} now={now} tz={tz} onAuthorized={() => refresh(true)} />)}</div>
+      </> : null}
+      {view === 'routing' ? <RoutingSection tz={tz} /> : null}
+      {view === 'details' ? <>
+        <AccountOverview tz={tz} />
+        <BillingSection data={billing ?? undefined} tz={tz} />
+        <details className="diagnostics"><summary>Diagnostics</summary><pre>{diagnosticsJson(usage, billing)}</pre></details>
+      </> : null}
 
       <footer>
-        <span>Provider health is counted directly; Claude percentages stay Claude-only.</span>
+        <span>Plan prices are separate from payments. API equivalent estimates the value of measured usage.</span>
         <span>{usage ? `Last refresh: ${fmtDate(usage.generatedAt, tz)}` : 'Never updated'}</span>
       </footer>
     </main>

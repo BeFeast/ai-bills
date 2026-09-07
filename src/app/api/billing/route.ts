@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { emptySnapshot, fetchBillingSnapshot, type BillingBalance, type BillingSnapshot } from '@/lib/billing';
 import { fetchLiveBalances } from '@/lib/balances';
 import { readSeries, recordHistory } from '@/lib/history';
+import { loadConfig } from '@/lib/config';
+import { accountingOverview, currentMonth, freshness } from '@/lib/accounting';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,6 +13,12 @@ const NO_STORE = { 'cache-control': 'no-store' };
 export async function GET() {
   try {
     const snapshot = await fetchBillingSnapshot();
+    const config = loadConfig();
+    snapshot.accounting = await accountingOverview(config.accounting, currentMonth(config.server.timezone));
+    snapshot.freshness = [freshness('billing-snapshot', snapshot.generatedAt, 300), ...snapshot.accounting.coverage];
+    for (const source of snapshot.freshness.filter(row => row.status !== 'fresh')) {
+      snapshot.diagnostics.push({ level: 'warn', source: source.id, message: source.message });
+    }
 
     // Live provider balances override the (possibly stale) snapshot balances.
     const live = await fetchLiveBalances();

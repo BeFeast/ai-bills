@@ -8,3 +8,7 @@ coverage
 .env
 .env.*
 config/local*.toml
+
+**/.venv
+**/__pycache__
+**/.pytest_cache

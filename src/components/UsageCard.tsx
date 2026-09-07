@@ -45,7 +45,37 @@ function cardClass(result: ProviderUsage, state: string): string {
   return `card ${state} provider-${result.account.provider}`;
 }
 
+export type UsageEvidence = { state: 'fresh' | 'stale' | 'error' | 'unknown'; message: string };
+
+export function usageEvidence(result: ProviderUsage, now: number, maxAgeSeconds = 600): UsageEvidence {
+  if (!result.ok || (result.status !== undefined && result.status >= 400)) return { state: 'error', message: result.error || `Provider request failed (HTTP ${result.status ?? 'unknown'}). Quota and availability are unknown.` };
+  const observed = Date.parse(result.fetchedAt);
+  if (!now || !Number.isFinite(observed) || observed > now + 60_000) return { state: 'unknown', message: 'No valid provider observation time. Current quota and availability are unknown.' };
+  if (now - observed > maxAgeSeconds * 1000) return { state: 'stale', message: 'The last provider observation is stale. Current quota and availability are unknown.' };
+  if (!result.data || !Object.keys(result.data).length) return { state: 'unknown', message: 'The provider returned no quota data. Availability is unknown.' };
+  if (result.account.provider === 'claude') {
+    const data = result.data as ClaudeUsagePayload;
+    if (!data.five_hour && !data.seven_day && !data.limits?.length) return { state: 'unknown', message: 'Claude returned no quota windows. Model availability is unknown.' };
+  }
+  if (result.account.provider === 'codex' && !codexPrimaryWindow(result.data as CodexUsagePayload)) return { state: 'unknown', message: 'Codex returned no primary quota window. Availability is unknown.' };
+  if (result.account.provider === 'kimi' && kimiCodingUsage(result.data as KimiUsagePayload)?.detail.remaining == null) return { state: 'unknown', message: 'Kimi did not report remaining coding quota. Availability is unknown.' };
+  if (result.account.provider === 'cursor' && cursorUsagePercent(result.data as CursorUsagePayload) === null) return { state: 'unknown', message: 'Cursor did not report current usage. Availability is unknown.' };
+  return { state: 'fresh', message: 'Recent provider observation' };
+}
+
+function UnknownUsageCard({ result, now, tz, onAuthorized, evidence }: CardProps & { evidence: UsageEvidence }) {
+  const { state, start, starting } = useCodexAuth(result.account.key, onAuthorized);
+  return <article className={cardClass(result, evidence.state === 'error' ? 'danger' : 'warn')}>
+    <div className="card-head"><div className="card-title"><p className="eyebrow">{result.account.provider} · {result.account.label}</p><h2>{result.account.email}</h2><AvailabilityPill tone="warn" label="Availability unknown" detail={evidence.message} /></div><span className={`pill ${evidence.state === 'error' ? 'danger' : 'warn'}`}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</span></div>
+    <p className="status warn">{evidence.message}</p>
+    <div className="kv"><span>Quota remaining</span><strong>Unknown</strong><span>Last observation</span><strong>{fmtDate(result.fetchedAt, tz)}</strong><span>HTTP status</span><strong>{result.status ?? 'Unknown'}</strong></div>
+    {result.account.provider === 'codex' ? <><button className="small-button" type="button" disabled={starting} onClick={start}>Connect account</button><CodexAuthBox state={state} now={now} tz={tz} /></> : null}
+  </article>;
+}
+
 export function UsageCard(props: CardProps) {
+  const evidence = usageEvidence(props.result, props.now);
+  if (evidence.state !== 'fresh') return <UnknownUsageCard {...props} evidence={evidence} />;
   switch (props.result.account.provider) {
     case 'kimi':
       return <KimiCard {...props} />;
@@ -353,14 +383,14 @@ function CodexUsageBlock({ label, pct, resetIso, rl, now, tz }: {
         blocked ? (
           <Tip cls="danger" label="Limit reached" note="Rate limit has been reached for this window." />
         ) : (
-          <Tip cls={state} label={`${pct ?? 0}% used`} note="Current utilization of the primary rate-limit window." />
+          <Tip cls={state} label={pct === null ? 'Usage unknown' : `${pct}% used`} note="Current utilization of the primary rate-limit window." />
         )
       }
     >
       <span>Reset</span>
       <strong>{resetLabel(resetIso, now, tz)}</strong>
       <span>Status</span>
-      <strong>{blocked ? 'Blocked' : 'Allowed'}</strong>
+      <strong>{blocked ? 'Blocked' : rl?.allowed === true ? 'Allowed' : 'Unknown'}</strong>
     </UsageBlock>
   );
 }
@@ -380,7 +410,7 @@ function CodexAdditionalLimit({ limit, now, tz }: { limit: CodexAdditionalRateLi
         blocked ? (
           <Tip cls="danger" label="Limit reached" note={`${limit.metered_feature} rate limit reached.`} />
         ) : (
-          <Tip cls={state} label={`${pct ?? 0}% used`} note={`Metered feature: ${limit.metered_feature}`} />
+          <Tip cls={state} label={pct === null ? 'Usage unknown' : `${pct}% used`} note={`Metered feature: ${limit.metered_feature}`} />
         )
       }
     >
@@ -405,20 +435,20 @@ function CodexCreditsAccordion({ data }: { data?: CodexUsagePayload }) {
       </summary>
       <div className="kv">
         <span>Credits balance</span>
-        <strong>{credits?.balance ?? '0'}</strong>
+        <strong>{credits?.balance ?? 'Unknown'}</strong>
         <span>Has credits</span>
-        <strong>{credits?.has_credits ? 'Yes' : 'No'}</strong>
+        <strong>{credits?.has_credits === true ? 'Yes' : credits?.has_credits === false ? 'No' : 'Unknown'}</strong>
         <span>Unlimited</span>
-        <strong>{credits?.unlimited ? 'Yes' : 'No'}</strong>
+        <strong>{credits?.unlimited === true ? 'Yes' : credits?.unlimited === false ? 'No' : 'Unknown'}</strong>
         <span>Overage limit reached</span>
-        <strong>{credits?.overage_limit_reached ? 'Yes' : 'No'}</strong>
+        <strong>{credits?.overage_limit_reached === true ? 'Yes' : credits?.overage_limit_reached === false ? 'No' : 'Unknown'}</strong>
         <span>Spend control reached</span>
-        <strong>{spend?.reached ? 'Yes' : 'No'}</strong>
+        <strong>{spend?.reached === true ? 'Yes' : spend?.reached === false ? 'No' : 'Unknown'}</strong>
         <span>Individual limit</span>
-        <strong>{spend?.individual_limit ?? 'None'}</strong>
+        <strong>{spend?.individual_limit ?? 'Unknown'}</strong>
         <span>Reset credits available</span>
         <strong>
-          {resetCredits?.available_count ?? 0} (applicable: {resetCredits?.applicable_available_count ?? 0})
+          {resetCredits?.available_count ?? 'Unknown'} (applicable: {resetCredits?.applicable_available_count ?? 'Unknown'})
         </strong>
       </div>
     </details>

@@ -1,0 +1,11 @@
+{
+  "version": 0,
+  "timezone": "Asia/Jerusalem",
+  "day_limit_microusd": 2000000,
+  "accounts": [{"id": "subscription-a", "label": "Example subscription", "enabled": true}, {"id": "api-a", "label": "Example API", "enabled": true}],
+  "models": [{"id": "example-coder", "label": "Example Coder", "status": "approved", "capabilities": ["chat", "responses", "messages"], "input_limit_tokens": 32000, "output_limit_tokens": 4096,
+    "prices": {"input": 1000000, "output": 3000000, "cache_read": 100000, "cache_write": 1250000},
+    "routes": [{"account_id": "subscription-a", "billing": "included", "upstream_model": "example-coder"}, {"account_id": "api-a", "billing": "paid", "upstream_model": "example-coder", "price_version": "example-v1", "price_evidence": "Fictional test tariff", "prices": {"input": 1000000, "output": 3000000, "cache_read": 100000, "cache_write": 1250000}}]}],
+  "roles": [{"id": "coding-quality", "candidates": ["example-coder"]}, {"id": "coding-fast", "candidates": ["example-coder"]}, {"id": "deep-reasoning", "candidates": ["example-coder"]}, {"id": "general-cheap", "candidates": ["example-coder"]}],
+  "clients": [{"id": "example-client", "models": ["example-coder"], "roles": ["coding-quality", "coding-fast", "deep-reasoning", "general-cheap"]}]
+}

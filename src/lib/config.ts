@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { parse } from 'smol-toml';
+import type { AccountingConfig } from './accounting';
+import type { SubscriptionConfig } from './overview';
 
 /** A secret value: inline literal, env var reference, or Infisical reference ("path:KEY"). */
 export type SecretRef = string | { env: string } | { infisical: string };
@@ -12,6 +14,7 @@ export type AccountConfig = {
   claude_org_id?: string;
   cdp_http?: string;
   codex_home?: string;
+  quota_snapshot_key?: string;
 };
 
 export type AppConfig = {
@@ -34,6 +37,8 @@ export type AppConfig = {
     history_path: string;
   };
   accounts: AccountConfig[];
+  accounting?: AccountingConfig;
+  subscriptions?: SubscriptionConfig[];
 };
 
 const DEFAULTS: AppConfig = {
@@ -78,7 +83,9 @@ export function loadConfig(path = configPath()): AppConfig {
   const billing = { ...DEFAULTS.billing, ...(raw.billing as object | undefined) };
   const secrets = (raw.secrets ?? {}) as Record<string, SecretRef>;
   const accounts = Array.isArray(raw.accounts) ? (raw.accounts as AccountConfig[]) : [];
-  cached = { server, infisical, billing, secrets, accounts };
+  const accounting = raw.accounting as AccountingConfig | undefined;
+  const subscriptions = Array.isArray(raw.subscriptions) ? raw.subscriptions as SubscriptionConfig[] : [];
+  cached = { server, infisical, billing, secrets, accounts, accounting, subscriptions };
   return cached;
 }
 

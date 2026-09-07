@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Set this binary path only on the new T3 provider instance.
+set -euo pipefail
+: "${AI_BILLS_OPENCODE_CONFIG:?Set the isolated managed OpenCode config path}"
+: "${AI_BILLS_CLIENT_KEY:?Set the existing managed client credential}"
+: "${AI_BILLS_OPENCODE_BIN:?Set the real OpenCode binary path}"
+export OPENCODE_CONFIG="$AI_BILLS_OPENCODE_CONFIG"
+exec "$AI_BILLS_OPENCODE_BIN" "$@"
