@@ -704,6 +704,12 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 .account-browser-access .small-button { white-space: normal; text-align: left; }
 .account-browser-access .account-browser-status { color: var(--ink-soft); }
 .account-browser-access .account-browser-status.verified { color: var(--ok); }
-.account-browser-access .text-button { padding: 0; font-size: 11px; }
-.account-browser-proxy { font-size: 11px; color: var(--ink-soft); }
-.account-browser-proxy summary { cursor: pointer; }
+.account-browser-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; width: 100%; }
+.account-browser-meta > small { margin: 0; }
+.account-browser-refresh { border: 0; background: transparent; color: var(--muted); padding: 0 2px; font-size: 14px; line-height: 1; cursor: pointer; }
+.account-browser-refresh:hover { color: var(--accent); }
+.account-browser-details { font-size: 11px; color: var(--muted); }
+.account-browser-details summary { cursor: pointer; }
+.account-browser-details[open] { flex-basis: 100%; }
+.account-browser-details > div { padding-top: 4px; }
+.account-browser-access .account-browser-mismatch { color: var(--danger); }
