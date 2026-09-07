@@ -51,3 +51,16 @@ describe('usage ledger parsing', () => {
     expect(normalizeMaestroSnapshot({ usage_ledger: 'nope' }).ledger).toBeNull();
   });
 });
+
+
+describe('payment currency evidence', () => {
+  test('does not treat foreign-currency payments as USD without an explicit conversion', () => {
+    const snap = normalizeMaestroSnapshot({ generated: '2026-07-25T14:38:33Z', payments: [
+      { date: '2026-07-10', provider: 'Example', currency: 'EUR', amount: 9 },
+      { date: '2026-07-11', provider: 'Example', currency: 'USD', amount: 3 },
+      { date: '2026-07-12', provider: 'Example', currency: 'EUR', amount: 5, amountUsd: 6 },
+    ] });
+    expect(snap.payments.map(row => row.amountUsd)).toEqual([null, 3, 6]);
+    expect(snap.summary.paymentsThisMonthUsd).toBe(9);
+  });
+});

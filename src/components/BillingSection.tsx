@@ -12,13 +12,13 @@ function LedgerTables({ ledger }: { ledger: BillingLedger }) {
   return (
     <Fragment>
       <Table
-        title={`Token spend today — by client (${ledger.requests} requests, ${ledger.failed} failed)`}
-        heads={['Client', 'Tokens', 'Req', 'If billed by API', 'Charged']}
+        title={`Token estimates today — by client (${ledger.requests} requests, ${ledger.failed} failed)`}
+        heads={['Client', 'Tokens', 'Req', 'If billed by API', 'Marginal estimate']}
         rows={rows(ledger.byClient)}
       />
       <Table
-        title="Token spend today — by model"
-        heads={['Model', 'Tokens', 'Req', 'If billed by API', 'Charged']}
+        title="Token estimates today — by model"
+        heads={['Model', 'Tokens', 'Req', 'If billed by API', 'Marginal estimate']}
         rows={rows(ledger.byModel)}
       />
       <Table
@@ -118,7 +118,7 @@ export function BillingSection({ data, tz }: { data?: BillingSnapshot; tz: strin
       <div className="bill-head">
         <div>
           <h2>Billing month {data.month || 'n/a'}</h2>
-          <p className="muted">Sanitized live source · generated {fmtDate(data.generatedAt, tz)}</p>
+          <p className="muted">Snapshot source · generated {fmtDate(data.generatedAt, tz)}</p>
         </div>
         <div className="lights">
           {data.lights.map((l, i) => (
@@ -132,14 +132,14 @@ export function BillingSection({ data, tz }: { data?: BillingSnapshot; tz: strin
       </div>
 
       <section className="bill-grid mini">
-        <Metric label="Monthly fixed subscriptions" value={fmtMoney(data.summary.monthlyFixedUsd)} note="Provider cards / vault" />
+        <Metric label="Monthly fixed subscriptions" value={fmtMoney(data.summary.monthlyFixedUsd)} note="Scheduled cost, not proof of payment" />
         <Metric label="Payments logged this month" value={fmtMoney(data.summary.paymentsThisMonthUsd)} note="Payments log" />
         <Metric label="If billed by API today" value={fmtMoney(data.ledger?.apiEquivalentUsd ?? null)} note="List price for today's tokens" />
-        <Metric label="Actually charged today" value={fmtMoney(data.ledger?.marginalUsd ?? null)} note="Pay-per-token providers only" />
+        <Metric label="Estimated marginal cost today" value={fmtMoney(data.ledger?.marginalUsd ?? null)} note="Token-price calculation, not provider charges" />
         <div className="metric">
           <div className="label">API-equivalent, daily</div>
           <div>
-            <Sparkline values={data.ledger?.trend.map((p) => p.apiEquivalentUsd)} />
+            {data.ledger?.trend.every((point) => point.apiEquivalentUsd !== null) ? <Sparkline values={data.ledger.trend.map((point) => point.apiEquivalentUsd as number)} /> : <span className="muted">Incomplete pricing history</span>}
           </div>
           <div className="muted">
             {data.ledger ? `${data.ledger.trend.length}d of ledger history` : 'ledger unavailable'}

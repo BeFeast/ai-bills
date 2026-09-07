@@ -58,7 +58,11 @@ export async function fetchUsageThroughCdp(account: ProviderConfig, options: Cdp
   const fetchedAt = new Date().toISOString();
   const sourceUrl = usageUrl(account);
   try {
-    if (account.provider === 'codex') return await fetchCodexStatus(account, fetchedAt, sourceUrl);
+    if (account.provider === 'codex') {
+      const proxyQuota = fetchCodexFromSnapshot(account);
+      if (proxyQuota) return proxyQuota;
+      return await fetchCodexStatus(account, fetchedAt, sourceUrl);
+    }
     if (account.provider === 'claude') return fetchClaudeFromSnapshot(account);
     const session = await getSession(account, options.signal);
     throwIfCdpStartupCancelled(options.signal, cdpName(account));
@@ -552,7 +556,7 @@ const CLAUDE_SNAPSHOT_SOURCE = 'https://api.anthropic.com/api/oauth/usage (maest
  *  cliproxy-refreshed OAuth tokens. The browser/CDP transport died with the example-host
  *  workstation (2026-08-20); the endpoint returns the same shape as the old claude.ai one. */
 function fetchClaudeFromSnapshot(account: ProviderConfig): ProviderUsage {
-  const fetchedAt = new Date().toISOString();
+  const fetchedAt = ""; // Missing observation time is unknown, never a fresh fetch.
   const sourceUrl = CLAUDE_SNAPSHOT_SOURCE;
   try {
     const raw = readFileSync(loadConfig().billing.snapshot_path, 'utf8');
@@ -568,4 +572,20 @@ function fetchClaudeFromSnapshot(account: ProviderConfig): ProviderUsage {
   } catch (error) {
     return { account, ok: false, error: error instanceof Error ? error.message : String(error), fetchedAt, sourceUrl };
   }
+}
+
+/** Prefer proxy-owned quota observations when a matching or explicitly bound source exists.
+ * An error observation must not trigger a second credential refresh owner. */
+export function fetchCodexFromSnapshot(account: ProviderConfig): ProviderUsage | null {
+  const sourceUrl = 'proxy-collector:codex-quota';
+  const missing = (): ProviderUsage => ({ account, ok: false, error: 'Configured proxy quota observation is missing', fetchedAt: '', sourceUrl });
+  try {
+    const snapshot = JSON.parse(readFileSync(loadConfig().billing.snapshot_path, 'utf8')) as {
+      codex_usage?: Record<string, { ok?: boolean; status?: number; fetched_at?: string; error?: string; data?: CodexUsagePayload }>;
+    };
+    const entry = snapshot.codex_usage?.[account.quota_snapshot_key || account.email];
+    if (!entry) return account.quota_snapshot_key ? missing() : null;
+    return { account, ok: entry.ok === true && !!entry.data, status: entry.status, data: entry.ok ? entry.data : undefined,
+      error: entry.ok && entry.data ? undefined : entry.error || 'Proxy quota collector failed', fetchedAt: entry.fetched_at || '', sourceUrl };
+  } catch { return account.quota_snapshot_key ? missing() : null; }
 }

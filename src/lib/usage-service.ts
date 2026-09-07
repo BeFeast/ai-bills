@@ -1,4 +1,5 @@
 import { fetchUsageThroughCdp } from './cdp';
+import { rememberUsageObservations } from './usage-observations';
 import { loadConfig } from './config';
 import { apiShapeSummary, combinedOverview, type ProviderUsage } from './usage';
 
@@ -11,6 +12,7 @@ export async function refreshUsage(): Promise<UsageCache> {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     const results = await Promise.all(loadConfig().accounts.map((account) => fetchUsageThroughCdp(account)));
+    rememberUsageObservations(results);
     cache = { results, generatedAt: new Date().toISOString() };
     refreshPromise = null;
     return cache;
@@ -54,5 +56,6 @@ export async function getUsageResponse(force = false): Promise<UsageResponseBody
 /** Test hook: drop the in-process usage cache. */
 export function resetUsageCacheForTests(): void {
   cache = null;
+  rememberUsageObservations([]);
   refreshPromise = null;
 }

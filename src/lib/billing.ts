@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { loadConfig } from './config';
+import type { AccountingOverview, Freshness } from './accounting';
 
 export type Money = number | null;
 
@@ -60,16 +61,16 @@ export type BillingDiagnostic = {
  *  client — proxied and direct — with real cache-aware token counts. */
 export type BillingLedgerGroup = {
   name: string;
-  apiEquivalentUsd: number;
-  marginalUsd: number;
+  apiEquivalentUsd: Money;
+  marginalUsd: Money;
   tokens: number;
   requests: number;
 };
 
 export type BillingLedgerPoint = {
   date: string;
-  apiEquivalentUsd: number;
-  marginalUsd: number;
+  apiEquivalentUsd: Money;
+  marginalUsd: Money;
   tokens: number;
 };
 
@@ -80,9 +81,9 @@ export type BillingLedger = {
   tokens: { inUncached: number; cacheRead: number; cacheWrite: number; outTotal: number };
   tokensTotal: number;
   /** What today's tokens would cost at provider list prices. */
-  apiEquivalentUsd: number;
-  /** What actually leaves the wallet — 0 for subscription-backed models. */
-  marginalUsd: number;
+  apiEquivalentUsd: Money;
+  /** Estimated additional usage cost, never evidence of an actual debit. */
+  marginalUsd: Money;
   byClient: BillingLedgerGroup[];
   byModel: BillingLedgerGroup[];
   byVia: BillingLedgerGroup[];
@@ -112,6 +113,8 @@ export type BillingSnapshot = {
   ledger?: BillingLedger | null;
   payments: BillingPayment[];
   diagnostics: BillingDiagnostic[];
+  accounting?: AccountingOverview;
+  freshness?: Freshness[];
 };
 
 const SECRET_KEY_RE = /(token|secret|password|cookie|authorization|apikey|api_key|access[_-]?key|refresh[_-]?token|bearer|credential)/i;
@@ -331,7 +334,7 @@ function normalizeSubscriptions(rows: unknown[]): BillingSubscription[] {
   return rows.map(asRecord).filter(Boolean).map((r) => ({ provider: text(firstValue(r!.provider, r!.name)), plan: text(firstValue(r!.plan, r!.subscription)), monthlyUsd: money(firstValue(r!.monthlyUsd, r!.monthly_usd, r!.usd, r!.amount)), verified: optionalText(firstValue(r!.verified, r!.verifiedAt, r!.verified_at)) })).filter((r) => r.provider);
 }
 function normalizePayments(rows: unknown[]): BillingPayment[] {
-  return rows.map(asRecord).filter(Boolean).map((r) => ({ date: text(firstValue(r!.date, r!.paidAt, r!.paid_at)), provider: text(firstValue(r!.provider, r!.name)), amountUsd: money(firstValue(r!.amountUsd, r!.amount_usd, r!.amount)), kind: optionalText(r!.kind), note: optionalText(firstValue(r!.note, r!.description)) })).filter((r) => r.date || r.provider);
+  return rows.map(asRecord).filter(Boolean).map((r) => ({ date: text(firstValue(r!.date, r!.paidAt, r!.paid_at)), provider: text(firstValue(r!.provider, r!.name)), amountUsd: money(firstValue(r!.amountUsd, r!.amount_usd, !r!.currency || String(r!.currency).toUpperCase() === 'USD' ? r!.amount : null)), kind: optionalText(r!.kind), note: optionalText(firstValue(r!.note, r!.description)) })).filter((r) => r.date || r.provider);
 }
 function normalizeUpstreams(rows: unknown[]): BillingUpstreamUsage[] {
   return rows.map(asRecord).filter(Boolean).map((r): BillingUpstreamUsage => ({ backend: text(firstValue(r!.backend, r!.name, r!.provider)), tokens: int(firstValue(r!.tokens, r!.token_count)), estimatedUsd: money(firstValue(r!.estimatedUsd, r!.estimated_usd, r!.estUsd, r!.costUsd, r!.cost_usd)), pricing: boolish(firstValue(r!.flat, r!.isFlat)) ? 'flat' : money(firstValue(r!.estimatedUsd, r!.estimated_usd, r!.estUsd, r!.costUsd, r!.cost_usd)) === 0 ? 'flat' : 'metered' })).filter((r) => r.backend);
@@ -392,8 +395,8 @@ function ledgerGroups(value: unknown): BillingLedgerGroup[] {
     .filter(Boolean)
     .map((r) => ({
       name: text(r!.name),
-      apiEquivalentUsd: money(r!.api_equivalent_usd) ?? 0,
-      marginalUsd: money(r!.marginal_usd) ?? 0,
+      apiEquivalentUsd: money(r!.api_equivalent_usd),
+      marginalUsd: money(r!.marginal_usd),
       tokens: int(r!.tokens) ?? 0,
       requests: int(r!.requests) ?? 0,
     }))
@@ -428,8 +431,8 @@ function parseLedger(value: unknown): BillingLedger | null {
       outTotal: int(tk.out_total) ?? 0,
     },
     tokensTotal: int(today.tokens_total) ?? 0,
-    apiEquivalentUsd: money(today.api_equivalent_usd) ?? 0,
-    marginalUsd: money(today.marginal_usd) ?? 0,
+    apiEquivalentUsd: money(today.api_equivalent_usd),
+    marginalUsd: money(today.marginal_usd),
     byClient: ledgerGroups(today.by_client),
     byModel: ledgerGroups(today.by_model),
     byVia: ledgerGroups(today.by_via),
@@ -439,8 +442,8 @@ function parseLedger(value: unknown): BillingLedger | null {
       .filter(Boolean)
       .map((r) => ({
         date: text(r!.date),
-        apiEquivalentUsd: money(r!.api_equivalent_usd) ?? 0,
-        marginalUsd: money(r!.marginal_usd) ?? 0,
+        apiEquivalentUsd: money(r!.api_equivalent_usd),
+        marginalUsd: money(r!.marginal_usd),
         tokens: int(r!.tokens) ?? 0,
       })),
   };
