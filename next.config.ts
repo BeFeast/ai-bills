@@ -2,7 +2,7 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   output: 'standalone',
-  serverExternalPackages: ['@openai/codex'],
+  serverExternalPackages: ['@openai/codex', 'ws'],
 };
 
 export default nextConfig;

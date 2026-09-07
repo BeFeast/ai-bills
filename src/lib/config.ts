@@ -3,6 +3,17 @@ import { parse } from 'smol-toml';
 import type { AccountingConfig } from './accounting';
 import type { SubscriptionConfig } from './overview';
 
+export type AccountBrowserConfig = {
+  subscription_id?: string;
+  account_key: string;
+  profile_id: string;
+  cdp_http: string;
+  remote_url: string;
+  login_url: string;
+  manage_url: string;
+  proxy_account_id?: string;
+};
+
 /** A secret value: inline literal, env var reference, or Infisical reference ("path:KEY"). */
 export type SecretRef = string | { env: string } | { infisical: string };
 
@@ -40,6 +51,7 @@ export type AppConfig = {
   accounts: AccountConfig[];
   accounting?: AccountingConfig;
   subscriptions?: SubscriptionConfig[];
+  account_browsers?: AccountBrowserConfig[];
 };
 
 const DEFAULTS: AppConfig = {
@@ -86,7 +98,8 @@ export function loadConfig(path = configPath()): AppConfig {
   const accounts = Array.isArray(raw.accounts) ? (raw.accounts as AccountConfig[]) : [];
   const accounting = raw.accounting as AccountingConfig | undefined;
   const subscriptions = Array.isArray(raw.subscriptions) ? raw.subscriptions as SubscriptionConfig[] : [];
-  cached = { server, infisical, billing, secrets, accounts, accounting, subscriptions };
+  const account_browsers = Array.isArray(raw.account_browsers) ? raw.account_browsers as AccountBrowserConfig[] : [];
+  cached = { server, infisical, billing, secrets, accounts, accounting, subscriptions, account_browsers };
   return cached;
 }
 

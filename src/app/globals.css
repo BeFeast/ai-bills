@@ -661,9 +661,9 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 .pricing-note summary { cursor: pointer; }
 .data-note { font-size: 12px; color: var(--ink-soft); margin: 12px 0 0; }
 .provider-access { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
-.provider-access a { display: flex; gap: 12px; justify-content: space-between; align-items: center; border: 1px solid var(--hairline); padding: 16px; border-radius: var(--radius-sm); font-size: 13px; }
-.provider-access a strong { color: var(--ink); font-weight: 500; }
-.provider-access a span { white-space: nowrap; }
+.provider-access-card { display: flex; flex-direction: column; gap: 16px; border: 1px solid var(--hairline); padding: 16px; border-radius: var(--radius-sm); font-size: 13px; min-width: 0; }
+.provider-access-card strong { color: var(--ink); font-weight: 500; }
+
 @media (max-width: 1000px) { .product-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } .quota-strip,.provider-access { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 640px) { .product-shell { gap: 16px; } .product-panel { padding: 16px; } .summary-answer { padding: 16px; min-height: 144px; gap: 10px; } .summary-answer > strong { font-size: 23px; } .section-heading { align-items: flex-start; } .section-heading h2 { font-size: 18px; } .section-heading > button { flex-shrink: 0; } .rank-columns { grid-template-columns: 1fr; gap: 20px; } .quota-strip,.provider-access { grid-template-columns: 1fr; } .product-nav { gap: 2px; } .product-nav button { font-size: 12px; padding: 8px 10px; } .subscription-table { min-width: 700px; } .product-shell .actions { flex-wrap: wrap; } }
 @media (max-width: 640px) {
@@ -697,3 +697,13 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 .account-connection .codex-auth p { margin: 8px 0 0; overflow-wrap: anywhere; }
 .provider-access .provider-identity { flex: 1; }
 .provider-access > a > span { flex-shrink: 0; }
+
+.account-browser-access { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.account-browser-access small, .provider-access-card small { display: block; color: var(--muted); font-size: 11px; }
+.account-browser-access .row-actions { flex-wrap: wrap; }
+.account-browser-access .small-button { white-space: normal; text-align: left; }
+.account-browser-access .account-browser-status { color: var(--ink-soft); }
+.account-browser-access .account-browser-status.verified { color: var(--ok); }
+.account-browser-access .text-button { padding: 0; font-size: 11px; }
+.account-browser-proxy { font-size: 11px; color: var(--ink-soft); }
+.account-browser-proxy summary { cursor: pointer; }
