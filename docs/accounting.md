@@ -81,6 +81,18 @@ account's marginal cost; missing per-account billing evidence leaves marginal co
 unknown. API-equivalent totals with unpriced observations are likewise unknown.
 Reports group days in `Asia/Jerusalem` (`AI_USAGE_TIMEZONE` can override).
 
+Price entries may include `long_context: {input_tokens_above: 272000, in: 8,
+out: 30}` beside the short-context `in`/`out` rates. The reporter sums exact
+uncached, cache-read and cache-write input buckets. Above the configured boundary,
+the selected rates apply to the entire request, including output. Output tokens
+do not select the tier. Missing input evidence stays unpriced. Cache multipliers
+inherit from the short-context entry unless the long-context entry overrides them.
+Keep provider source URLs and observation dates in private price metadata; context
+thresholds must be verified per model. Unsupported modality/context pricing stays
+unknown. API-equivalent means the configured public list-price comparison, not an
+invoice or proof of actual service-tier charges. This projection does not modify
+the gateway's separate admission prices or budget policy.
+
 Atomic snapshot delivery is optional. Set `AI_BILLS_SNAPSHOT_SSH_HOST`,
 `AI_BILLS_SNAPSHOT_RECEIVER` (fixed installed executable), and
 `AI_BILLS_SNAPSHOT_DESTINATION`. The collector sends stdin through SSH to the
