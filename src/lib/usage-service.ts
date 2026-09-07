@@ -1,6 +1,7 @@
 import { fetchUsageThroughCdp } from './cdp';
 import { rememberUsageObservations } from './usage-observations';
 import { loadConfig } from './config';
+import { publicUsageAccount } from './account-auth';
 import { apiShapeSummary, combinedOverview, type ProviderUsage } from './usage';
 
 type UsageCache = { results: ProviderUsage[]; generatedAt: string };
@@ -11,7 +12,11 @@ let refreshPromise: Promise<UsageCache> | null = null;
 export async function refreshUsage(): Promise<UsageCache> {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
-    const results = await Promise.all(loadConfig().accounts.map((account) => fetchUsageThroughCdp(account)));
+    const config = loadConfig();
+    const results = await Promise.all(config.accounts.map(async (account) => ({
+      ...await fetchUsageThroughCdp(account),
+      account: publicUsageAccount(account, config.server.codex_proxy_management_url),
+    })));
     rememberUsageObservations(results);
     cache = { results, generatedAt: new Date().toISOString() };
     refreshPromise = null;
