@@ -93,6 +93,15 @@ unknown. API-equivalent means the configured public list-price comparison, not a
 invoice or proof of actual service-tier charges. This projection does not modify
 the gateway's separate admission prices or budget policy.
 
+Set optional `AI_USAGE_ROUTING_DB` to the local gateway SQLite database to attribute
+managed usage to the actual client, role, selected account and billing mode. The
+report opens it read-only and joins by exact `attempt_id`, checking the managed
+request ID when both exist. A managed request ID alone is usable only when it has
+exactly one attempt; retries are never guessed. Provider model IDs and token facts
+remain unchanged. Missing/unavailable routing data preserves original metadata and
+marks `routing_attribution` in the projection. Raw JSONL files are never rewritten,
+and this reader never drains the native usage queue.
+
 Atomic snapshot delivery is optional. Set `AI_BILLS_SNAPSHOT_SSH_HOST`,
 `AI_BILLS_SNAPSHOT_RECEIVER` (fixed installed executable), and
 `AI_BILLS_SNAPSHOT_DESTINATION`. The collector sends stdin through SSH to the
