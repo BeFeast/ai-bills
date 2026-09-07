@@ -104,4 +104,25 @@ subscriptions:
             self.assertEqual(result[0]['subscriptions'][0]['account_keys'], ['work'])
             self.assertNotIn('do-not-publish', json.dumps(result, default=str))
 
+class TapBatchTests(unittest.TestCase):
+    def test_native_queue_batch_count_and_all_records_are_persisted(self):
+        from unittest.mock import patch
+        from urllib.parse import parse_qs, urlsplit
+        tap = module('ai-usage-tap')
+        records = [dict(timestamp='2026-09-07T10:00:00Z', attempt_id=f'attempt-{i}', managed_request_id=f'request-{i}') for i in range(3)]
+        observed = []
+        def response(request, **kwargs):
+            observed.append(parse_qs(urlsplit(request.full_url).query))
+            return io.StringIO(json.dumps(records))
+        tap.MGMT_URL = 'http://fixture.invalid/usage-queue?source=test'
+        with patch.object(tap.urllib.request, 'urlopen', side_effect=response):
+            result = tap.drain('fixture-token')
+        self.assertEqual(observed, [{'source': ['test'], 'count': ['1000']}])
+        with tempfile.TemporaryDirectory() as directory:
+            tap.LEDGER_DIR = directory
+            tap.write(result, {})
+            stored = [json.loads(line) for line in (Path(directory) / 'ledger-2026-09.jsonl').read_text().splitlines()]
+            self.assertEqual([row['attempt_id'] for row in stored], ['attempt-0', 'attempt-1', 'attempt-2'])
+            self.assertEqual([row['managed_request_id'] for row in stored], ['request-0', 'request-1', 'request-2'])
+
 if __name__ == '__main__': unittest.main()
