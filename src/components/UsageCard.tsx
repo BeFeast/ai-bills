@@ -39,6 +39,7 @@ import { fmtDate, fmtNumber, normalizePct, pickPct, resetLabel } from './format'
 import { AvailabilityPill, LiveBadge, Tip, UsageBlock, type Severity } from './ui';
 import { CodexAuthBox, useCodexAuth } from './CodexAuth';
 import { ProviderIcon } from './ProviderIcon';
+import { AccountBrowserAccess } from './AccountBrowserAccess';
 
 type CardProps = { result: ProviderUsage; now: number; tz: string; onAuthorized: () => void };
 
@@ -69,6 +70,7 @@ function UnknownUsageCard({ result, now, tz, onAuthorized, evidence }: CardProps
     <div className="card-head"><ProviderIcon provider={result.account.provider} /><div className="card-title"><p className="eyebrow">{result.account.provider}</p><h2>{result.account.email || 'Email not recorded'}</h2><AvailabilityPill tone="warn" label="Availability unknown" detail={evidence.message} /></div><span className={`pill ${evidence.state === 'error' ? 'danger' : 'warn'}`}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</span></div>
     <p className="status warn">{evidence.message}</p>
     <div className="kv"><span>Quota remaining</span><strong>Unknown</strong><span>Last observation</span><strong>{fmtDate(result.fetchedAt, tz)}</strong><span>HTTP status</span><strong>{result.status ?? 'Unknown'}</strong></div>
+    <div className="account-connection"><AccountBrowserAccess account={result.account} /></div>
     {result.account.provider === 'codex' ? <CodexConnect result={result} now={now} tz={tz} onAuthorized={onAuthorized} /> : null}
   </article>;
 }
@@ -96,7 +98,7 @@ function CardHead({ result, eyebrow, title, availability, actions }: {
   availability: { tone: string; label: string; detail: string };
   actions?: ReactNode;
 }) {
-  return (
+  return <>
     <div className="card-head">
       <ProviderIcon provider={result.account.provider} />
       <div className="card-title">
@@ -108,7 +110,8 @@ function CardHead({ result, eyebrow, title, availability, actions }: {
       </div>
       {actions ?? <LiveBadge ok={result.ok} />}
     </div>
-  );
+    <div className="account-connection"><AccountBrowserAccess account={result.account} /></div>
+  </>;
 }
 
 function Meta({ children }: { children: ReactNode }) {

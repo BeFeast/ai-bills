@@ -8,6 +8,7 @@ import { ProductOverviewPanel } from './ProductOverviewPanel';
 import type { ProductOverview } from '@/lib/overview';
 import { UsageCard } from './UsageCard';
 import { ProviderIcon } from './ProviderIcon';
+import { AccountBrowserAccess } from './AccountBrowserAccess';
 import { BillingSection } from './BillingSection';
 import { AccountOverview } from './AccountOverview';
 import { RoutingSection } from './RoutingSection';
@@ -131,7 +132,7 @@ export function Dashboard() {
       {view === 'accounts' ? <>
         <section className="product-panel">
           <div className="section-heading"><div><h2>Accounts & sign-in</h2><p>Connect an account, renew access or check its remaining allowance.</p></div></div>
-          <div className="provider-access">{overview?.subscriptions.filter(s => s.loginUrl).map(s => <a key={s.id} href={s.loginUrl!} target="_blank" rel="noreferrer"><div className="provider-identity"><ProviderIcon provider={s.provider} /><strong>{s.label}</strong></div><span>Sign in ↗</span></a>)}</div>
+          <div className="provider-access">{overview?.subscriptions.filter(s => s.loginUrl || s.accountKeys.length).map(s => <article className="provider-access-card" key={s.id}><div className="provider-identity"><ProviderIcon provider={s.provider} /><div><strong>{s.label}</strong><small>{s.provider}</small></div></div><AccountBrowserAccess subscription={s} /></article>)}</div>
         </section>
         {(status.tone === 'warn' || status.tone === 'danger') ? <p className="data-note" role="status">Some quota connections need attention. Use the controls below to reconnect.</p> : null}
         <div className="grid" aria-label="Provider usage cards">{usage?.accounts.map(result => <UsageCard key={result.account.key} result={result} now={now} tz={tz} onAuthorized={() => refresh(true)} />)}</div>
