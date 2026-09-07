@@ -99,63 +99,64 @@ def rows_for(day):
         yield row
 
 def rollup(defaults, models, days=30):
-    """One object with everything the ai-bills dashboard needs."""
+    """Day and full current-calendar-month projections over the preserved ledger."""
     from datetime import timedelta
     today = local_day()
-    per_day = collections.defaultdict(lambda: collections.Counter())
-    dims = {d: collections.defaultdict(lambda: collections.Counter()) for d in ("client", "model", "via")}
-    unpriced = collections.Counter()
+    month = today[:7]
+    per_day = collections.defaultdict(collections.Counter)
+    periods = {key: {"total": collections.Counter(), "dims": {dim: collections.defaultdict(collections.Counter) for dim in ("client", "model", "via")}, "unpriced": collections.Counter()} for key in ("today", "month")}
 
-    for r in rows_for(None):
-        day = local_day(r.get("ts"))
-        if not day:
+    def add(counter, row, api, marginal, priced, tokens):
+        counter["api_micro"] += round(api * 1e6)
+        counter["marg_micro"] += round((marginal or 0) * 1e6)
+        counter["marg_unknown"] += marginal is None
+        counter["api_unknown"] += not priced
+        counter["tokens"] += tokens
+        counter["requests"] += 1
+        counter["failed"] += bool(row.get("failed"))
+        for field in ("in_uncached", "cache_read", "cache_write", "out_total"):
+            counter[field] += row.get(field) or 0
+
+    for row in rows_for(None):
+        day = local_day(row.get("ts"))
+        if not day or day > today:
             continue
-        api, marg, priced = cost(r, defaults, models)
-        toks = sum((r.get(f) or 0) for f in ("in_uncached", "cache_read", "cache_write", "out_total"))
-        d = per_day[day]
-        d["api_micro"] += round(api * 1e6); d["marg_micro"] += round((marg or 0) * 1e6)
-        d["marg_unknown"] += 1 if marg is None else 0
-        d["api_unknown"] += 1 if not priced else 0
-        d["tokens"] += toks; d["requests"] += 1; d["failed"] += 1 if r.get("failed") else 0
-        for f in ("in_uncached", "cache_read", "cache_write", "out_total"):
-            d[f] += r.get(f) or 0
-        if day != today:
-            continue
-        if not priced and toks:
-            unpriced[r.get("model") or "?"] += toks
-        for dim in dims:
-            g = dims[dim][r.get(dim) or "?"]
-            g["api_micro"] += round(api * 1e6); g["marg_micro"] += round((marg or 0) * 1e6)
-            g["marg_unknown"] += 1 if marg is None else 0
-            g["api_unknown"] += 1 if not priced else 0
-            g["tokens"] += toks; g["requests"] += 1
+        api, marginal, priced = cost(row, defaults, models)
+        tokens = sum((row.get(field) or 0) for field in ("in_uncached", "cache_read", "cache_write", "out_total"))
+        add(per_day[day], row, api, marginal, priced, tokens)
+        for name, selected in (("today", day == today), ("month", day.startswith(month + "-"))):
+            if not selected:
+                continue
+            period = periods[name]
+            add(period["total"], row, api, marginal, priced, tokens)
+            if not priced and tokens:
+                period["unpriced"][row.get("model") or "?"] += tokens
+            for dim, groups in period["dims"].items():
+                add(groups[row.get(dim) or "?"], row, api, marginal, priced, tokens)
 
-    def group(dim):
-        return [{"name": k, "api_equivalent_usd": None if v["api_unknown"] else v["api_micro"] / 1e6,
-                 "marginal_usd": None if v["marg_unknown"] else v["marg_micro"] / 1e6,
-                 "tokens": v["tokens"], "requests": v["requests"]}
-                for k, v in sorted(dims[dim].items(), key=lambda x: -x[1]["api_micro"])]
+    def amounts(counter):
+        return {"api_equivalent_usd": None if counter["api_unknown"] else counter["api_micro"] / 1e6,
+                "priced_api_equivalent_usd": counter["api_micro"] / 1e6,
+                "marginal_usd": None if counter["marg_unknown"] else counter["marg_micro"] / 1e6}
 
-    t = per_day.get(today, collections.Counter())
+    def project(name, label):
+        period = periods[name]
+        total = period["total"]
+        result = {"date": label, "period": "day" if name == "today" else "month",
+                  "period_start": today if name == "today" else month + "-01", "period_end": today,
+                  "requests": total["requests"], "failed": total["failed"],
+                  "counts": {field: total[field] for field in ("in_uncached", "cache_read", "cache_write", "out_total")},
+                  "tokens_total": total["tokens"], **amounts(total), "unpriced": dict(period["unpriced"])}
+        for dim, groups in period["dims"].items():
+            result["by_" + dim] = [{"name": key, **amounts(value), "tokens": value["tokens"], "requests": value["requests"]}
+                                  for key, value in sorted(groups.items(), key=lambda item: (-item[1]["tokens"], item[0]))]
+        return result
+
     cutoff = (date.fromisoformat(today) - timedelta(days=days)).isoformat()
-    return {
-        "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "today": {
-            "date": today,
-            "requests": t["requests"], "failed": t["failed"],
-            "counts": {f: t[f] for f in ("in_uncached", "cache_read", "cache_write", "out_total")},
-            "tokens_total": t["tokens"],
-            "api_equivalent_usd": None if t["api_unknown"] else t["api_micro"] / 1e6,
-            "marginal_usd": None if t["marg_unknown"] else t["marg_micro"] / 1e6,
-            "by_client": group("client"), "by_model": group("model"), "by_via": group("via"),
-            "unpriced": dict(unpriced),
-        },
-        "trend": [{"date": d,
-                   "api_equivalent_usd": None if v["api_unknown"] else v["api_micro"] / 1e6,
-                   "marginal_usd": None if v["marg_unknown"] else v["marg_micro"] / 1e6,
-                   "tokens": v["tokens"]}
-                  for d, v in sorted(per_day.items()) if d >= cutoff],
-    }
+    return {"generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "today": project("today", today), "month": project("month", month),
+            "trend": [{"date": day, **amounts(value), "tokens": value["tokens"]}
+                      for day, value in sorted(per_day.items()) if day >= cutoff]}
 
 def main():
     ap = argparse.ArgumentParser()

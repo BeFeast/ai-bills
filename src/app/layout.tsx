@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'AI usage + billing',
-  description: 'Live LAN dashboard: AI provider usage, quotas and billing.',
+  title: 'AI bills — subscriptions & usage',
+  description: 'Your AI subscriptions, renewal dates, costs and usage in one place.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

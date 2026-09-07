@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Read declared provider/individual subscription metadata without exporting secrets."""
+import json
+from pathlib import Path
+import re
+import sys
+import yaml
+
+PROVIDER_FIELDS = ('title', 'provider', 'plan', 'billing', 'cost_usd_month', 'tier', 'status', 'risk', 'verified', 'dashboard')
+SUBSCRIPTION_FIELDS = ('id', 'provider', 'label', 'plan', 'status', 'amount', 'currency', 'period', 'quantity', 'renews_at', 'ends_at', 'manage_url', 'login_url', 'account_keys', 'source_note', 'observed_at', 'cost_evidence', 'replaces_provider')
+
+def collect(directory):
+    root = Path(directory)
+    if not root.is_dir():
+        raise FileNotFoundError('Provider subscription inventory is unavailable')
+    result = []
+    for path in sorted(root.rglob('*.md')):
+        match = re.match(r'^---\r?\n(.*?)\r?\n---', path.read_text(encoding='utf-8'), re.S)
+        if not match:
+            continue
+        metadata = yaml.safe_load(match.group(1))
+        if not isinstance(metadata, dict) or 'provider' not in metadata:
+            continue
+        projected = {field: metadata.get(field) for field in PROVIDER_FIELDS}
+        for field in SUBSCRIPTION_FIELDS:
+            if field in metadata:
+                projected[field] = metadata[field]
+        if isinstance(metadata.get('subscriptions'), list):
+            projected['subscriptions'] = [{field: value[field] for field in SUBSCRIPTION_FIELDS if field in value}
+                                          for value in metadata['subscriptions'] if isinstance(value, dict)]
+        result.append(projected)
+    return result
+
+if __name__ == '__main__':
+    print(json.dumps(collect(sys.argv[1]), default=str))

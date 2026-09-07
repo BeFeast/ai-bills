@@ -101,29 +101,11 @@ PYEOF
 
 # --- vault: provider cards frontmatter + payments ---
 PROVIDERS_STATUS=fresh
-PROVIDERS=$(uv run --project "$COLLECTOR_DIR" --frozen python - "$AI_BILLS_PROVIDERS_DIR" <<'PYEOF'
-import sys, os, json, re
-root = sys.argv[1]
-if not os.path.isdir(root):
-    raise FileNotFoundError('Provider subscription inventory is unavailable')
-cards = []
-for dirpath, _, files in os.walk(root):
-    for fn in files:
-        if not fn.endswith('.md'): continue
-        p = os.path.join(dirpath, fn)
-        txt = open(p, encoding='utf-8').read()
-        m = re.match(r'^---\n(.*?)\n---', txt, re.S)
-        if not m: continue
-        fm = {}
-        for line in m.group(1).splitlines():
-            km = re.match(r'^(\w[\w_]*):\s*(.+?)\s*$', line)
-            if km: fm[km.group(1)] = km.group(2).strip('"\'')
-        if 'provider' not in fm: continue
-        cards.append({k: fm.get(k) for k in
-            ('title','provider','plan','billing','cost_usd_month','tier','status','risk','verified','dashboard')})
-print(json.dumps(cards))
-PYEOF
-) || { PROVIDERS='[]'; PROVIDERS_STATUS=error; }
+PROVIDERS=$(uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-subscription-inventory" "$AI_BILLS_PROVIDERS_DIR") || { PROVIDERS='[]'; PROVIDERS_STATUS=error; }
+SUBSCRIPTIONS='[]'
+if [ -n "${AI_BILLS_SUBSCRIPTIONS_FILE:-}" ]; then
+  SUBSCRIPTIONS=$(jq -ce 'if type == "array" then . else error("Expected subscriptions array") end' "$AI_BILLS_SUBSCRIPTIONS_FILE") || { SUBSCRIPTIONS='[]'; PROVIDERS_STATUS=error; }
+fi
 PAYMENTS_STATUS=fresh
 PAYMENTS=$(uv run --project "$COLLECTOR_DIR" --frozen python -c "
 import yaml, json, sys, os
@@ -144,6 +126,7 @@ jq -n \
   --argjson auths "$AUTHS" --argjson usage "$USAGE" \
   --argjson cost "$COST" --argjson providers "$PROVIDERS" \
   --argjson payments "$PAYMENTS" \
+  --argjson subscriptions "$SUBSCRIPTIONS" \
   --argjson ledger "$LEDGER" \
   --argjson registry "$REGISTRY" \
   --argjson claude_usage "$CLAUDE_USAGE" \
@@ -151,7 +134,7 @@ jq -n \
   --argjson account_quotas "$ACCOUNT_QUOTAS" \
   '{generated: (now | todate), source_receipts: [{id: "provider-subscriptions", status: $providers_status, observedAt: (now|todate)}, {id: "payments", status: $payments_status, observedAt: (now|todate)}, {id: "token-ledger", status: $ledger_status, observedAt: (now|todate)}], runpod: $runpod, vast: $vast,
     proxy_auths: $auths, proxy_usage: $usage,
-    maestro_cost_today: $cost, providers: $providers, payments: $payments,
+    maestro_cost_today: $cost, providers: $providers, subscriptions: $subscriptions, payments: $payments,
     usage_ledger: $ledger, claude_usage: $claude_usage, codex_usage: $codex_usage, account_quotas:$account_quotas, account_registry: $registry}' > "$OUT"
 
 if [ -n "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ]; then

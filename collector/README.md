@@ -55,3 +55,17 @@ Unsupported, stale and failed quotas remain unknown. Routing enrollment is read
 from the active authenticated control policy, and becomes unknown on control-source
 failure. `accounting.declared_inventory_complete` can mark the operator's declared
 external inventory complete; it does not assert quota or financial completeness.
+
+The report's `--rollup` output preserves `today` and adds `month`: the complete
+current calendar month in `AI_USAGE_TIMEZONE`, independently of trend length.
+Both carry per-client/model rankings, full API-equivalent (null if any price is
+missing), and `priced_api_equivalent_usd` as the known subtotal. Ledger files are
+never rewritten. Rankings sort by total tokens; API-equivalent is not a debit.
+
+Provider frontmatter can declare individual `subscriptions` with plan, amount,
+currency, month/year period, renewal/end dates, account keys, manage/login links
+and evidence. The collector only projects allowed metadata fields. Optionally set
+`AI_BILLS_SUBSCRIPTIONS_FILE` to a private JSON array of the same individual plan
+records; these travel with the snapshot and survive later collection. Explicit
+`[[subscriptions]]` in app config override source records for that provider.
+Unknown renewal dates stay null; quota reset times are never renewal dates.

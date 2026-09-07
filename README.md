@@ -1,7 +1,13 @@
 # ai-bills
 
-AI usage and billing dashboard with an existing append-only usage ledger, direct
-Claude/Codex collection, proxy usage ingestion, provider balances, and account quota views.
+AI subscription and usage dashboard. The overview shows subscription count, recurring
+prices, renewal dates, API-equivalent usage and the largest consumers. Subscription
+rows link to sign-in and billing settings; recorded prices and dates can be maintained
+in the dashboard. Models, routing and detailed accounting have their own sections.
+
+The existing append-only usage ledger, direct Claude/Codex collection, proxy usage
+ingestion, provider balances and account quota views remain available. See the
+[product overview data contract](docs/product-overview.md) for evidence and coverage rules.
 
 Canonical repository: [BeFeast/ai-bills](https://git.oklabs.uk/BeFeast/ai-bills).
 Management Home: `Dev/Areas/ai-bills`.
