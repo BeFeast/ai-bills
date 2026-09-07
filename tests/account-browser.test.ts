@@ -1,0 +1,155 @@
+import { describe, expect, it, vi } from 'vitest';
+import { runInNewContext } from 'node:vm';
+import type { AppConfig } from '../src/lib/config';
+import { accountBrowser, identityExpression, parseAccountBrowserInput, projectBrowserProxy } from '../src/lib/account-browser';
+import type { AccountBrowserConnection, BrowserTarget } from '../src/lib/account-browser-cdp';
+import { GET, POST } from '../src/app/api/account-browser/route';
+
+let sequence = 0;
+function config(): AppConfig {
+  return { accounts: [{ key: 'personal', provider: 'claude', label: 'Personal', email: 'intended@example.test' }],
+    account_browsers: [{ subscription_id: 'subscription-personal', account_key: 'personal', profile_id: `ai-bills-test-${++sequence}`,
+      cdp_http: 'http://127.0.0.1:18811', remote_url: 'https://browser.example.test/vnc.html',
+      login_url: 'https://claude.ai/login', manage_url: 'https://claude.ai/settings/billing', proxy_account_id: 'route-personal' }],
+  } as AppConfig;
+}
+function browser(value: unknown, initial?: BrowserTarget[]) {
+  const targets = initial ?? [{ targetId: 'unrelated', type: 'page', url: 'https://example.test/work' }, { targetId: 'provider', type: 'page', url: 'https://claude.ai/new' }];
+  const send = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'Target.getTargets') return { targetInfos: targets };
+    if (method === 'Target.attachToTarget') return { sessionId: 'attached' };
+    if (method === 'Runtime.evaluate') return { result: { value } };
+    if (method === 'Target.createTarget') {
+      const targetId = `created-${targets.length}`;
+      targets.push({ targetId, type: 'page', url: String(params?.url) });
+      return { targetId };
+    }
+    return {};
+  });
+  const close = vi.fn();
+  const connection = { send, close } as AccountBrowserConnection;
+  const connect = vi.fn(async () => connection);
+  const routing = vi.fn(async () => ({ policy: { version: 9, accounts: [{ id: 'route-personal', enabled: false }] },
+    account_health: [{ id: 'route-personal', bound: true, quota_state: 'unknown' }], budget: { secretOrInternalField: 'do-not-forward' } }));
+  return { connect, routing, send, close, targets };
+}
+
+describe('account-specific website management', () => {
+  it('reads identity and current exact proxy linkage without navigation or budget writes', async () => {
+    const deps = browser({ state: 'authenticated', email: 'INTENDED@example.test' });
+    const before = JSON.stringify(deps.targets);
+    const state = await accountBrowser(config(), { subscriptionId: 'subscription-personal' }, undefined, deps);
+    expect(state).toMatchObject({ status: 'ready', intendedEmail: 'intended@example.test', verifiedEmail: 'INTENDED@example.test', maxAgeSeconds: 30,
+      proxy: { status: 'linked', policyVersion: 9, enabled: false, nativeBound: true, quotaState: 'unknown' } });
+    expect(state.observedAt).toBeTruthy();
+    expect(JSON.stringify(deps.targets)).toBe(before);
+    expect(deps.send.mock.calls.some(([method]) => /createTarget|activateTarget|navigate|closeTarget/.test(method))).toBe(false);
+    expect(JSON.stringify(state)).not.toContain('do-not-forward');
+    expect(deps.close).toHaveBeenCalledOnce();
+  });
+
+  it('opens and reuses only its own billing tab, preserving unrelated tabs', async () => {
+    const settings = config(); const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
+    await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps);
+    await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps);
+    expect(deps.send.mock.calls.filter(([method]) => method === 'Target.createTarget')).toEqual([
+      ['Target.createTarget', { url: 'https://claude.ai/settings/billing', background: false }],
+    ]);
+    expect(deps.targets[0]).toEqual({ targetId: 'unrelated', type: 'page', url: 'https://example.test/work' });
+    expect(deps.send.mock.calls.some(([method]) => method === 'Page.navigate' || method === 'Target.closeTarget')).toBe(false);
+    const previousBilling = deps.targets[deps.targets.length - 1];
+    previousBilling.url = 'https://claude.ai/new';
+    await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps);
+    expect(previousBilling.url).toBe('https://claude.ai/new');
+    expect(deps.send.mock.calls.filter(([method]) => method === 'Target.createTarget')).toHaveLength(2);
+  });
+
+  it('rechecks a changed account on manage and blocks billing on mismatch', async () => {
+    const settings = config();
+    expect((await accountBrowser(settings, { accountKey: 'personal' }, undefined, browser({ state: 'authenticated', email: 'intended@example.test' }))).status).toBe('ready');
+    const deps = browser({ state: 'authenticated', email: 'different@example.test' });
+    const state = await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps);
+    expect(state.status).toBe('mismatch');
+    expect(state.remoteUrl).toBe('https://browser.example.test/vnc.html');
+    expect(deps.send.mock.calls.some(([method]) => method === 'Target.createTarget' || method === 'Target.activateTarget')).toBe(false);
+    await accountBrowser(settings, { accountKey: 'personal' }, 'login', deps);
+    expect(deps.send).toHaveBeenCalledWith('Target.createTarget', { url: 'https://claude.ai/login', background: false });
+  });
+
+  it('coalesces simultaneous subscription/account checks and reuses a redirected login tab', async () => {
+    const settings = config(); const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
+    const states = await Promise.all([
+      accountBrowser(settings, { subscriptionId: 'subscription-personal' }, undefined, deps),
+      accountBrowser(settings, { accountKey: 'personal' }, undefined, deps),
+    ]);
+    expect(states.map(state => state.status)).toEqual(['ready', 'ready']);
+    expect(deps.connect).toHaveBeenCalledOnce();
+    await accountBrowser(settings, { accountKey: 'personal' }, 'login', deps);
+    const owned = deps.targets[deps.targets.length - 1];
+    owned.url = 'https://accounts.google.com/signin/oauth';
+    await accountBrowser(settings, { accountKey: 'personal' }, 'login', deps);
+    expect(deps.send.mock.calls.filter(([method]) => method === 'Target.createTarget')).toHaveLength(1);
+    expect(deps.send).toHaveBeenLastCalledWith('Target.activateTarget', { targetId: owned.targetId });
+  });
+
+  it('handles a new empty profile as login required, while unsupported identity stays unknown', async () => {
+    const settings = config(); const blank = browser(null, []);
+    const state = await accountBrowser(settings, { accountKey: 'personal' }, undefined, blank);
+    expect(state.status).toBe('login_required');
+    expect(blank.send.mock.calls.some(([method]) => method === 'Target.createTarget')).toBe(false);
+    await accountBrowser(settings, { accountKey: 'personal' }, 'login', blank);
+    expect(blank.send).toHaveBeenCalledWith('Target.createTarget', { url: 'https://claude.ai/login', background: false });
+    settings.accounts[0].provider = 'kimi';
+    Object.assign(settings.account_browsers![0], { login_url: 'https://www.kimi.com/', manage_url: 'https://www.kimi.com/code/console' });
+    expect((await accountBrowser(settings, { accountKey: 'personal' }, 'manage', browser(null, []))).status).toBe('identity_unknown');
+  });
+
+  it('fails closed on invalid provider URLs, shared profiles and missing expected email before connecting', async () => {
+    for (const alter of [
+      (c: AppConfig) => { c.account_browsers![0].manage_url = 'https://claude.ai.evil.test/settings'; },
+      (c: AppConfig) => { c.account_browsers![0].login_url = 'http://169.254.169.254/latest'; },
+      (c: AppConfig) => { c.account_browsers![0].cdp_http = 'http://user:pass@127.0.0.1:18811'; },
+      (c: AppConfig) => { c.account_browsers!.push({ ...c.account_browsers![0], subscription_id: 'other', account_key: 'other' }); },
+      (c: AppConfig) => { c.account_browsers!.push({ ...c.account_browsers![0], subscription_id: 'other', account_key: 'other', profile_id: 'ai-bills-other', cdp_http: 'http://127.0.0.1:18812', remote_url: 'https://browser.example.test/vnc.html?autoconnect=false' }); },
+      (c: AppConfig) => { c.accounts[0].email = ''; },
+    ]) {
+      const settings = config(); alter(settings); const deps = browser(null);
+      expect((await accountBrowser(settings, { subscriptionId: 'subscription-personal' }, 'login', deps)).status).toBe('unavailable');
+      expect(deps.connect).not.toHaveBeenCalled();
+    }
+  });
+
+  it('retains website state while routing is unavailable and never invents proxy linkage', async () => {
+    const settings = config(); const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
+    deps.routing.mockRejectedValueOnce(new Error('offline'));
+    expect(await accountBrowser(settings, { accountKey: 'personal' }, undefined, deps)).toMatchObject({ status: 'ready', proxy: { status: 'unavailable', policyVersion: null } });
+    delete settings.account_browsers![0].proxy_account_id;
+    expect(await accountBrowser(settings, { accountKey: 'personal' }, undefined, deps)).toMatchObject({ status: 'ready', proxy: { status: 'unlinked' } });
+    expect(projectBrowserProxy({ policy: { version: 10, accounts: [{ id: 'different', enabled: true }] } }, 'expected')).toMatchObject({ status: 'not_found', enabled: null });
+  });
+
+  it('selects only provider identity email from responses and rejects changed origins', async () => {
+    for (const provider of ['claude', 'codex', 'cursor'] as const) {
+      const response = provider === 'claude' ? { email_address: 'intended@example.test', accessToken: 'secret' } : provider === 'cursor' ? { email: 'intended@example.test', id: 'private-id' } : { user: { email: 'intended@example.test' }, accessToken: 'secret' };
+      const fetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => response }));
+      const origin = provider === 'claude' ? 'https://claude.ai' : provider === 'cursor' ? 'https://cursor.com' : 'https://chatgpt.com';
+      const result = await runInNewContext(identityExpression(provider)!, { location: { origin }, fetch, AbortSignal });
+      expect(result).toEqual({ state: 'authenticated', email: 'intended@example.test' });
+      expect(fetch).toHaveBeenCalledWith(provider === 'claude' ? '/api/account' : provider === 'cursor' ? '/api/auth/me' : '/api/auth/session', expect.objectContaining({ credentials: 'include', redirect: 'error' }));
+      expect(JSON.stringify(result)).not.toContain('secret');
+      expect(JSON.stringify(result)).not.toContain('private-id');
+      fetch.mockClear();
+      expect(await runInNewContext(identityExpression(provider)!, { location: { origin: 'https://evil.test' }, fetch, AbortSignal })).toEqual({ state: 'unknown' });
+      expect(fetch).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rejects untrusted URLs/commands and cross-origin actions at the request boundary', async () => {
+    expect(() => parseAccountBrowserInput({ accountKey: 'personal', url: 'http://169.254.169.254' }, true)).toThrow();
+    expect(() => parseAccountBrowserInput({ accountKey: 'personal', subscriptionId: 'also' })).toThrow();
+    expect(() => parseAccountBrowserInput({ accountKey: 'personal', action: 'navigate' }, true)).toThrow();
+    const denied = await POST(new Request('http://dashboard.test/api/account-browser', { method: 'POST', headers: { Origin: 'http://evil.test' }, body: JSON.stringify({ accountKey: 'personal', action: 'login' }) }));
+    expect(denied.status).toBe(403);
+    expect((await GET(new Request('http://dashboard.test/api/account-browser?url=http://evil.test'))).status).toBe(400);
+  });
+});

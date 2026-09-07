@@ -1,0 +1,11 @@
+/** Browser-safe metadata. Website identity and proxy credential health are separate. */
+export type AccountBrowserStatus = 'unconfigured' | 'login_required' | 'identity_unknown' | 'mismatch' | 'ready' | 'unavailable';
+export type AccountBrowserSelector = { subscriptionId: string; accountKey?: never } | { accountKey: string; subscriptionId?: never };
+export type AccountBrowserState = {
+  subscriptionId: string | null; accountKey: string | null; provider: string | null;
+  intendedEmail: string | null; configured: boolean; status: AccountBrowserStatus;
+  observedAt: string | null; maxAgeSeconds: number; verifiedEmail?: string;
+  remoteUrl?: string; profileId?: string; proxyAccountId: string | null; message: string;
+  proxy: { status: 'unlinked' | 'unavailable' | 'not_found' | 'linked'; policyVersion: number | null;
+    enabled: boolean | null; nativeBound: boolean | null; quotaState: string | null; observedAt: string | null };
+};
