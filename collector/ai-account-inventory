@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Read local OAuth/config metadata and print a secret-free inventory projection.
+
+No management queue access, network requests, OAuth refresh or secret mutation.
+Install beside ai-bill-collect.sh; deployment supplies paths through environment.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+from datetime import datetime, timezone
+
+
+def identifier(value):
+    return hashlib.sha256(value.encode()).hexdigest()[:24]
+
+
+def discover(auth_dir, config_path):
+    now = datetime.now(timezone.utc).isoformat()
+    accounts, sources = [], []
+
+    def add(identity, provider, label, origin):
+        accounts.append(dict(id=identifier(identity), provider=provider,
+                             label=label, origin=origin, observedAt=now))
+
+    try:
+        if not auth_dir:
+            raise ValueError('missing auth directory')
+        paths = sorted(Path(auth_dir).glob('*.json'))
+        if not Path(auth_dir).is_dir():
+            raise ValueError('unavailable auth directory')
+        errors = 0
+        for path in paths:
+            try:
+                row = json.loads(path.read_text())
+                provider = row.get('type') or row.get('provider') or 'unknown'
+                add('oauth:' + path.name, provider, row.get('label') or f'{provider} OAuth {identifier(path.name)[:6]}', 'oauth')
+            except (ValueError, OSError, AttributeError):
+                errors += 1
+        sources.append(dict(id='oauth', status='error' if errors else 'fresh', unreadable=errors))
+    except (ValueError, OSError):
+        sources.append(dict(id='oauth', status='error'))
+    try:
+        import yaml
+        if not config_path:
+            raise ValueError('missing config path')
+        raw = yaml.safe_load(Path(config_path).read_text()) or {}
+        for provider in ('gemini', 'codex', 'claude', 'vertex'):
+            for index, row in enumerate(raw.get(provider + '-api-key') or []):
+                identity = f'configured:{provider}:{row.get("api-key") or row.get("id") or index}'
+                add(identity, provider, row.get('label') or f'{provider} API {index + 1}', 'configured')
+        for index, row in enumerate(raw.get('openai-compatibility') or []):
+            provider = row.get('name') or f'openai-compatible-{index + 1}'
+            for number, entry in enumerate(row.get('api-key-entries') or [{}]):
+                identity = f'configured:{provider}:{entry.get("api-key") or entry.get("id") or number}'
+                add(identity, provider, entry.get('label') or f'{provider} API {number + 1}', 'configured')
+        sources.append(dict(id='configured', status='fresh'))
+    except Exception:
+        # Do not print parser messages: they may include a credential-bearing line.
+        sources.append(dict(id='configured', status='error'))
+    return dict(generatedAt=now, accounts=accounts, sources=sources, complete=False)
+
+
+if __name__ == '__main__':
+    print(json.dumps(discover(os.environ.get('AI_BILLS_CLIPROXY_AUTH_DIR'),
+                              os.environ.get('AI_BILLS_CLIPROXY_CONFIG')), ensure_ascii=False))

@@ -56,7 +56,9 @@ def project(rec, keymap):
     # (Claude Code writes the same value as its requestId field), so a proxied session
     # is not double-counted when the direct collector reads its JSONL.
     hdrs = rec.get("response_headers") or {}
-    upstream = (hdrs.get("Request-Id") or hdrs.get("request-id") or [None])[0]
+    upstream = hdrs.get("Request-Id") or hdrs.get("request-id")
+    if isinstance(upstream, list):
+        upstream = upstream[0] if upstream else None
     return {
         "upstream_request_id": upstream,
         "ts": rec.get("timestamp"),
@@ -83,6 +85,14 @@ def project(rec, keymap):
         "quality": tb.get("quality"),
         "schema": tb.get("schema_version"),
         "request_id": rec.get("request_id"),
+        # Optional routing metadata; these are identifiers, never prompt content.
+        "attempt_id": rec.get("attempt_id"),
+        "policy_version": rec.get("policy_version"),
+        "role": rec.get("role"),
+        "session_id": rec.get("session_id"),
+        "reservation_id": rec.get("reservation_id"),
+        "billing_mode": rec.get("billing_mode"),
+        "fallback_reason": rec.get("fallback_reason"),
     }
 
 def ledger_path(ts):

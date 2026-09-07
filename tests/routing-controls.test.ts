@@ -28,6 +28,10 @@ describe('reviewable policy changes', () => {
     expect(reorderCandidate(input, 2, 1)).toEqual(input);
     expect(input).toEqual(['a', 'b', 'c']);
   });
+  it('shows unknown allowance when the independent paid authority is unavailable', () => {
+    expect(remainingAllowance({ date: '2026-01-01', limit_microusd: 2_000_000, spent_microusd: null, reserved_microusd: null, available: false })).toBeNull();
+    expect(remainingAllowance({ date: '2026-01-01', limit_microusd: 2_000_000, spent_microusd: 0, reserved_microusd: 0, available: false })).toBeNull();
+  });
   it('deducts unresolved reservations from available allowance and never shows negative availability', () => {
     expect(remainingAllowance({ date: '2026-01-01', limit_microusd: 2_000_000, spent_microusd: 250_000, reserved_microusd: 1_500_000 })).toBe(250_000);
     expect(remainingAllowance({ date: '2026-01-01', limit_microusd: 2_000_000, spent_microusd: 1_000_000, reserved_microusd: 1_500_000 })).toBe(0);

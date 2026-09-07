@@ -4,11 +4,23 @@
 Ledger rows are facts (tokens); prices live in the vault and are applied here, so
 fixing a price re-prices history. Two figures per row:
   api_equivalent — cost at list price (what a subscription earns back)
-  marginal       — what actually leaves the wallet (0 for subscription-backed models)
+  marginal       — estimated additional usage (unknown without account billing evidence)
 A model absent from pricing.yml is reported as UNPRICED, never as $0.
 """
 import argparse, glob, json, os, re, sys, collections
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
+
+REPORT_TZ = ZoneInfo(os.environ.get("AI_USAGE_TIMEZONE", "Asia/Jerusalem"))
+
+def local_day(ts=None):
+    if ts is None:
+        return datetime.now(REPORT_TZ).date().isoformat()
+    try:
+        value = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if value.tzinfo is None: return ts[:10]
+        return value.astimezone(REPORT_TZ).date().isoformat()
+    except (ValueError, TypeError): return (ts or "")[:10]
 
 LEDGER_DIR = os.path.expanduser(os.environ.get("AI_USAGE_LEDGER_DIR", "~/.local/state/ai-usage"))
 PRICING = os.environ.get("AI_USAGE_PRICING", os.path.expanduser("~/.config/ai-usage/pricing.yml"))
@@ -39,7 +51,7 @@ def cost(row, defaults, models):
     """-> (api_equivalent_usd, marginal_usd, priced?)"""
     p = lookup(row.get("model"), models)
     if not p or p.get("in") is None:
-        return 0.0, 0.0, False  # caller separates "no entry" from "flat rate, no list price"
+        return 0.0, None, False  # caller separates "no entry" from "flat rate, no list price"
     # Per-model overrides matter across providers: Anthropic charges 1.25x for a
     # cache write, OpenAI and Moonshot do not charge for one at all.
     cw = p.get("cache_write_multiplier", defaults.get("cache_write_multiplier", 1.25))
@@ -51,37 +63,59 @@ def cost(row, defaults, models):
         + (row.get("cache_write") or 0) / 1e6 * pin * cw
         + (row.get("out_total") or 0) / 1e6 * pout
     )
-    marginal = 0.0 if p.get("billing") == "subscription" else api
+    mode = row.get("billing_mode")
+    # A model can exist on subscription and paid accounts: never classify by model.
+    marginal = 0.0 if mode == "included" else api if mode == "metered" else None
     return api, marginal, True
 
 def rows_for(day):
+    # Preserve raw ledger; reconcile observations in the read projection only.
+    if not os.path.isdir(LEDGER_DIR):
+        raise FileNotFoundError('Token ledger source is unavailable')
+    records = []
     for path in sorted(glob.glob(os.path.join(LEDGER_DIR, "ledger-*.jsonl"))):
         with open(path) as fh:
             for line in fh:
                 try:
-                    r = json.loads(line)
+                    row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if day and not (r.get("ts") or "").startswith(day):
+                if day and local_day(row.get("ts")) != day:
                     continue
-                yield r
+                records.append(row)
+    # Proxy observation is preferred for matched native observations because it
+    # carries selected account/attempt metadata. Do not merge separate attempts.
+    proxy_ids = {r.get("upstream_request_id") for r in records if r.get("via") == "proxy" and r.get("upstream_request_id")}
+    seen = set()
+    for row in records:
+        upstream = row.get("upstream_request_id")
+        if row.get("via") != "proxy" and upstream and upstream in proxy_ids:
+            continue
+        identity = row.get("attempt_id") or row.get("request_id") or upstream
+        if identity:
+            key = (row.get("provider"), row.get("account"), row.get("via"), identity)
+            if key in seen: continue
+            seen.add(key)
+        yield row
 
 def rollup(defaults, models, days=30):
     """One object with everything the ai-bills dashboard needs."""
     from datetime import timedelta
-    today = date.today().isoformat()
+    today = local_day()
     per_day = collections.defaultdict(lambda: collections.Counter())
     dims = {d: collections.defaultdict(lambda: collections.Counter()) for d in ("client", "model", "via")}
     unpriced = collections.Counter()
 
     for r in rows_for(None):
-        day = (r.get("ts") or "")[:10]
+        day = local_day(r.get("ts"))
         if not day:
             continue
         api, marg, priced = cost(r, defaults, models)
         toks = sum((r.get(f) or 0) for f in ("in_uncached", "cache_read", "cache_write", "out_total"))
         d = per_day[day]
-        d["api_micro"] += round(api * 1e6); d["marg_micro"] += round(marg * 1e6)
+        d["api_micro"] += round(api * 1e6); d["marg_micro"] += round((marg or 0) * 1e6)
+        d["marg_unknown"] += 1 if marg is None else 0
+        d["api_unknown"] += 1 if not priced else 0
         d["tokens"] += toks; d["requests"] += 1; d["failed"] += 1 if r.get("failed") else 0
         for f in ("in_uncached", "cache_read", "cache_write", "out_total"):
             d[f] += r.get(f) or 0
@@ -91,17 +125,19 @@ def rollup(defaults, models, days=30):
             unpriced[r.get("model") or "?"] += toks
         for dim in dims:
             g = dims[dim][r.get(dim) or "?"]
-            g["api_micro"] += round(api * 1e6); g["marg_micro"] += round(marg * 1e6)
+            g["api_micro"] += round(api * 1e6); g["marg_micro"] += round((marg or 0) * 1e6)
+            g["marg_unknown"] += 1 if marg is None else 0
+            g["api_unknown"] += 1 if not priced else 0
             g["tokens"] += toks; g["requests"] += 1
 
     def group(dim):
-        return [{"name": k, "api_equivalent_usd": v["api_micro"] / 1e6,
-                 "marginal_usd": v["marg_micro"] / 1e6,
+        return [{"name": k, "api_equivalent_usd": None if v["api_unknown"] else v["api_micro"] / 1e6,
+                 "marginal_usd": None if v["marg_unknown"] else v["marg_micro"] / 1e6,
                  "tokens": v["tokens"], "requests": v["requests"]}
                 for k, v in sorted(dims[dim].items(), key=lambda x: -x[1]["api_micro"])]
 
     t = per_day.get(today, collections.Counter())
-    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    cutoff = (date.fromisoformat(today) - timedelta(days=days)).isoformat()
     return {
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "today": {
@@ -109,21 +145,21 @@ def rollup(defaults, models, days=30):
             "requests": t["requests"], "failed": t["failed"],
             "counts": {f: t[f] for f in ("in_uncached", "cache_read", "cache_write", "out_total")},
             "tokens_total": t["tokens"],
-            "api_equivalent_usd": t["api_micro"] / 1e6,
-            "marginal_usd": t["marg_micro"] / 1e6,
+            "api_equivalent_usd": None if t["api_unknown"] else t["api_micro"] / 1e6,
+            "marginal_usd": None if t["marg_unknown"] else t["marg_micro"] / 1e6,
             "by_client": group("client"), "by_model": group("model"), "by_via": group("via"),
             "unpriced": dict(unpriced),
         },
         "trend": [{"date": d,
-                   "api_equivalent_usd": v["api_micro"] / 1e6,
-                   "marginal_usd": v["marg_micro"] / 1e6,
+                   "api_equivalent_usd": None if v["api_unknown"] else v["api_micro"] / 1e6,
+                   "marginal_usd": None if v["marg_unknown"] else v["marg_micro"] / 1e6,
                    "tokens": v["tokens"]}
                   for d, v in sorted(per_day.items()) if d >= cutoff],
     }
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--day", default=date.today().isoformat(), help="YYYY-MM-DD, or 'all'")
+    ap.add_argument("--day", default=local_day(), help="YYYY-MM-DD, or 'all'")
     ap.add_argument("--by", default="client", choices=["client", "model", "provider", "account", "via"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--rollup", action="store_true", help="full dashboard payload on stdout")
@@ -157,7 +193,9 @@ def main():
             a[f] += r.get(f) or 0
         api, marg, priced = cost(r, defaults, models)
         a["api_cents"] += round(api * 100_000)   # micro-dollars, integer-safe
-        a["marg_cents"] += round(marg * 100_000)
+        a["marg_cents"] += round((marg or 0) * 100_000)
+        a["marg_unknown"] += 1 if marg is None else 0
+        a["api_unknown"] += 1 if not priced else 0
         if not priced:
             tok = sum((r.get(f) or 0) for f in ("in_uncached", "cache_read", "cache_write", "out_total"))
             if tok:
@@ -175,8 +213,8 @@ def main():
         out = {
             "day": args.day, "by": args.by,
             "groups": {k: {**dict(v),
-                           "api_equivalent_usd": v["api_cents"] / 100_000,
-                           "marginal_usd": v["marg_cents"] / 100_000} for k, v in agg.items()},
+                           "api_equivalent_usd": None if v["api_unknown"] else v["api_cents"] / 100_000,
+                           "marginal_usd": None if v["marg_unknown"] else v["marg_cents"] / 100_000} for k, v in agg.items()},
             "unpriced_models": dict(unpriced),
         }
         print(json.dumps(out, indent=1))
@@ -186,7 +224,7 @@ def main():
         print(f"no ledger rows for {args.day}")
         return
 
-    hdr = f"{args.by:<16}{'req':>6}{'fail':>6}{'in':>12}{'cache_r':>13}{'cache_w':>12}{'out':>10}{'API $':>10}{'real $':>9}"
+    hdr = f"{args.by:<16}{'req':>6}{'fail':>6}{'in':>12}{'cache_r':>13}{'cache_w':>12}{'out':>10}{'API $':>10}{'est $*':>9}"
     print(hdr); print("-" * len(hdr))
     for k, v in sorted(agg.items(), key=lambda x: -x[1]["api_cents"]):
         print(f"{k:<16}{v['ok']:>6}{v['attempts']-v['ok']:>6}{v['in_uncached']:>12,}{v['cache_read']:>13,}"
@@ -196,6 +234,8 @@ def main():
     for v in agg.values(): t.update(v)
     print(f"{'TOTAL':<16}{t['ok']:>6}{t['attempts']-t['ok']:>6}{t['in_uncached']:>12,}{t['cache_read']:>13,}"
           f"{t['cache_write']:>12,}{t['out_total']:>10,}{t['api_cents']/100_000:>10.2f}{t['marg_cents']/100_000:>9.2f}")
+    if any(v["marg_unknown"] for v in agg.values()):
+        print("* Estimated additional cost is incomplete: account billing mode unknown; displayed amount is a known subtotal, not actual payments.")
     if unpriced:
         print("\nUNPRICED — no entry in pricing.yml, cost unknown (add a verified row):")
         for m, tok in unpriced.most_common():

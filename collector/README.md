@@ -27,3 +27,31 @@ its approved runtime. Remote extractor shell settings remain per-host configurat
 The systemd files are source examples. Review runtime paths/dependencies before any
 installation. Source import leaves existing schedules, collector state and permissions
 untouched. Provider balance and token estimates are not verified invoice spend.
+
+## Proxy-owned quota observations and registry bindings
+
+The snapshot collector includes `codex_usage` from `ai-codex-quotas`, using a
+read-only WHAM request with the proxy-owned access token and account header. It
+never refreshes tokens. Each account has its opaque registry ID; an email lookup
+is added only when unique. Failures retain their observation time and HTTP status.
+`AI_USAGE_REPORT_BIN` overrides the report executable for staged deployments.
+
+An app account may set `quota_snapshot_key` to its opaque proxy registry ID. This
+explicit binding prefers collector evidence and prevents a fallback credential
+refresh when the source is missing or reports an error. Existing unbound profiles
+retain their original direct path when no matching snapshot exists.
+
+`accounting.account_bindings` is a private array of `{id, members, label?,
+quota_account_key?, billing_mode?}`. `members` contains known opaque registry IDs;
+`id` is the canonical identity used by the routing policy and manual records.
+Only these explicit aliases merge identities; shared email or provider names do
+not. `quota_account_key` references an existing app account's key. Billing mode is
+never inferred from OAuth filenames. Exact native auth bindings remain exclusively
+in the routing service's private configuration.
+
+Account inventory reads cached quota observations without polling providers. It
+also uses matching collector quota observations, retaining their source timestamps.
+Unsupported, stale and failed quotas remain unknown. Routing enrollment is read
+from the active authenticated control policy, and becomes unknown on control-source
+failure. `accounting.declared_inventory_complete` can mark the operator's declared
+external inventory complete; it does not assert quota or financial completeness.

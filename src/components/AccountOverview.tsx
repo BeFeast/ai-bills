@@ -16,9 +16,9 @@ export async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-export function CoverageList({ sources, tz }: { sources: CoverageSource[]; tz: string }) {
+export function CoverageList({ sources, tz, labels = {} }: { sources: CoverageSource[]; tz: string; labels?: Record<string, string> }) {
   return <div className="coverage-list">{sources.length ? sources.map((source) => <div className="coverage-row" key={source.id}>
-    <div><strong>{source.id}</strong><span className={`pill ${source.status === 'fresh' ? 'ok' : source.status === 'error' ? 'danger' : 'warn'}`}>{source.status}</span></div>
+    <div><strong>{labels[source.id] || source.id.replaceAll('-', ' ')}</strong><span className={`pill ${source.status === 'fresh' ? 'ok' : source.status === 'error' ? 'danger' : 'warn'}`}>{source.status}</span></div>
     <span className="muted">{source.observedAt ? fmtDate(source.observedAt, tz) : 'Never observed'}{source.message ? ` · ${source.message}` : ''}</span>
   </div>) : <p className="muted">No source receipts available. Completeness is unknown.</p>}</div>;
 }
@@ -78,9 +78,9 @@ export function AccountOverview({ tz }: { tz: string }) {
       <Metric tone="billing" label="Payments this month" value={fmtMoney(accounting?.paymentsUsd ?? null)} note="Recorded payments; not added to consumption" />
       <Metric tone="billing" label="Provider accrued consumption" value={fmtMoney(accounting?.accruedUsd ?? null)} note="Provider charges reported for this month" />
       <Metric label="API-equivalent estimate" value={fmtMoney(accounting?.apiEquivalentUsd ?? null)} note="Hypothetical list-price value, not cash spent" />
-      <Metric tone="live" label="Account coverage" value={inventory ? `${inventory.accounts.filter((a) => a.coverage.status === 'available').length}/${inventory.accounts.length}` : 'Unknown'} note={inventory?.complete && accounting?.complete ? 'All declared sources accounted for' : 'Partial or unverified sources remain'} />
+      <Metric tone="live" label="Account coverage" value={inventory ? `${inventory.accounts.length} tracked` : 'Unknown'} note={inventory ? `${inventory.accounts.filter(a => a.quota.status === 'fresh').length} current quotas · financial coverage partial` : 'Coverage unknown'} />
     </div>
-    <details className="accordion" open={!inventory?.complete || !accounting?.complete}><summary>Source freshness and coverage <span className="accordion-hint">Missing is not zero</span></summary><div className="accordion-content"><CoverageList sources={[...(inventory?.sources || []), ...(accounting?.coverage || []).filter((s) => !inventory?.sources.some((i) => i.id === s.id))]} tz={tz} /></div></details>
+    <details className="accordion"><summary>Source freshness and coverage <span className="accordion-hint">Missing is not zero</span></summary><div className="accordion-content"><CoverageList labels={Object.fromEntries((inventory?.accounts || []).map(account => [`quota:${account.id}`, `${account.label} quota`]))} sources={[...(inventory?.sources || []), ...(accounting?.coverage || []).filter((s) => !inventory?.sources.some((i) => i.id === s.id))]} tz={tz} /></div></details>
     <div className="table-wrap"><table><caption className="sr-only">Account inventory, routing enrollment and quota evidence</caption><thead><tr><th>Account</th><th>Origin / billing</th><th>Routing</th><th>Quota remaining</th><th>Coverage</th></tr></thead><tbody>
       {inventory?.accounts.map((account) => <tr key={account.id}><td><strong>{account.label || account.id}</strong><div className="muted">{account.provider}</div></td><td>{account.origin}<div className="muted">{account.billingMode}</div></td><td>{account.routingEnrolled === null ? 'Unknown' : account.routingEnrolled ? 'Enrolled' : 'Accounting only'}</td><td>{account.quota.remaining === null ? 'Unknown' : `${account.quota.remaining.toLocaleString(undefined, { maximumFractionDigits: 1 })}${account.quota.unit === 'percent' ? '%' : ''}`}<div className="muted">{account.quota.status}{account.quota.resetAt ? ` · resets ${fmtDate(account.quota.resetAt, tz)}` : ''}</div></td><td><span className={`pill ${account.coverage.status === 'available' ? 'ok' : 'warn'}`}>{account.coverage.status}</span><div className="muted">{account.coverage.reason}</div></td></tr>)}
       {!inventory?.accounts.length ? <tr><td colSpan={5} className="muted">No accounts observed yet. Check source coverage above.</td></tr> : null}

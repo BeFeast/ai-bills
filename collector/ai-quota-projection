@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Project observed quota windows into the request-policy service's stable schema."""
+import json
+import math
+import re
+import sys
+from datetime import datetime, timezone
+
+
+def timestamp(value):
+    try:
+        parsed = datetime.fromtimestamp(value, timezone.utc) if isinstance(value, (int, float)) else datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return parsed if parsed.tzinfo else None
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return None
+
+
+def project(snapshot, now=None):
+    now = now or datetime.now(timezone.utc)
+    result = {}
+    for provider in ('claude', 'codex'):
+        entries = snapshot.get(provider + '_usage') or {}
+        if not isinstance(entries, dict):
+            continue
+        for identity, entry in entries.items():
+            if not re.fullmatch('[a-f0-9]{24}', identity) or not isinstance(entry, dict):
+                continue
+            observed = timestamp(entry.get('fetched_at'))
+            row = {'observed_at': observed.isoformat() if observed else None, 'reset_at': None,
+                   'remaining_fraction': None, 'max_age_seconds': 600}
+            result[identity] = row
+            if not entry.get('ok') or not observed or not 0 <= (now - observed).total_seconds() <= 600:
+                continue
+            data = entry.get('data') or {}
+            if provider == 'claude':
+                windows = [(w.get('utilization'), w.get('resets_at')) for k in ('five_hour', 'seven_day') if isinstance(w := data.get(k), dict)]
+            else:
+                limits = data.get('rate_limit') or {}
+                windows = [(w.get('used_percent'), w.get('reset_at')) for k in ('primary_window', 'secondary_window') if isinstance(w := limits.get(k), dict)]
+            usable = []
+            invalid = False
+            for used, reset in windows:
+                reset = timestamp(reset)
+                if type(used) not in (int, float) or not math.isfinite(used) or not 0 <= used <= 100 or not reset or reset <= now:
+                    invalid = True
+                    break
+                usable.append((used, reset))
+            if usable and not invalid:
+                used, reset = max(usable, key=lambda value: (value[0], value[1]))
+                row.update(remaining_fraction=(100 - used) / 100, reset_at=reset.isoformat())
+    return result
+
+
+if __name__ == '__main__':
+    print(json.dumps(project(json.load(sys.stdin))))

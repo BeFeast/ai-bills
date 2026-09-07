@@ -1,9 +1,9 @@
 /** Metadata-only protocol; provider credentials remain in the request service. */
-export type RoutingModel = { id: string; label: string; status: 'approved' | 'hidden' | 'denied'; capabilities: string[]; input_limit_tokens: number | null; output_limit_tokens: number | null; prices: Record<string, number | null> | null; routes: { account_id: string; billing: 'included' | 'paid'; upstream_model: string; prices?: Record<string, number | null> | null; price_version?: string; price_evidence?: string }[] };
+export type RoutingModel = { id: string; label: string; status: 'approved' | 'hidden' | 'denied'; tool_call?: boolean; capabilities: string[]; input_limit_tokens: number | null; output_limit_tokens: number | null; prices: Record<string, number | null> | null; routes: { account_id: string; billing: 'included' | 'paid'; upstream_model: string; upstream_canonical_model?: string; prices?: Record<string, number | null> | null; price_version?: string; price_evidence?: string }[] };
 export type RoutingPolicy = { version: number; day_limit_microusd: number; timezone: string; models: RoutingModel[]; roles: { id: string; candidates: string[] }[]; clients: { id: string; models: string[]; roles: string[] }[]; accounts: { id: string; label: string; enabled: boolean }[] };
 export type RoutingRequest = { id: string; session_id: string | null; client_id: string; role: string | null; requested_model: string; model: string | null; account_id: string | null; status: string; admitted_date: string; reserved_microusd: number; cost_microusd: number | null; fallback_reason: string | null; created_at: string };
 export type RoutingSuggestion = { id: string; title?: string; reason?: string; status?: string; created_at?: string; proposed_policy?: RoutingPolicy };
-export type RoutingState = { policy: RoutingPolicy; budget: { date: string; limit_microusd: number; spent_microusd: number; reserved_microusd: number }; requests: RoutingRequest[]; suggestions: RoutingSuggestion[]; capabilities: { native_managed_attempt: boolean } };
+export type RoutingState = { policy: RoutingPolicy; budget: { date: string; limit_microusd: number; spent_microusd: number | null; reserved_microusd: number | null; available?: boolean }; requests: RoutingRequest[]; suggestions: RoutingSuggestion[]; capabilities: { native_managed_attempt: boolean } };
 export type Validation = { valid: boolean; errors: string[]; diff?: unknown };
 
 export async function routingRequest<T>(path: string, payload?: unknown): Promise<T> {
@@ -44,6 +44,7 @@ export function reorderCandidate(candidates: string[], index: number, direction:
   return result;
 }
 
-export function remainingAllowance(budget: RoutingState['budget']): number {
+export function remainingAllowance(budget: RoutingState['budget']): number | null {
+  if (budget.available === false || budget.spent_microusd == null || budget.reserved_microusd == null) return null;
   return Math.max(0, budget.limit_microusd - budget.spent_microusd - budget.reserved_microusd);
 }

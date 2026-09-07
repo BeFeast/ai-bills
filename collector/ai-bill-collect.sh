@@ -9,12 +9,16 @@ set -euo pipefail
 : "${AI_BILLS_PROVIDERS_DIR:?Set AI_BILLS_PROVIDERS_DIR}"
 : "${AI_BILLS_PAYMENTS_FILE:?Set AI_BILLS_PAYMENTS_FILE}"
 : "${AI_BILLS_MAESTRO_DB:?Set AI_BILLS_MAESTRO_DB}"
-: "${AI_BILLS_SNAPSHOT_TARGET:?Set AI_BILLS_SNAPSHOT_TARGET}"
+if [ -z "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ]; then
+  : "${AI_BILLS_SNAPSHOT_TARGET:?Set AI_BILLS_SNAPSHOT_TARGET or AI_BILLS_SNAPSHOT_SSH_HOST}"
+fi
 : "${INFISICAL_PROJECT_ID:?Set INFISICAL_PROJECT_ID}"
 export AI_BILLS_MAESTRO_DB AI_BILLS_PAYMENTS_FILE
 CLIPROXY_KEYS_FILE="${AI_USAGE_KEYS_FILE:-/opt/cliproxyapi/.keys}"
 CLIPROXY_AUTH_DIR="${AI_BILLS_CLIPROXY_AUTH_DIR:-/opt/cliproxyapi/auths}"
 CLIPROXY_MGMT_URL="${AI_BILLS_CLIPROXY_MGMT_URL:-http://127.0.0.1:23020/v0/management}"
+export AI_BILLS_CLIPROXY_AUTH_DIR="$CLIPROXY_AUTH_DIR"
+COLLECTOR_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 OUT=$(mktemp /tmp/ai-bill-snapshot.XXXXXX.json)
 trap 'rm -f "$OUT"' EXIT
 
@@ -56,26 +60,15 @@ USAGE=$(curl -sf -m 10 "$CLIPROXY_MGMT_URL/api-key-usage" -H "Authorization: Bea
 # Replaces the browser/CDP path (legacy CDP path retired): same JSON shape the
 # dashboard's ClaudeUsagePayload expects, fetched with the access_token cliproxy
 # keeps refreshed in /opt/cliproxyapi/auths/. Tokens never leave the collector host.
-CLAUDE_USAGE=$(
-  for f in "$CLIPROXY_AUTH_DIR"/claude-*.json; do
-    [ -f "$f" ] || continue
-    email=$(jq -r '.email // empty' "$f")
-    ctok=$(jq -r '.access_token // empty' "$f")
-    { [ -n "$email" ] && [ -n "$ctok" ]; } || continue
-    if resp=$(curl -sf -m 15 https://api.anthropic.com/api/oauth/usage \
-        -H "Authorization: Bearer $ctok" -H "anthropic-beta: oauth-2025-04-20"); then
-      jq -n --arg email "$email" --argjson data "$resp" \
-        '{($email): {ok: true, fetched_at: (now|todate), data: $data}}'
-    else
-      jq -n --arg email "$email" \
-        '{($email): {ok: false, fetched_at: (now|todate), error: "oauth usage fetch failed"}}'
-    fi
-  done | jq -s 'add // {}'
-) || CLAUDE_USAGE='{}'
+CLAUDE_USAGE=$(uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-claude-quotas") || CLAUDE_USAGE='{}'
 [ -n "$CLAUDE_USAGE" ] || CLAUDE_USAGE='{}'
 
+# Read-only Codex quota collection; the proxy remains the OAuth refresh owner.
+CODEX_USAGE=$(AI_BILLS_CLIPROXY_AUTH_DIR="$CLIPROXY_AUTH_DIR" uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-codex-quotas") || CODEX_USAGE='{}'
+ACCOUNT_QUOTAS=$(jq -n --argjson claude "$CLAUDE_USAGE" --argjson codex "$CODEX_USAGE" '{claude_usage:$claude,codex_usage:$codex}' | uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-quota-projection") || ACCOUNT_QUOTAS='{}'
+
 # --- maestro cost-obs: today tokens × per-backend pricing ---
-COST=$(uv run --no-project python - <<'PYEOF'
+COST=$(uv run --project "$COLLECTOR_DIR" --frozen python - <<'PYEOF'
 import sqlite3, json, datetime, re, os
 db = sqlite3.connect('file:' + os.environ['AI_BILLS_MAESTRO_DB'] + '?mode=ro', uri=True)
 today = datetime.date.today().isoformat()
@@ -88,8 +81,8 @@ for name, y in db.execute("SELECT name, definition_yaml FROM backends"):
     if re.search(r'provider:\s*ollama', y):
         pricing[name] = (0.0, 0.0)
     else:
-        pricing[name] = (float(m_in.group(1)) if m_in else 0.0,
-                         float(m_out.group(1)) if m_out else 0.0)
+        pricing[name] = (float(m_in.group(1)) if m_in else None,
+                         float(m_out.group(1)) if m_out else None)
 tok = {}
 for b, sj in db.execute("SELECT backend, session_json FROM sessions WHERE updated_at >= ?", (today,)):
     try: t = json.loads(sj).get('tokens_used_total', 0) or 0
@@ -97,19 +90,22 @@ for b, sj in db.execute("SELECT backend, session_json FROM sessions WHERE update
     tok[b] = tok.get(b, 0) + t
 out = []
 for b, t in sorted(tok.items(), key=lambda x: -x[1]):
-    pin, pout = pricing.get(b, (0, 0))
+    pin, pout = pricing.get(b, (None, None))
     # blended 70/30 in/out estimate, same convention as llm-subscriptions-catalog
-    est = t / 1e6 * (0.7 * pin + 0.3 * pout)
-    out.append({'backend': b, 'tokens_today': t, 'est_usd_today': round(est, 2),
+    est = t / 1e6 * (0.7 * pin + 0.3 * pout) if pin is not None and pout is not None else None
+    out.append({'backend': b, 'tokens_today': t, 'est_usd_today': round(est, 2) if est is not None else None,
                 'flat': pin == 0 and pout == 0})
 print(json.dumps(out))
 PYEOF
 ) || COST='[]'
 
 # --- vault: provider cards frontmatter + payments ---
-PROVIDERS=$(uv run --no-project python - "$AI_BILLS_PROVIDERS_DIR" <<'PYEOF'
+PROVIDERS_STATUS=fresh
+PROVIDERS=$(uv run --project "$COLLECTOR_DIR" --frozen python - "$AI_BILLS_PROVIDERS_DIR" <<'PYEOF'
 import sys, os, json, re
 root = sys.argv[1]
+if not os.path.isdir(root):
+    raise FileNotFoundError('Provider subscription inventory is unavailable')
 cards = []
 for dirpath, _, files in os.walk(root):
     for fn in files:
@@ -127,28 +123,44 @@ for dirpath, _, files in os.walk(root):
             ('title','provider','plan','billing','cost_usd_month','tier','status','risk','verified','dashboard')})
 print(json.dumps(cards))
 PYEOF
-) || PROVIDERS='[]'
-PAYMENTS=$(uv run --no-project python -c "
+) || { PROVIDERS='[]'; PROVIDERS_STATUS=error; }
+PAYMENTS_STATUS=fresh
+PAYMENTS=$(uv run --project "$COLLECTOR_DIR" --frozen python -c "
 import yaml, json, sys, os
 d = yaml.safe_load(open(os.environ['AI_BILLS_PAYMENTS_FILE']))
 print(json.dumps(d.get('payments', []), default=str))
-" 2>/dev/null) || PAYMENTS='[]'
+" 2>/dev/null) || { PAYMENTS='[]'; PAYMENTS_STATUS=error; }
 
 # --- token ledger rollup (see [[ai-usage-ledger]]) — real per-request accounting,
 # --- unlike maestro_cost_today, which only ever saw the Maestro orchestrator.
-LEDGER=$(~/.local/bin/ai-usage-report --rollup 2>/dev/null) || LEDGER='{}'
+LEDGER_STATUS=fresh
+LEDGER=$(uv run --project "$COLLECTOR_DIR" --frozen python "${AI_USAGE_REPORT_BIN:-$HOME/.local/bin/ai-usage-report}" --rollup 2>/dev/null) || { LEDGER='{}'; LEDGER_STATUS=error; }
 [ -n "$LEDGER" ] || LEDGER='{}'
+REGISTRY=$(uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-account-inventory") || REGISTRY='{"accounts":[],"sources":[{"id":"inventory","status":"error"}]}'
 
 jq -n \
+  --arg providers_status "$PROVIDERS_STATUS" --arg payments_status "$PAYMENTS_STATUS" --arg ledger_status "$LEDGER_STATUS" \
   --argjson runpod "$RUNPOD" --argjson vast "$VAST" \
   --argjson auths "$AUTHS" --argjson usage "$USAGE" \
   --argjson cost "$COST" --argjson providers "$PROVIDERS" \
   --argjson payments "$PAYMENTS" \
   --argjson ledger "$LEDGER" \
+  --argjson registry "$REGISTRY" \
   --argjson claude_usage "$CLAUDE_USAGE" \
-  '{generated: (now | todate), runpod: $runpod, vast: $vast,
+  --argjson codex_usage "$CODEX_USAGE" \
+  --argjson account_quotas "$ACCOUNT_QUOTAS" \
+  '{generated: (now | todate), source_receipts: [{id: "provider-subscriptions", status: $providers_status, observedAt: (now|todate)}, {id: "payments", status: $payments_status, observedAt: (now|todate)}, {id: "token-ledger", status: $ledger_status, observedAt: (now|todate)}], runpod: $runpod, vast: $vast,
     proxy_auths: $auths, proxy_usage: $usage,
     maestro_cost_today: $cost, providers: $providers, payments: $payments,
-    usage_ledger: $ledger, claude_usage: $claude_usage}' > "$OUT"
+    usage_ledger: $ledger, claude_usage: $claude_usage, codex_usage: $codex_usage, account_quotas:$account_quotas, account_registry: $registry}' > "$OUT"
 
-scp -q "$OUT" "$AI_BILLS_SNAPSHOT_TARGET"
+if [ -n "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ]; then
+  : "${AI_BILLS_SNAPSHOT_RECEIVER:?Set fixed receiver executable path}"
+  : "${AI_BILLS_SNAPSHOT_DESTINATION:?Set fixed snapshot destination}"
+  # Strict path alphabet prevents interpretation by the remote login shell.
+  [[ "$AI_BILLS_SNAPSHOT_RECEIVER" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 2
+  [[ "$AI_BILLS_SNAPSHOT_DESTINATION" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 2
+  ssh -- "$AI_BILLS_SNAPSHOT_SSH_HOST" "sudo -- $AI_BILLS_SNAPSHOT_RECEIVER $AI_BILLS_SNAPSHOT_DESTINATION" < "$OUT"
+else
+  scp -q "$OUT" "$AI_BILLS_SNAPSHOT_TARGET"
+fi
