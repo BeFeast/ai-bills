@@ -52,6 +52,20 @@ def cost(row, defaults, models):
     p = lookup(row.get("model"), models)
     if not p or p.get("in") is None:
         return 0.0, None, False  # caller separates "no entry" from "flat rate, no list price"
+    tier = p.get("long_context")
+    if tier is not None:
+        # Context is the complete prompt, including cached input, never output.
+        # Require every bucket: missing evidence cannot establish the price tier.
+        inputs = [row.get(field) for field in ("in_uncached", "cache_read", "cache_write")]
+        threshold = tier.get("input_tokens_above") if isinstance(tier, dict) else None
+        if (not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0
+                or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in inputs)):
+            return 0.0, None, False
+        if sum(inputs) > threshold:
+            # Long-context rates apply to all buckets and output, not just overflow.
+            p = {**p, **tier}
+            if tier.get("in") is None or tier.get("out") is None:
+                return 0.0, None, False
     # Per-model overrides matter across providers: Anthropic charges 1.25x for a
     # cache write, OpenAI and Moonshot do not charge for one at all.
     cw = p.get("cache_write_multiplier", defaults.get("cache_write_multiplier", 1.25))

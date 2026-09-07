@@ -45,6 +45,35 @@ class CollectorTests(unittest.TestCase):
             report.LEDGER_DIR = str(Path(directory) / 'absent')
             with self.assertRaises(FileNotFoundError): report.rollup({}, {})
 
+    def test_context_prices_include_all_prompt_buckets_and_reprice_entire_request(self):
+        report = module('ai-usage-report')
+        prices = {'tiered': {'in': 4, 'out': 20, 'cache_read_multiplier': .1,
+                            'cache_write_multiplier': 1.25,
+                            'long_context': {'input_tokens_above': 272000, 'in': 8, 'out': 30}}}
+        row = dict(model='tiered', in_uncached=100000, cache_read=171999, cache_write=1,
+                   out_total=1000000, billing_mode='included')
+        at_boundary = report.cost(row, {}, prices)
+        self.assertAlmostEqual(at_boundary[0], .4 + .0687996 + .000005 + 20)
+        self.assertEqual(at_boundary[1:], (0, True))
+        above = report.cost(dict(row, cache_read=172000), {}, prices)
+        self.assertAlmostEqual(above[0], .8 + .1376 + .00001 + 30)
+        # Output does not count toward prompt length; cached tokens do.
+        self.assertGreater(above[0], at_boundary[0])
+        prices['tiered']['long_context'].update(cache_read_multiplier=.2, cache_write_multiplier=2)
+        overridden = report.cost(dict(row, cache_read=172000), {}, prices)
+        self.assertAlmostEqual(overridden[0], .8 + .2752 + .000016 + 30)
+
+    def test_context_prices_do_not_guess_missing_or_invalid_input_evidence(self):
+        report = module('ai-usage-report')
+        prices = {'tiered': {'in': 4, 'out': 20,
+                            'long_context': {'input_tokens_above': 272000, 'in': 8, 'out': 30}}}
+        row = dict(model='tiered', in_uncached=100, cache_read=0, cache_write=0)
+        for field in ('in_uncached', 'cache_read', 'cache_write'):
+            for invalid in (None, -1, True, '100', 1.5):
+                self.assertFalse(report.cost(dict(row, **{field: invalid}), {}, prices)[2])
+        del row['cache_write']
+        self.assertFalse(report.cost(row, {}, prices)[2])
+
     def test_json_report_keeps_unknown_api_equivalent_unknown(self):
         from contextlib import redirect_stdout
         from unittest.mock import patch
