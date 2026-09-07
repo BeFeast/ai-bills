@@ -1,0 +1,72 @@
+{
+  "catalog": "https://api.svgl.app",
+  "retrieved": "2026-09-07",
+  "assets": [
+    {
+      "file": "claude.svg",
+      "title": "Claude AI",
+      "source": "https://svgl.app/library/claude-ai-icon.svg",
+      "sha256": "0df6dad23995f5a76c6db8cc2a4e646ff45bd7a0626ef98662a7025646e5eea1"
+    },
+    {
+      "file": "openai.svg",
+      "title": "OpenAI",
+      "source": "https://svgl.app/library/openai.svg",
+      "sha256": "a4b4dae5e28790a0fb3dc7b5d8bb199b0dd6938a002e52a8b6355394c321718e"
+    },
+    {
+      "file": "codex.svg",
+      "title": "Codex",
+      "source": "https://svgl.app/library/codex_light.svg",
+      "sha256": "dde8b3563a40d55af25e3fb2509864d16ae214b0260748d294e2d011f2a6907c"
+    },
+    {
+      "file": "google.svg",
+      "title": "Google",
+      "source": "https://svgl.app/library/google.svg",
+      "sha256": "a60266dab17c1c00981c7077fa025aa84c92782e0657ca2f78b7f70cbb8d5a56"
+    },
+    {
+      "file": "gemini.svg",
+      "title": "Gemini",
+      "source": "https://svgl.app/library/gemini.svg",
+      "sha256": "c11d94a9e3ecb32f67dd9350848cf3124d617680533275c672e1e6bf61ce8cd4"
+    },
+    {
+      "file": "kimi.svg",
+      "title": "Kimi",
+      "source": "https://svgl.app/library/kimi-icon.svg",
+      "sha256": "0ba35ce31b57bb6db39d4e454925e39f88f46a3b52a07898bd8262c3902df7fc"
+    },
+    {
+      "file": "grok.svg",
+      "title": "Grok",
+      "source": "https://svgl.app/library/grok-light.svg",
+      "sha256": "a127a7cd42b0450f7d3827a331b0730aab49fd99c3fe920d172475b9ffc83992"
+    },
+    {
+      "file": "cursor.svg",
+      "title": "Cursor",
+      "source": "https://svgl.app/library/cursor_light.svg",
+      "sha256": "c483c02f78eb2619778fdd959e72a9adfac4844854472cd2653d4cbfd60e4d71"
+    },
+    {
+      "file": "opencode.svg",
+      "title": "OpenCode",
+      "source": "https://svgl.app/library/opencode.svg",
+      "sha256": "5a44ee78769508c7226d8ac35b7b9738f929176a6c63b15f594a617afbc82a72"
+    },
+    {
+      "file": "ollama.svg",
+      "title": "Ollama",
+      "source": "https://svgl.app/library/ollama_light.svg",
+      "sha256": "b5ee1874b69d216fbc420c6118fac9b2fcc9eeb6ab6a7fc374c6a6512e48b993"
+    },
+    {
+      "file": "suno.svg",
+      "title": "Suno",
+      "source": "https://svgl.app/library/suno.svg",
+      "sha256": "03bd7a6888d7ba010c616ae6402c222683d7f909eddb028241220f227ff6d1a6"
+    }
+  ]
+}

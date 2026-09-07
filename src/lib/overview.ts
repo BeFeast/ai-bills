@@ -78,6 +78,12 @@ export function buildProductOverview(config: AppConfig, input: unknown, month = 
   const coveredProviders = new Set([...authoritative.map(value => key(value.provider)), ...(config.subscriptions ?? []).map(value => key(value.replaces_provider || '')), ...rows(snapshot.subscriptions).map(value => key(text(value.replaces_provider)))]);
   const subscriptions = [...authoritative, ...rows(snapshot.providers).filter(value => !coveredProviders.has(key(text(value.provider))) && (text(value.billing).toLowerCase().includes('subscription') || text(value.status) === 'cancelled')).map(legacyProvider)];
   const unique = [...new Map(subscriptions.map(value => [value.id, value])).values()].map(value => overrides[value.id] ? { ...value, ...overrides[value.id], costEvidence: overrides[value.id].costEvidence ?? value.costEvidence, sourceNote: `${value.sourceNote} Manual update saved ${overrides[value.id].updatedAt}.`, observedAt: overrides[value.id].updatedAt } : value);
+  const accountEmails = new Map((config.accounts ?? []).map(account => [account.key, account.email?.trim()]));
+  for (const value of unique) {
+    const emails = [...new Set(value.accountKeys.map(accountKey => accountEmails.get(accountKey)).filter((email): email is string => Boolean(email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))))];
+    if (emails.length) value.label = emails.join(', ');
+    else if (value.accountKeys.length) value.label = `${value.provider} · email not recorded`;
+  }
   const active = unique.filter(value => value.status === 'active');
   const costs = new Map<string, number>();
   for (const value of active) if (value.amount !== null && value.period !== 'unknown') costs.set(value.currency, (costs.get(value.currency) ?? 0) + value.amount / (value.period === 'year' ? 12 : 1));

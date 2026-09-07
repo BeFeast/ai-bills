@@ -38,6 +38,7 @@ import {
 import { fmtDate, fmtNumber, normalizePct, pickPct, resetLabel } from './format';
 import { AvailabilityPill, LiveBadge, Tip, UsageBlock, type Severity } from './ui';
 import { CodexAuthBox, useCodexAuth } from './CodexAuth';
+import { ProviderIcon } from './ProviderIcon';
 
 type CardProps = { result: ProviderUsage; now: number; tz: string; onAuthorized: () => void };
 
@@ -65,7 +66,7 @@ export function usageEvidence(result: ProviderUsage, now: number, maxAgeSeconds 
 
 function UnknownUsageCard({ result, now, tz, onAuthorized, evidence }: CardProps & { evidence: UsageEvidence }) {
   return <article className={cardClass(result, evidence.state === 'error' ? 'danger' : 'warn')}>
-    <div className="card-head"><div className="card-title"><p className="eyebrow">{result.account.provider} · {result.account.label}</p><h2>{result.account.email}</h2><AvailabilityPill tone="warn" label="Availability unknown" detail={evidence.message} /></div><span className={`pill ${evidence.state === 'error' ? 'danger' : 'warn'}`}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</span></div>
+    <div className="card-head"><ProviderIcon provider={result.account.provider} /><div className="card-title"><p className="eyebrow">{result.account.provider}</p><h2>{result.account.email || 'Email not recorded'}</h2><AvailabilityPill tone="warn" label="Availability unknown" detail={evidence.message} /></div><span className={`pill ${evidence.state === 'error' ? 'danger' : 'warn'}`}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</span></div>
     <p className="status warn">{evidence.message}</p>
     <div className="kv"><span>Quota remaining</span><strong>Unknown</strong><span>Last observation</span><strong>{fmtDate(result.fetchedAt, tz)}</strong><span>HTTP status</span><strong>{result.status ?? 'Unknown'}</strong></div>
     {result.account.provider === 'codex' ? <CodexConnect result={result} now={now} tz={tz} onAuthorized={onAuthorized} /> : null}
@@ -97,6 +98,7 @@ function CardHead({ result, eyebrow, title, availability, actions }: {
 }) {
   return (
     <div className="card-head">
+      <ProviderIcon provider={result.account.provider} />
       <div className="card-title">
         <p className="eyebrow">{eyebrow}</p>
         <div className="account-line">
@@ -223,8 +225,8 @@ function ClaudeCard({ result, now, tz }: CardProps) {
     <article className={cardClass(result, cardState)}>
       <CardHead
         result={result}
-        eyebrow={`${result.account.label} · ${result.account.key}`}
-        title={result.account.email}
+        eyebrow={result.account.provider}
+        title={result.account.email || 'Email not recorded'}
         availability={availability}
       />
       <ErrorLine result={result} fallback="Unknown error" />
@@ -318,7 +320,7 @@ function KimiCard({ result, now, tz }: CardProps) {
     <article className={cardClass(result, cardState)}>
       <CardHead
         result={result}
-        eyebrow={`${result.account.label} · ${result.account.key}`}
+        eyebrow={result.account.provider}
         title={`Kimi Code · ${result.account.email}`}
         availability={availability}
       />
@@ -482,16 +484,11 @@ function CodexCard({ result, now, tz, onAuthorized }: CardProps) {
     <article className={cardClass(result, cardState)}>
       <CardHead
         result={result}
-        eyebrow={`${result.account.label} · WHAM API`}
-        title={`Codex · ${data?.email || result.account.email}`}
+        eyebrow="Codex"
+        title={data?.email || result.account.email || 'Email not recorded'}
         availability={availability}
-        actions={
-          <div className="card-actions">
-            <LiveBadge ok={result.ok} />
-            <CodexConnect result={result} now={now} tz={tz} onAuthorized={onAuthorized} />
-          </div>
-        }
       />
+      <div className="account-connection"><CodexConnect result={result} now={now} tz={tz} onAuthorized={onAuthorized} /></div>
       <ErrorLine result={result} fallback="WHAM request failed" />
       <CodexUsageBlock label={windowLabel} pct={pct} resetIso={resetIso} rl={data?.rate_limit} now={now} tz={tz} />
       {additionalLimits.map((limit, i) => (
@@ -616,8 +613,8 @@ function CursorCard({ result, now, tz }: CardProps) {
     <article className={cardClass(result, cardState)}>
       <CardHead
         result={result}
-        eyebrow={`${result.account.label} · ${result.account.key}`}
-        title={`Cursor · ${result.account.email}`}
+        eyebrow={result.account.provider}
+        title={result.account.email || 'Email not recorded'}
         availability={availability}
       />
       <ErrorLine result={result} fallback="Unknown error" />
