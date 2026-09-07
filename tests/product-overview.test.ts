@@ -3,6 +3,17 @@ import { buildProductOverview } from '../src/lib/overview';
 import type { AppConfig } from '../src/lib/config';
 const config = { server: { timezone: 'Asia/Jerusalem' }, subscriptions: [] } as unknown as AppConfig;
 describe('product overview', () => {
+  it('uses only explicitly linked account emails for subscription labels', () => {
+    const result = buildProductOverview({ ...config,
+      accounts: [{ key: 'linked', provider: 'claude', label: 'Personal', email: 'owner@example.com' }, { key: 'unlinked', provider: 'claude', label: 'Work', email: 'other@example.com' }],
+      subscriptions: [
+        { id: 'one', provider: 'Anthropic', label: 'Claude Personal', plan: 'Pro', account_keys: ['linked'] },
+        { id: 'two', provider: 'Anthropic', label: 'Claude Work', plan: 'Pro', account_keys: ['missing'] },
+      ],
+    }, {}, '2026-09');
+    expect(result.subscriptions.map(value => value.label)).toEqual(['owner@example.com', 'Anthropic · email not recorded']);
+    expect(result.subscriptions[0].accountKeys).toEqual(['linked']);
+  });
   it('does not report a missing inventory as a confirmed zero subscriptions', () => {
     const result = buildProductOverview(config, {}, '2026-09');
     expect(result.summary.subscriptionCountComplete).toBe(false);
