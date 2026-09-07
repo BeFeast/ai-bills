@@ -79,6 +79,27 @@ class Application:
                 binding["native_supported"] = self.native_providers[provider]
         return runtime
 
+    def upstream_client_headers(self, binding, client, headers, session):
+        scope = binding.get("opencode_headers_clients")
+        if scope is None:
+            return {}
+        if client not in scope:
+            raise Rejected("upstream account is restricted to enrolled OpenCode clients", 403)
+        actual_session = headers.get("x-opencode-session", "")
+        actual_request = headers.get("x-opencode-request", "")
+        if not actual_session or session != "opencode:" + actual_session:
+            raise Rejected("genuine OpenCode session metadata is required for this route")
+        if not actual_request or actual_request != headers.get("X-Client-Turn-ID"):
+            raise Rejected("genuine OpenCode request metadata is required for this route")
+        forwarded = {}
+        for name in ("x-opencode-session", "x-opencode-request", "x-opencode-project", "x-opencode-client"):
+            value = headers.get(name)
+            if value is not None:
+                if not value or len(value) > 256 or any(ord(c) < 33 or ord(c) > 126 for c in value):
+                    raise Rejected("invalid OpenCode upstream metadata")
+                forwarded[name] = value
+        return forwarded
+
     def account_health(self):
         from engine import _quota_order
         runtime = self.routing_runtime()
@@ -95,7 +116,7 @@ class Application:
                            "bound": bool(binding.get("auth_id"))})
         return values
 
-    def receipt_usage(self, attempt):
+    def native_receipt(self, attempt):
         binding = self.config.get("accounts", {}).get(attempt["account_id"], {})
         if not binding.get("auth_id"):
             return None
@@ -108,6 +129,25 @@ class Application:
         if not isinstance(data, dict):
             return None
         if data.get("attempt_id") != attempt["id"] or data.get("auth_id") != binding["auth_id"]:
+            return None
+        return data
+
+    def receipt_zero(self, attempt, data=None):
+        data = self.native_receipt(attempt) if data is None else data
+        if not data or data.get("terminal") is not True or data.get("failed") is not True:
+            return False
+        if data.get("billable_zero") is not True or data.get("started") is not False:
+            return False
+        # Pre-selection failures cannot name a selected model. Once accepted,
+        # canonical model identity must match the immutable admission.
+        model = data.get("model")
+        if model is None:
+            return data.get("accepted") is False
+        return bool(attempt.get("upstream_model")) and model == attempt["upstream_model"]
+
+    def receipt_usage(self, attempt, data=None):
+        data = self.native_receipt(attempt) if data is None else data
+        if not data:
             return None
         if not data.get("terminal") or not data.get("usage_complete") or data.get("failed"):
             return None
@@ -138,7 +178,14 @@ class Application:
     def reconcile(self):
         self.store.reconcile_budget()
         for attempt in self.store.unresolved():
-            usage = self.receipt_usage(attempt)
+            data = self.native_receipt(attempt)
+            if data is None:
+                continue
+            if self.receipt_zero(attempt, data):
+                self.store.finish(attempt["id"], cost=0, complete=True, error="native pre-dispatch rejection")
+                self.store.release_session(attempt["client_id"], attempt["session_id"], attempt["request_id"])
+                continue
+            usage = self.receipt_usage(attempt, data)
             if usage is None:
                 continue
             self.store.finish(attempt["id"], cost=cost_for(usage, {"prices": attempt["prices"]}), usage=usage,
@@ -325,6 +372,7 @@ def handler_for(app):
                 attempt = None
                 try:
                     payload, reserve = prepare(body, PATHS[path], model, route, binding)
+                    client_headers = app.upstream_client_headers(binding, client, self.headers, session)
                     attempt = app.store.admit(policy_version=policy["version"], request_id=request_id, client_id=client,
                         session_id=session, requested_model=selected, role=role, model=model["id"],
                         account_id=route["account_id"], billing=route["billing"], reserve=reserve,
@@ -332,7 +380,7 @@ def handler_for(app):
                         prices=route.get("prices"), price_version=route.get("price_version"),
                         client_request_id=self.headers.get("X-Request-ID"), client_turn_id=(self.headers.get("X-Client-Turn-ID") or "")[:256] or None,
                         upstream_model=route.get("upstream_canonical_model", route["upstream_model"]))
-                    headers = app.native_headers()
+                    headers = {**app.native_headers(), **client_headers}
                     headers.update({"Content-Type": "application/json", "X-Session-ID": session,
                                     "X-AI-Bills-Managed": "1", "X-AI-Bills-Attempt-ID": attempt["id"],
                                     "X-AI-Bills-Request-ID": request_id,
@@ -350,13 +398,19 @@ def handler_for(app):
                     url = app.config["native"]["base_url"].rstrip("/") + path
                     with app.http.stream("POST", url, json=payload, headers=headers) as response:
                         if response.headers.get("X-AI-Bills-Managed-Version") != "1" or response.headers.get("X-AI-Bills-Attempt-ID") != attempt["id"] or response.headers.get("X-AI-Bills-Auth-ID") != binding["auth_id"]:
+                            if response.status_code >= 400 and app.receipt_zero(attempt):
+                                app.store.finish(attempt["id"], cost=0, complete=True, error="native pre-dispatch rejection")
+                                fallback = "native_predispatch_rejected"
+                                last_error = Rejected("approved native routes unavailable", 503)
+                                continue
                             app.native_ready = False
                             app.store.finish(attempt["id"], error="native receipt mismatch")
                             raise Rejected("native managed receipt mismatch; reservation retained", 502)
                         if response.status_code >= 400:
                             # An HTTP error does not prove a paid attempt incurred no cost.
-                            app.store.finish(attempt["id"], error="upstream HTTP " + str(response.status_code), complete=route["billing"] == "included")
-                            if response.status_code in (401, 403, 404, 408, 409, 429, 500, 502, 503, 504):
+                            zero = app.receipt_zero(attempt)
+                            app.store.finish(attempt["id"], cost=0 if zero else None, error="upstream HTTP " + str(response.status_code), complete=zero or route["billing"] == "included")
+                            if response.status_code in (401, 402, 403, 404, 408, 409, 429, 500, 502, 503, 504):
                                 fallback = "upstream_http_" + str(response.status_code)
                                 last_error = Rejected("approved routes unavailable", 503)
                                 continue

@@ -147,3 +147,14 @@ def test_catalog_tools_require_all_role_candidates_verified(policy):
     assert not entries['coding-quality']['tool_call']
     assert entries['coding-quality']['context_length'] == 8000
     assert entries['example-coder']['tool_call']
+
+
+def test_client_scoped_route_filters_catalog_manual_and_roles(policy, runtime):
+    policy['models'][0]['routes'] = [dict(policy['models'][0]['routes'][0], allowed_clients=['opencode-client'])]
+    policy['clients'].append({'id': 'opencode-client', 'models': ['example-coder'], 'roles': ['coding-quality']})
+    assert catalog(policy, 'example-client')['data'] == []
+    for selected in ('example-coder', 'coding-quality'):
+        with pytest.raises(Rejected, match='no approved'):
+            candidates(policy, runtime, 'example-client', selected, 'chat')
+    assert catalog(policy, 'opencode-client')['data'][0]['id'] == 'coding-quality'
+    assert candidates(policy, runtime, 'opencode-client', 'coding-quality', 'chat')[0]

@@ -10,11 +10,15 @@ from store import Rejected, utcnow
 PATHS = {"/v1/chat/completions": "chat", "/v1/responses": "responses", "/v1/messages": "messages"}
 
 
+def route_client_allowed(route, client_id):
+    return "allowed_clients" not in route or client_id in route["allowed_clients"]
+
+
 def catalog(policy, client_id):
     client = next((c for c in policy["clients"] if c["id"] == client_id), None)
     if client is None:
         raise Rejected("client is not enrolled", 403)
-    approved = {m["id"] for m in policy["models"] if m["status"] == "approved"}
+    approved = {m["id"] for m in policy["models"] if m["status"] == "approved" and any(route_client_allowed(r, client_id) for r in m["routes"])}
     roles = {r["id"] for r in policy["roles"] if any(m in approved and m in client["models"] for m in r["candidates"])}
     ids = [r for r in client["roles"] if r in roles] + [m for m in client["models"] if m in approved]
     models = {m["id"]: m for m in policy["models"]}
@@ -74,9 +78,13 @@ def candidates(policy, runtime, client_id, selected, protocol, previous=None, no
         if model["status"] == "hidden" and (not previous or previous.get("model") != mid):
             continue
         for route in model["routes"]:
+            if not route_client_allowed(route, client_id):
+                continue
             aid = route["account_id"]
             binding = runtime.get("accounts", {}).get(aid)
             if aid not in enabled or not binding or not binding.get("auth_id") or binding.get("native_supported") is False:
+                continue
+            if "opencode_headers_clients" in binding and client_id not in binding["opencode_headers_clients"]:
                 continue
             quota = _quota_order(binding, now)
             if quota[0] == 3:

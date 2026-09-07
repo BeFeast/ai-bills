@@ -135,7 +135,9 @@ Account `provider` matches native capability provider IDs; `account_health` repo
 unsupported native executors separately from quota exhaustion or unknown quota.
 
 Fallback occurs only among approved compatible role candidates or accounts for a
-manually selected model. It never replays after bytes have been delivered, nor after
+manually selected model. Upstream HTTP 402 (plan/payment unavailable) is eligible
+for approved fallback, just like quota 429; the failed paid attempt remains reserved
+unless native proves no dispatch. It never replays after bytes have been delivered, nor after
 an uncertain transport failure. Response headers expose request/attempt ID, actual
 logical model/account, applied policy version, and fallback reason. Authenticated
 `GET /v1/routing/events?session_id=...&after=0` provides non-destructive receipts
@@ -247,3 +249,35 @@ version. Update native through the owned managed-artifact workflow so an automat
 official-binary update cannot silently remove the required contract. Rollback switches
 the service release and policy deliberately while retaining the admission journal;
 never replace either database with an older copy that forgets admitted paid requests.
+
+Native pre-selection rejection can occur before acceptance response headers exist.
+The gateway then reads the authenticated non-destructive receipt and allows fallback
+only when attempt ID and private auth ID match, `terminal`, `failed`, and
+`billable_zero` are true, and `started` is false. Canonical model must match when
+present; an absent model is allowed only for `accepted: false`. This factual evidence
+settles the attempt at zero, including delayed reconciliation after recovery. Neither
+an HTTP error nor missing acceptance headers alone releases liability. Contradictory,
+missing, or mismatched receipts retain the reservation and fail closed.
+
+## Genuine OpenCode-only upstream routes
+
+Some provider offers require requests from actual OpenCode sessions. A route can
+restrict `allowed_clients` to the enrolled OpenCode client IDs. Both `/v1/models`
+and manual/role dispatch apply this scope, even when another client guesses its
+model ID. Keep these models out of the direct API subset as well.
+
+For the separate private upstream account, configure
+`opencode_headers_clients: ["your-opencode-client-id"]`. Only those clients can use
+that binding, and only their actual `x-opencode-session`, `x-opencode-request`, and
+optional `x-opencode-project` / `x-opencode-client` values are forwarded. Session must
+match the gateway's `opencode:<session-id>` identity; request must match the actual
+client turn ID. Missing or inconsistent metadata fails before admission. No IDs,
+client flags, or user agents are synthesized for a direct API call. Other upstream
+accounts receive none of these headers.
+
+The native account's private custom-header configuration uses existing dynamic
+header references, for example `x-opencode-session: "$x-opencode-session"` and
+`x-opencode-request: "$x-opencode-request"` (plus project/client only when actually
+supplied). The existing native executor resolves them from the incoming request;
+this does not require a native binary patch. Verify acceptance through a real
+OpenCode session before marking the restricted model's evaluation complete.

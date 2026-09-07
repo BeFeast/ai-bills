@@ -298,3 +298,149 @@ def test_budget_unavailable_keeps_existing_and_new_included_sessions(runtime, po
         app.store.apply(policy, 1)
         assert client.post('/v1/chat/completions', json=payload, headers={'X-Session-ID': 'new-paid'}).status_code == 503
         assert len(calls) == 3
+
+
+def two_paid_candidates(policy):
+    import copy
+    policy['models'][0]['routes'] = [policy['models'][0]['routes'][1]]
+    other = copy.deepcopy(policy['models'][0])
+    other['id'] = 'second-paid'
+    policy['models'].append(other)
+    policy['roles'][0]['candidates'].append(other['id'])
+    policy['clients'][0]['models'].append(other['id'])
+
+
+def test_http402_falls_back_without_releasing_uncertain_paid_liability(runtime, policy):
+    two_paid_candidates(policy)
+    calls = []
+    def provider(request):
+        if '/ai-bills-receipts/' in request.url.path:
+            return httpx.Response(404)
+        if request.method == 'GET':
+            return httpx.Response(200, json=CAPABILITIES)
+        calls.append(request)
+        status = 402 if len(calls) == 1 else 200
+        return httpx.Response(status, json={'usage': {'prompt_tokens': 1, 'completion_tokens': 1}}, headers=receipt(request))
+    with running(runtime, policy, provider) as (app, client):
+        response = client.post('/v1/chat/completions', json={'model': 'coding-quality', 'messages': []})
+        assert response.status_code == 200
+        assert response.headers['X-AI-Bills-Fallback'] == 'upstream_http_402'
+        assert len(calls) == 2
+        attempts = app.store.state()['requests']
+        assert all(row['status'] == 'unresolved' for row in attempts)
+        assert app.store.budget()['reserved_microusd'] == sum(row['reserved_microusd'] for row in attempts)
+
+
+def test_native_predispatch_failure_without_accept_headers_releases_only_proven_zero(runtime, policy):
+    two_paid_candidates(policy)
+    calls = []
+    def provider(request):
+        if '/ai-bills-receipts/' in request.url.path:
+            identity = request.url.path.rsplit('/', 1)[-1]
+            if identity != calls[0].headers['X-AI-Bills-Attempt-ID']:
+                return httpx.Response(404)
+            return httpx.Response(200, json={'attempt_id': identity, 'auth_id': 'auth-api',
+                'terminal': True, 'failed': True, 'billable_zero': True, 'started': False, 'accepted': False})
+        if request.method == 'GET':
+            return httpx.Response(200, json=CAPABILITIES)
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(500, json={'error': 'selected model unavailable'})
+        return httpx.Response(200, json={'usage': {'prompt_tokens': 1, 'completion_tokens': 1}}, headers=receipt(request))
+    with running(runtime, policy, provider) as (app, client):
+        response = client.post('/v1/chat/completions', json={'model': 'coding-quality', 'messages': []})
+        assert response.status_code == 200
+        assert response.headers['X-AI-Bills-Fallback'] == 'native_predispatch_rejected'
+        assert len(calls) == 2 and app.native_ready
+        attempts = app.store.state()['requests']
+        zero = next(a for a in attempts if a['model'] == 'example-coder')
+        pending = next(a for a in attempts if a['model'] == 'second-paid')
+        assert zero['status'] == 'settled' and zero['cost_microusd'] == 0
+        assert app.store.budget()['reserved_microusd'] == pending['reserved_microusd']
+
+
+@pytest.mark.parametrize('override', [
+    {'attempt_id': 'wrong'}, {'auth_id': 'wrong'}, {'started': True},
+    {'billable_zero': False}, {'terminal': False}, {'failed': False},
+    {'model': 'wrong'}, {'accepted': True},
+])
+def test_unproven_zero_receipt_never_releases_or_allows_header_mismatch_fallback(runtime, policy, override):
+    two_paid_candidates(policy)
+    calls = []
+    def provider(request):
+        if '/ai-bills-receipts/' in request.url.path:
+            return httpx.Response(200, json={
+                'attempt_id': request.url.path.rsplit('/', 1)[-1], 'auth_id': 'auth-api',
+                'terminal': True, 'failed': True, 'billable_zero': True, 'started': False, 'accepted': False, **override})
+        if request.method == 'GET':
+            return httpx.Response(200, json=CAPABILITIES)
+        calls.append(request)
+        return httpx.Response(500)
+    with running(runtime, policy, provider) as (app, client):
+        response = client.post('/v1/chat/completions', json={'model': 'coding-quality', 'messages': []})
+        assert response.status_code == 502 and len(calls) == 1
+        assert app.store.budget()['reserved_microusd'] > 0
+
+
+def test_delayed_predispatch_receipt_reconciles_zero_and_unblocks_session(runtime, policy):
+    app = Application(runtime)
+    app.store.apply(policy, 0)
+    app.store.acquire_session('example-client', 'stuck', 'coding-quality', 'request')
+    attempt = app.store.admit(policy_version=1, request_id='request', client_id='example-client', session_id='stuck',
+        requested_model='coding-quality', role='coding-quality', model='example-coder', upstream_model='example-coder',
+        account_id='api-a', billing='paid', reserve=500_000)
+    app.store.finish(attempt['id'], error='missing native response headers')
+    app.http.close()
+    app.http = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+        'attempt_id': attempt['id'], 'auth_id': 'auth-api', 'terminal': True, 'failed': True,
+        'billable_zero': True, 'started': False, 'accepted': False})))
+    app.reconcile()
+    assert app.store.budget()['reserved_microusd'] == 0
+    assert app.store.budget()['spent_microusd'] == 0
+    assert app.store.acquire_session('example-client', 'stuck', 'coding-quality', 'next')['model'] is None
+    app.reconcile()
+    assert app.store.budget()['reserved_microusd'] == 0
+
+
+def test_genuine_opencode_metadata_forwarding_is_account_and_client_scoped(runtime, policy):
+    runtime['accounts']['subscription-a']['opencode_headers_clients'] = ['example-client']
+    policy['models'][0]['routes'][0]['allowed_clients'] = ['example-client']
+    calls = []
+    def provider(request):
+        if request.method == 'GET':
+            return httpx.Response(200, json=CAPABILITIES)
+        calls.append(request)
+        return httpx.Response(200, json={'usage': {'prompt_tokens': 1, 'completion_tokens': 1}}, headers=receipt(request))
+    with running(runtime, policy, provider) as (app, client):
+        payload = {'model': 'coding-quality', 'messages': []}
+        assert client.post('/v1/chat/completions', json=payload).status_code == 400
+        assert not calls and not app.store.state()['requests']
+        headers = {'X-Session-ID': 'opencode:ses_fixture', 'X-Client-Turn-ID': 'msg_fixture',
+                   'x-opencode-session': 'ses_fixture', 'x-opencode-request': 'msg_fixture',
+                   'x-opencode-project': 'project_fixture', 'x-not-approved': 'never-forward'}
+        assert client.post('/v1/chat/completions', json=payload, headers=headers).status_code == 200
+        assert calls[0].headers['x-opencode-session'] == 'ses_fixture'
+        assert calls[0].headers['x-opencode-request'] == 'msg_fixture'
+        assert calls[0].headers['x-opencode-project'] == 'project_fixture'
+        assert 'x-not-approved' not in calls[0].headers
+        # Same genuine client metadata is not leaked to unrelated upstream accounts.
+        runtime['accounts']['subscription-a'].pop('opencode_headers_clients')
+        assert client.post('/v1/chat/completions', json=payload, headers=headers).status_code == 200
+        assert 'x-opencode-session' not in calls[-1].headers
+        assert 'x-opencode-request' not in calls[-1].headers
+
+
+@pytest.mark.parametrize('headers', [
+    {'X-Session-ID': 'opencode:ses_real', 'X-Client-Turn-ID': 'msg_real', 'x-opencode-session': 'different', 'x-opencode-request': 'msg_real'},
+    {'X-Session-ID': 'opencode:ses_real', 'X-Client-Turn-ID': 'msg_real', 'x-opencode-session': 'ses_real', 'x-opencode-request': 'different'},
+])
+def test_opencode_metadata_must_match_actual_gateway_session_and_turn(runtime, policy, headers):
+    runtime['accounts']['subscription-a']['opencode_headers_clients'] = ['example-client']
+    calls = []
+    def provider(request):
+        calls.append(request)
+        return httpx.Response(200, json=CAPABILITIES)
+    with running(runtime, policy, provider) as (app, client):
+        assert client.post('/v1/chat/completions', json={'model': 'coding-quality', 'messages': []}, headers=headers).status_code == 400
+        assert all(r.method == 'GET' for r in calls)
+        assert not app.store.state()['requests']

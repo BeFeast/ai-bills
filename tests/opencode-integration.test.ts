@@ -21,6 +21,8 @@ describe('isolated OpenCode routing integration', () => {
     await hooks['chat.headers'](input, first); await hooks['chat.headers'](input, second);
     expect(first.headers['X-Session-ID']).toBe('opencode:session-a');
     expect(first.headers['X-Client-Turn-ID']).toBe('message-a');
+    expect(first.headers['x-opencode-session']).toBe('session-a');
+    expect(first.headers['x-opencode-request']).toBe('message-a');
     expect(first.headers['X-Request-ID']).not.toBe(second.headers['X-Request-ID']);
     expect(first.headers['X-Request-ID']).toMatch(/^opencode:message-a:/);
   });

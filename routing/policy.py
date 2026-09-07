@@ -57,6 +57,10 @@ def validate(policy: dict) -> list[str]:
                 errors.append(f"{mid}: invalid route")
             if "upstream_canonical_model" in route and (not isinstance(route["upstream_canonical_model"], str) or not route["upstream_canonical_model"]):
                 errors.append(f"{mid}: canonical upstream model must be a nonempty string")
+            if "allowed_clients" in route:
+                scope = route["allowed_clients"]
+                if not isinstance(scope, list) or any(not isinstance(cid, str) or cid not in groups["clients"] for cid in scope):
+                    errors.append(f"{mid}: allowed_clients must reference policy client IDs")
             rp = route.get("prices")
             if rp is not None and (not isinstance(rp, dict) or any(type(rp.get(k)) is not int or rp[k] < 0 for k in ("input", "output", "cache_read", "cache_write"))):
                 errors.append(f"{mid}: route prices must be complete nonnegative integers")
