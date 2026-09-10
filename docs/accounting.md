@@ -110,3 +110,145 @@ JSON validation, file fsync, same-directory rename and directory fsync preserve
 the previous snapshot on invalid/truncated input. Existing SCP mode remains when
 SSH receiver configuration is absent. Installation, paths and privileges are
 operator-owned; this source does not enable schedules or change permissions.
+
+## Audit receipt — 2026-09-10
+
+Read-only inspection found a disagreement between the account inventory and
+routing quota projection. A Claude observation with an inactive five-hour window
+(`utilization: 0`, `resets_at: null`) and an exhausted, unexpired weekly window
+was correctly shown as exhausted by the inventory, but
+`collector/ai-quota-projection` invalidated both windows and emitted unknown quota.
+The scoped patch ignores only that inactive five-hour shape. It preserves the
+weekly limit and reset; malformed active windows, stale observations, and an
+inactive session without another usable window remain unknown.
+
+Validation: 19 tests passed across `tests/test_claude_quota_collector.py`,
+`tests/test_codex_quota_collector.py`, and `tests/accounting-collectors.test.py`.
+An offline replay of the observed snapshot reproduced unknown results before
+the patch and exhausted results after it for both affected accounts. No collector
+installation, deployment, provider inference, account change, or ledger rewrite
+was performed. Runtime acceptance remains pending deployment.
+
+Separate read-only attribution inspection confirmed a reporting limitation:
+newer Claude assistant records can omit the upstream request ID, preventing the
+existing request-ID reconciliation from matching native observations to proxy
+observations. Repeated assistant content blocks can carry the same usage tuple.
+Matching session, model, and token buckets established overlap in the inspected
+records, but this receipt does not introduce a heuristic deduplication rule or
+claim exact request identity from those fields alone. Private source records and
+consumer identifiers remain outside this repository. A follow-up must preserve
+legitimate repeated requests and retry attempts while reconciling observations.
+The quota patch does not repair historical accounting totals.
+
+Snapshot delivery was current during the audit while browser-dependent operations
+timed out. Provider snapshot freshness, website/CDP availability, routing quota
+projection, and consumer attribution therefore require separate status evidence.
+The overview currently offers month-wide client/model rankings; it does not expose
+the account and time-window breakdown needed to explain a particular quota limit.
+
+### Retained-week attribution follow-up
+
+The September ledger and tap journal span the inferred current weekly windows
+(provider reset minus seven days). This establishes retained time coverage, not
+complete ingestion or complete account activity. The journal records four HTTP403
+drain failures during September7 and two tap restarts. Earlier operation also used
+a one-record batch against a finite-retention queue, so unobserved traffic cannot
+be reconstructed merely from the presence of a monthly ledger file.
+
+Only proxy observations were aggregated by account; native rows were not added to
+them. After session metadata became available on September7, exact proxy session
+IDs could be resolved against local native log paths. Before that, account/client/
+model evidence survives but project attribution is incomplete. A bounded scan of
+14,556 matching native log files found 33,913 assistant records and no upstream
+request IDs; it therefore recovered no exact earlier request-ID joins. Matching
+token tuples near the same timestamp offers corroboration only, not exact request
+identity, and was excluded from the proven project totals.
+
+The two accounts have different histories: one has no successful retained Claude
+requests on September9–10, while the other still has successful activity then.
+Consequently a recent high-volume consumer cannot alone explain both whole-week
+limits. Known session-linked consumers, unknown pre-session observations, native
+activity outside the proxy, and shared client-key labels must remain distinguishable.
+Token buckets and failed attempts do not translate into provider quota percentages.
+Private per-account aggregates and session mappings are retained in the operator
+audit context, not this public-source document. No further code or live changes
+were made for this attribution follow-up.
+
+## Reliability candidate — September 10, 2026
+
+Issues #23, #24 and #25, with the application side of #26, are addressed by the
+following source changes. This receipt describes a tested candidate, not a live
+rollout or a claim that every subscription has an automatic adapter.
+
+- An inactive zero-use Claude session window no longer discards a valid exhausted
+  weekly window. Active malformed and stale windows remain unknown.
+- Native assistant message IDs survive collection. Repeated content blocks for the
+  same native message are collapsed before routing enrichment. Native records
+  without an exact upstream join are retained as unresolved observations and are
+  excluded from confirmed request/token subtotals. Identical token counts alone
+  never identify a duplicate. Combined totals remain unknown where overlap exists;
+  confirmed subtotals do not establish complete historical capture or quota shares.
+- The first view shows account quotas, observation freshness, source failures and
+  the configured CLIProxyAPI management link. Account usage rankings accompany the
+  confirmed subtotal. Independently declared accounts have their own provider
+  website and optional operator note; inventory does not imply quota, funds or
+  successful authentication. A direct Meta account remains separate from an
+  OpenCode model route. Unsupported sources stay explicitly unknown.
+- Dashboard rendering never polls dedicated browser identities. Manual account
+  access is explicit; ordinary provider links work independently of browser CDP.
+  Identity freshness ages locally without network polling. A manual lease can be
+  reopened, renewed and explicitly closed before another account opens. No tracked
+  lease means closure cannot be confirmed, including after an app restart; an
+  outstanding controller lease then expires by its bounded TTL.
+- API/snapshot sources publish results independently while browser sources run
+  serially. A failed shared refresh can recover. The existing collector optionally
+  requests one bounded dashboard refresh after delivering its snapshot; no extra
+  polling daemon is introduced.
+
+### Optional deployment configuration
+
+`AI_BILLS_BROWSER_LIFECYCLE_URL` and `AI_BILLS_BROWSER_LIFECYCLE_TOKEN` enable the
+reviewed external lease controller. Browser quota accounts require `cdp_profile_id`
+matching an allowed controller profile; manual browser bindings already carry a
+profile ID. Acquisition allows 60 seconds and release 40 seconds. The controller
+owns capacity, memory admission, exclusivity and TTL expiration. A quota scrape
+must not take over a live manual account browser. Without lifecycle configuration,
+legacy behavior remains available; enabling the controller is an explicit rollout
+step, not an automatic consequence of deploying this source.
+
+`AI_BILLS_BROWSER_REFRESH_URL` enables the existing collector's post-delivery
+refresh hook (240-second whole-job bound). Keep the existing single-instance lock
+and five-minute schedule. Configure the fixed SSH snapshot receiver so refresh
+follows successful delivery, rather than running before a separate wrapper copy.
+Do not execute production collectors merely to test these changes.
+
+`accounting.declared_accounts` accepts `website_url` and `operator_note`. Both are
+operator declarations, never provider verification. Explicit identity bindings can
+merge a declared account with its known proxy inventory record while preserving
+these annotations; accounts are never merged by a display label alone.
+
+`GET /api/health` is read-only: it returns process availability plus expected
+configured source observations (`status`, `observedAt`, `maxAgeSeconds`). Browser
+sources include `cdp_path` historical observation with `live: false`; this is not a
+live path probe. Missing/stale/failed expected observations degrade collection.
+Unsupported independently declared accounts are coverage gaps, not required
+background jobs. Monitoring must not use `/api/usage` as a passive health check,
+because its TTL can start collection.
+
+### Validation and acceptance boundary
+
+The candidate passed 166 JavaScript tests across 18 files, the TypeScript check,
+18 accounting collector tests, six provider quota tests and a production build.
+Local browser acceptance uses synthetic accounts: the first screen and
+subscriptions send zero unsolicited account-browser requests, management and
+provider links are visible, unresolved combined totals remain explicit, and the
+mobile layout fits a 390-pixel viewport. Backend lease tests cover repeated open,
+renew, explicit close, switching accounts under a one-browser capacity limit, and
+unknown ownership after restart. No production inference or browser login was used.
+
+The live acceptance still requires an approved packaged rollout, existing session
+preservation, one-browser memory canary, successful scheduled source refreshes,
+manual open/close/switch from the actual clients, and replacement monitoring that
+covers active consumers. Unsupported provider quota adapters and missing historic
+usage identifiers cannot be recovered by a UI change. Neither existing usage logs
+nor proxy auth enabled/disabled state are rewritten by this candidate.

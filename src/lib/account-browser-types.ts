@@ -6,6 +6,7 @@ export type AccountBrowserState = {
   intendedEmail: string | null; configured: boolean; status: AccountBrowserStatus;
   observedAt: string | null; maxAgeSeconds: number; verifiedEmail?: string;
   remoteUrl?: string; profileId?: string; proxyAccountId: string | null; message: string;
+  manualLeaseExpiresAt?: string | null;
   proxy: { status: 'unlinked' | 'unavailable' | 'not_found' | 'linked'; policyVersion: number | null;
     enabled: boolean | null; nativeBound: boolean | null; quotaState: string | null; observedAt: string | null };
 };

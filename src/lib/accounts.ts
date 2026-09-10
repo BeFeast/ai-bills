@@ -6,7 +6,7 @@ import { freshness, opaqueId, type Freshness, type AccountBinding } from './acco
 import { peekUsageObservations } from './usage-observations';
 import { codexPrimaryWindow, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, type ProviderUsage, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload } from './usage';
 
-export type RegistryAccount = { id: string; provider: string; label: string; origin: 'declared' | 'oauth' | 'configured' | 'external'; billingMode: 'included' | 'metered' | 'unknown'; routingEnrolled: boolean | null; memberIds?: string[]; quota: { status: 'fresh' | 'stale' | 'error' | 'unknown'; remaining: number | null; resetAt: string | null; observedAt?: string | null; unit?: 'percent' | 'requests' }; coverage: { status: 'partial' | 'unsupported' | 'available'; reason: string }; observedAt: string };
+export type RegistryAccount = { id: string; provider: string; label: string; origin: 'declared' | 'oauth' | 'configured' | 'external'; websiteUrl?: string; operatorNote?: string; billingMode: 'included' | 'metered' | 'unknown'; routingEnrolled: boolean | null; memberIds?: string[]; quota: { status: 'fresh' | 'stale' | 'error' | 'unknown'; remaining: number | null; resetAt: string | null; observedAt?: string | null; unit?: 'percent' | 'requests' }; coverage: { status: 'partial' | 'unsupported' | 'available'; reason: string }; observedAt: string };
 export type AccountRegistry = { generatedAt: string; accounts: RegistryAccount[]; sources: Freshness[]; complete: boolean };
 type ObjectRow = Record<string, unknown>;
 const object = (value: unknown): ObjectRow => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectRow : {};
@@ -70,6 +70,11 @@ export async function accountRegistry(config: AppConfig = loadConfig()): Promise
   for (const row of config.accounts) accounts.push(account(`declared:${row.key}`, row.provider, row.label, 'declared', generatedAt));
   for (const row of config.accounting?.declared_accounts ?? []) {
     const a = account(`declared:${row.id}`, row.provider, row.label, row.origin ?? 'external', generatedAt, row.billing_mode ?? 'unknown');
+    try {
+      const website = new URL(row.website_url ?? '');
+      if (['https:', 'http:'].includes(website.protocol) && !website.username && !website.password) a.websiteUrl = website.href;
+    } catch { /* A missing website is not a fabricated account connection. */ }
+    if (row.operator_note) a.operatorNote = row.operator_note;
     const connected = (row.source_ids ?? []).filter(id => config.accounting?.sources?.some(s => s.id === id && s.kind !== 'unsupported'));
     if (!connected.length) a.coverage = { status: 'unsupported', reason: 'No financial source linked; manual accounting is available' };
     accounts.push(a);
@@ -137,7 +142,7 @@ export function bindAccountIdentities(accounts: RegistryAccount[], bindings: Acc
     const id = owners.get(row.id) || row.id;
     const binding = bindings.find((item) => item.id === id);
     const existing = result.get(id);
-    if (existing) { existing.memberIds = [...new Set([...(existing.memberIds || []), row.id])]; continue; }
+    if (existing) { existing.websiteUrl ||= row.websiteUrl; existing.operatorNote ||= row.operatorNote; existing.memberIds = [...new Set([...(existing.memberIds || []), row.id])]; continue; }
     result.set(id, { ...row, id, memberIds: [row.id], label: binding?.label || row.label, billingMode: binding?.billing_mode || row.billingMode, quota: { ...row.quota }, coverage: { ...row.coverage } });
   }
   return [...result.values()];

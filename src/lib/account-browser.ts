@@ -2,6 +2,7 @@ import type { AccountBrowserConfig, AccountConfig, AppConfig } from './config';
 import { validateCdpEndpoint } from './cdp-startup';
 import { connectAccountBrowser, type AccountBrowserConnection, type BrowserTarget } from './account-browser-cdp';
 import type { AccountBrowserSelector, AccountBrowserState, AccountBrowserStatus } from './account-browser-types';
+import { acquireBrowserLease, releaseBrowserLease, renewBrowserLease, type BrowserLease } from './browser-lease';
 
 export class AccountBrowserInputError extends Error {}
 const providerHosts: Record<AccountConfig['provider'], string[]> = {
@@ -13,16 +14,18 @@ const normalizeEmail = (value: string) => value.trim().toLowerCase();
 const ownedTabs = new Map<string, { id: string; url: string }>();
 const queues = new Map<string, Promise<void>>();
 const readFlights = new Map<string, Promise<AccountBrowserState>>();
+const manualLeases = new Map<string, BrowserLease>();
+type BrowserAction = 'manage' | 'login' | 'close' | 'renew';
 type Dependencies = { connect: typeof connectAccountBrowser; routing: () => Promise<unknown> };
 
-export function parseAccountBrowserInput(input: unknown, actionRequired = false): { selector: AccountBrowserSelector; action?: 'manage' | 'login' } {
+export function parseAccountBrowserInput(input: unknown, actionRequired = false): { selector: AccountBrowserSelector; action?: BrowserAction } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new AccountBrowserInputError('Expected an account browser request');
   const data = input as Record<string, unknown>;
   if (Object.keys(data).some(key => !['subscriptionId', 'accountKey', ...(actionRequired ? ['action'] : [])].includes(key))) throw new AccountBrowserInputError('Unsupported account browser field');
   const selected = ['subscriptionId', 'accountKey'].filter(key => data[key] !== undefined);
   if (selected.length !== 1 || typeof data[selected[0]] !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(data[selected[0]] as string)) throw new AccountBrowserInputError('Select exactly one subscription or account');
-  if (actionRequired && !['manage', 'login'].includes(String(data.action))) throw new AccountBrowserInputError('Unsupported browser action');
-  return { selector: { [selected[0]]: data[selected[0]] } as AccountBrowserSelector, ...(actionRequired ? { action: data.action as 'manage' | 'login' } : {}) };
+  if (actionRequired && !['manage', 'login', 'close', 'renew'].includes(String(data.action))) throw new AccountBrowserInputError('Unsupported browser action');
+  return { selector: { [selected[0]]: data[selected[0]] } as AccountBrowserSelector, ...(actionRequired ? { action: data.action as BrowserAction } : {}) };
 }
 
 function safeUrl(value: string, hosts?: string[]): URL {
@@ -138,7 +141,7 @@ const messages: Record<AccountBrowserStatus, string> = {
   unavailable: 'Account browser is unavailable or its binding is invalid. Existing proxy credentials are unchanged.',
 };
 
-export async function accountBrowser(config: AppConfig, selector: AccountBrowserSelector, action?: 'manage' | 'login', deps: Dependencies = { connect: connectAccountBrowser, routing: routingState }): Promise<AccountBrowserState> {
+export async function accountBrowser(config: AppConfig, selector: AccountBrowserSelector, action?: BrowserAction, deps: Dependencies = { connect: connectAccountBrowser, routing: routingState }): Promise<AccountBrowserState> {
   let key: string;
   try {
     const resolved = resolveBrowserBinding(config, selector);
@@ -152,7 +155,7 @@ export async function accountBrowser(config: AppConfig, selector: AccountBrowser
   return pending;
 }
 
-async function observeBrowser(config: AppConfig, selector: AccountBrowserSelector, action: 'manage' | 'login' | undefined, deps: Dependencies): Promise<AccountBrowserState> {
+async function observeBrowser(config: AppConfig, selector: AccountBrowserSelector, action: BrowserAction | undefined, deps: Dependencies): Promise<AccountBrowserState> {
   const state: AccountBrowserState = { subscriptionId: selector.subscriptionId ?? null, accountKey: selector.accountKey ?? null,
     provider: null, intendedEmail: null, configured: false, status: 'unconfigured', observedAt: null, maxAgeSeconds: 30,
     proxyAccountId: null, proxy: { status: 'unlinked', policyVersion: null, enabled: null, nativeBound: null, quotaState: null, observedAt: null }, message: messages.unconfigured };
@@ -171,7 +174,37 @@ async function observeBrowser(config: AppConfig, selector: AccountBrowserSelecto
   queues.set(binding.profile_id, pending);
   await previous;
   let connection: AccountBrowserConnection | undefined;
+  let lease: BrowserLease | null = null;
+  let borrowedManual = false;
   try {
+    const prior = manualLeases.get(binding.profile_id);
+    if (prior && (action === 'close' || Date.parse(prior.expiresAt) > Date.now())) { lease = prior; borrowedManual = true; }
+    else if (prior) manualLeases.delete(binding.profile_id);
+    state.manualLeaseExpiresAt = lease?.expiresAt ?? null;
+    if (action === 'close') {
+      if (!lease) {
+        Object.assign(state, { status: 'identity_unknown', message: 'No tracked browser lease; closure cannot be confirmed. An existing lease expires automatically.', observedAt: new Date().toISOString() });
+        await proxy; return state;
+      }
+      await releaseBrowserLease(lease, true);
+      manualLeases.delete(binding.profile_id);
+      Object.assign(state, { status: 'identity_unknown', manualLeaseExpiresAt: null,
+        message: 'Browser closed; saved sign-in is preserved.', observedAt: new Date().toISOString() });
+      await proxy;
+      return state;
+    }
+    if (action === 'renew') {
+      if (!lease) throw new Error('No active manual browser lease');
+      lease = await renewBrowserLease(lease); manualLeases.set(binding.profile_id, lease);
+      Object.assign(state, { status: 'identity_unknown', manualLeaseExpiresAt: lease.expiresAt,
+        message: 'Browser lease renewed.', observedAt: new Date().toISOString() });
+      await proxy;
+      return state;
+    }
+    if (lease && action) { lease = await renewBrowserLease(lease); manualLeases.set(binding.profile_id, lease); }
+    if (!lease) lease = await acquireBrowserLease(binding.profile_id, action ? 'manual' : 'identity');
+    if (action && lease) manualLeases.set(binding.profile_id, lease);
+    state.manualLeaseExpiresAt = manualLeases.get(binding.profile_id)?.expiresAt ?? null;
     connection = await deps.connect(endpoint);
     const result = await connection.send('Target.getTargets');
     const targets: BrowserTarget[] = Array.isArray(result.targetInfos) ? result.targetInfos : [];
@@ -184,7 +217,15 @@ async function observeBrowser(config: AppConfig, selector: AccountBrowserSelecto
     console.warn(operation ?? 'Account browser operation unavailable');
     state.status = 'unavailable'; state.observedAt = new Date().toISOString();
   }
-  finally { connection?.close(); release(); if (queues.get(binding.profile_id) === pending) queues.delete(binding.profile_id); }
+  finally {
+    connection?.close();
+    // Explicit manual access keeps its bounded lease while the user signs in.
+    if ((!action && !borrowedManual) || (action && state.status === 'unavailable' && !borrowedManual)) {
+      await releaseBrowserLease(lease);
+      if (action) { manualLeases.delete(binding.profile_id); state.manualLeaseExpiresAt = null; }
+    }
+    release(); if (queues.get(binding.profile_id) === pending) queues.delete(binding.profile_id);
+  }
   await proxy;
   state.message = messages[state.status];
   return state;

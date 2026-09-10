@@ -10,6 +10,92 @@ def module(name):
     return importlib.machinery.SourceFileLoader(name.replace('-', '_'), str(ROOT / 'collector' / name)).load_module()
 
 class CollectorTests(unittest.TestCase):
+    def test_scheduled_browser_refresh_starts_once_and_waits_with_a_deadline(self):
+        refresh = module('ai-browser-refresh')
+        now = [0]
+        calls = []
+        def request(url, timeout):
+            calls.append(url)
+            return {'refreshing': len(calls) == 1, 'accounts': [{'ok': True}, {'ok': False}]}
+        result = refresh.refresh('https://example.test/api/usage', request=request,
+                                 clock=lambda: now[0], sleep=lambda value: now.__setitem__(0, now[0] + value))
+        self.assertEqual(calls, ['https://example.test/api/usage?refresh=1', 'https://example.test/api/usage'])
+        self.assertEqual(result, {'accounts': 2, 'sources_ok': 1, 'sources_failed': 1})
+        with self.assertRaises(TimeoutError):
+            refresh.refresh('https://example.test/api/usage', request=lambda *_: {'refreshing': True, 'accounts': []},
+                            clock=lambda: now[0], sleep=lambda value: now.__setitem__(0, now[0] + value), deadline_seconds=3)
+
+    def test_message_selection_precedes_routing_enrichment(self):
+        from unittest.mock import patch
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            report.LEDGER_DIR = directory
+            row = dict(via='direct', client='fixture', session='session', native_message_id='message',
+                       ts='2026-09-10T10:00:00Z', model='claude-fixture', out_total=5)
+            (Path(directory) / 'ledger-fixture.jsonl').write_text(json.dumps(row))
+            with patch.object(report, 'attribute_routing', side_effect=lambda rows: [dict(value, routing_attribution='joined') for value in rows]):
+                result = list(report.rows_for(None))
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]['routing_attribution'], 'joined')
+
+    def test_native_extractor_retains_message_identity_and_failure(self):
+        from unittest.mock import patch
+        extract = module('ai-usage-extract')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fixture.jsonl'
+            record = {'type': 'assistant', 'uuid': 'event-one', 'sessionId': 'session-one',
+                      'timestamp': '2026-09-10T10:00:00Z', 'isApiErrorMessage': True, 'apiErrorStatus': 429,
+                      'message': {'id': 'message-one', 'model': 'claude-fixture',
+                                  'usage': {'input_tokens': 1, 'output_tokens': 2}}}
+            path.write_text(json.dumps(record))
+            with patch.object(extract, 'recent', return_value=[str(path)]):
+                rows = list(extract.claude_rows('2026-09-10', 0))
+            self.assertEqual(rows[0]['message_id'], 'message-one')
+            self.assertEqual(rows[0]['id'], 'event-one')
+            self.assertTrue(rows[0]['failed'])
+            self.assertEqual(rows[0]['status'], 429)
+
+    def test_native_message_identity_deduplicates_blocks_not_equal_requests(self):
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            report.LEDGER_DIR = directory
+            common = dict(via='direct', client='fixture', session='session', model='claude-fixture',
+                          in_uncached=10, cache_read=20, cache_write=30, out_total=5)
+            records = [dict(common, native_message_id='message-one', ts='2026-09-10T10:00:00Z'),
+                       dict(common, native_message_id='message-one', ts='2026-09-10T10:00:01Z', out_total=6),
+                       dict(common, native_message_id='message-two', ts='2026-09-10T10:00:02Z')]
+            path = Path(directory) / 'ledger-fixture.jsonl'
+            raw = '\n'.join(map(json.dumps, records)); path.write_text(raw)
+            result = list(report.rows_for(None))
+            self.assertEqual(len(result), 2)
+            self.assertEqual(result[0]['out_total'], 6)
+            self.assertEqual(result[1]['out_total'], 5)
+            self.assertEqual(path.read_text(), raw)
+
+    def test_unjoinable_native_observations_do_not_inflate_proxy_subtotal(self):
+        from unittest.mock import patch
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            report.LEDGER_DIR = directory
+            common = dict(ts='2026-09-10T10:00:00Z', model='claude-fixture', in_uncached=10,
+                          cache_read=20, cache_write=30, out_total=5, billing_mode='included')
+            records = [dict(common, via='proxy', account='example', attempt_id='attempt-one', upstream_request_id='request-one'),
+                       dict(common, via='proxy', account='example', attempt_id='attempt-two', upstream_request_id='request-two'),
+                       dict(common, via='direct', session='example'),
+                       dict(common, via='direct', upstream_request_id='request-one')]
+            (Path(directory) / 'ledger-fixture.jsonl').write_text('\n'.join(map(json.dumps, records)))
+            original = report.local_day
+            with patch.object(report, 'local_day', side_effect=lambda ts=None: '2026-09-10' if ts is None else original(ts)):
+                result = report.rollup({}, {'claude-fixture': {'in': 1, 'out': 2}})['month']
+            self.assertIsNone(result['tokens_total'])
+            self.assertIsNone(result['requests'])
+            self.assertIsNone(result['api_equivalent_usd'])
+            self.assertEqual(result['reconciliation'], {'status': 'partial', 'confirmed_tokens': 130,
+                'confirmed_requests': 2, 'unreconciled_native_observations': 1,
+                'unreconciled_native_token_observations': 65})
+            self.assertEqual(result['by_account'][0]['name'], 'example')
+            self.assertEqual(result['by_account'][0]['requests'], 2)
+
     def test_atomic_receiver_rejects_truncated_data(self):
         receiver = module('ai-snapshot-receive')
         with tempfile.TemporaryDirectory() as directory:

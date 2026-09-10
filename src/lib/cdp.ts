@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
 import { readCodexAccessToken, refreshCodexAuth } from './codex-auth';
 import { loadConfig } from './config';
+import { acquireBrowserLease, releaseBrowserLease, type BrowserLease } from './browser-lease';
 import {
   CdpStartupBudget,
   CdpStartupCancelledError,
@@ -57,6 +58,7 @@ function cdpName(account: ProviderConfig): string {
 export async function fetchUsageThroughCdp(account: ProviderConfig, options: CdpFetchOptions = {}): Promise<ProviderUsage> {
   const fetchedAt = new Date().toISOString();
   const sourceUrl = usageUrl(account);
+  let lease: BrowserLease | null = null;
   try {
     if (account.provider === 'codex') {
       const proxyQuota = fetchCodexFromSnapshot(account);
@@ -64,6 +66,7 @@ export async function fetchUsageThroughCdp(account: ProviderConfig, options: Cdp
       return await fetchCodexStatus(account, fetchedAt, sourceUrl);
     }
     if (account.provider === 'claude') return fetchClaudeFromSnapshot(account);
+    lease = await acquireBrowserLease(account.cdp_profile_id, 'quota');
     const session = await getSession(account, options.signal);
     throwIfCdpStartupCancelled(options.signal, cdpName(account));
 
@@ -93,7 +96,7 @@ export async function fetchUsageThroughCdp(account: ProviderConfig, options: Cdp
       fetchedAt,
       sourceUrl,
     };
-  }
+  } finally { await releaseBrowserLease(lease); }
 }
 
 function normalizePayload(account: ProviderConfig, data: unknown): ClaudeUsagePayload | KimiUsagePayload | CodexUsagePayload | CursorUsagePayload | undefined {

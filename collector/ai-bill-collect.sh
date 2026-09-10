@@ -147,3 +147,9 @@ if [ -n "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ]; then
 else
   scp -q "$OUT" "$AI_BILLS_SNAPSHOT_TARGET"
 fi
+
+# Reuse this schedule for browser-only quotas. Snapshot delivery succeeds before
+# browser work begins; failure cannot hide API quotas or replace their evidence.
+if [ -n "${AI_BILLS_BROWSER_REFRESH_URL:-}" ]; then
+  uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-browser-refresh"
+fi

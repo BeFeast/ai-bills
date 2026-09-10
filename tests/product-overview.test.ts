@@ -3,6 +3,20 @@ import { buildProductOverview } from '../src/lib/overview';
 import type { AppConfig } from '../src/lib/config';
 const config = { server: { timezone: 'Asia/Jerusalem' }, subscriptions: [] } as unknown as AppConfig;
 describe('product overview', () => {
+  it('exposes the configured management URL and partial accounting without inventing totals', () => {
+    const result = buildProductOverview({ ...config, server: { ...config.server,
+      codex_proxy_management_url: 'https://proxy.example.test/management.html' } }, { usage_ledger: {
+      generated: '2026-09-10T10:00:00Z', month: { date: '2026-09', tokens_total: null, requests: null,
+        by_account: [{ name: 'example', tokens: 130, requests: 2 }],
+        reconciliation: { status: 'partial', confirmed_tokens: 130, confirmed_requests: 2,
+          unreconciled_native_observations: 3 } },
+    } }, '2026-09');
+    expect(result.links?.proxyManagementUrl).toBe('https://proxy.example.test/management.html');
+    expect(result.usage.tokens).toBeNull();
+    expect(result.usage.byAccount?.[0].name).toBe('example');
+    expect(result.usage.reconciliation).toEqual({ status: 'partial', confirmedTokens: 130,
+      confirmedRequests: 2, nativeObservations: 3 });
+  });
   it('uses only explicitly linked account emails for subscription labels', () => {
     const result = buildProductOverview({ ...config,
       accounts: [{ key: 'linked', provider: 'claude', label: 'Personal', email: 'owner@example.com' }, { key: 'unlinked', provider: 'claude', label: 'Work', email: 'other@example.com' }],

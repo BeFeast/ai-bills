@@ -21,9 +21,10 @@ export type ProductSubscription = {
 export type OverviewUsageGroup = { name: string; tokens: number; requests: number; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null };
 export type ProductOverview = {
   month: string;
+  links?: { proxyManagementUrl: string | null };
   subscriptions: ProductSubscription[];
   summary: { activeSubscriptionCount: number; subscriptionCountComplete: boolean; knownMonthlyCosts: { currency: string; amount: number }[]; unknownPriceCount: number; monthlyCostEvidence: 'verified' | 'declared' | 'estimated' | 'unknown' };
-  usage: { period: 'month'; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; tokens: number | null; requests: number | null; byClient: OverviewUsageGroup[]; byModel: OverviewUsageGroup[]; unpriced: Record<string, number>; observedAt: string | null };
+  usage: { period: 'month'; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; tokens: number | null; requests: number | null; byClient: OverviewUsageGroup[]; byModel: OverviewUsageGroup[]; byAccount?: OverviewUsageGroup[]; reconciliation?: { status: string; confirmedTokens: number | null; confirmedRequests: number | null; nativeObservations: number | null }; unpriced: Record<string, number>; observedAt: string | null };
 };
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row => value && typeof value === 'object' && !Array.isArray(value) ? value as Row : {};
@@ -91,11 +92,13 @@ export function buildProductOverview(config: AppConfig, input: unknown, month = 
   // Today's totals/trend cannot supply month rankings; never relabel them.
   const current = text(candidate.date) === month && text(candidate.period_start || `${month}-01`).startsWith(month) ? candidate : {};
   const unpriced = Object.fromEntries(Object.entries(row(current.unpriced)).filter((entry): entry is [string, number] => number(entry[1]) !== null));
-  return { month, subscriptions: unique, summary: { activeSubscriptionCount: active.reduce((count, value) => count + (value.quantity ?? 0), 0),
+  const reconciliation = row(current.reconciliation);
+  return { month, links: { proxyManagementUrl: url(config.server.codex_proxy_management_url) }, subscriptions: unique, summary: { activeSubscriptionCount: active.reduce((count, value) => count + (value.quantity ?? 0), 0),
     subscriptionCountComplete: (rows(snapshot.providers).length > 0 || snapshot.subscription_inventory_complete === true) && unique.filter(value => !['cancelled', 'expired'].includes(value.status)).every(value => value.status === 'active' && value.quantity !== null), knownMonthlyCosts: [...costs].map(([currency, amount]) => ({ currency, amount })),
     unknownPriceCount: active.filter(value => value.amount === null || value.period === 'unknown').length, monthlyCostEvidence: active.some(value => value.costEvidence === 'estimated') ? 'estimated' : active.some(value => value.costEvidence === 'declared') ? 'declared' : active.length > 0 && active.every(value => value.costEvidence === 'verified') ? 'verified' : 'unknown' },
     usage: { period: 'month', apiEquivalentUsd: number(current.api_equivalent_usd), pricedApiEquivalentUsd: number(current.priced_api_equivalent_usd) ?? number(current.api_equivalent_usd),
-      tokens: number(current.tokens_total), requests: number(current.requests), byClient: groups(current.by_client), byModel: groups(current.by_model), unpriced,
+      tokens: number(current.tokens_total), requests: number(current.requests), byClient: groups(current.by_client), byModel: groups(current.by_model), byAccount: groups(current.by_account), unpriced,
+      reconciliation: { status: text(reconciliation.status) || 'unknown', confirmedTokens: number(reconciliation.confirmed_tokens), confirmedRequests: number(reconciliation.confirmed_requests), nativeObservations: number(reconciliation.unreconciled_native_observations) },
       observedAt: Object.keys(current).length ? date(ledger.generated) || date(snapshot.generated) : null } };
 }
 export async function productOverview(config: AppConfig = loadConfig()): Promise<ProductOverview> {

@@ -12,6 +12,7 @@ import { AccountBrowserAccess } from './AccountBrowserAccess';
 import { BillingSection } from './BillingSection';
 import { AccountOverview } from './AccountOverview';
 import { RoutingSection } from './RoutingSection';
+import type { AccountRegistry } from '@/lib/accounts';
 
 const AUTO_REFRESH_MS = 60_000;
 
@@ -21,6 +22,8 @@ export function Dashboard() {
   const [view, setView] = useState<'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details'>('overview');
   const [overview, setOverview] = useState<ProductOverview | null>(null);
   const [overviewError, setOverviewError] = useState('');
+  const [registry, setRegistry] = useState<AccountRegistry | null>(null);
+  const [registryError, setRegistryError] = useState('');
   const [usage, setUsage] = useState<UsageResponseBody | null>(null);
   const [billing, setBilling] = useState<BillingSnapshot | null>(null);
   const [status, setStatus] = useState<{ text: string; tone: StatusTone }>({ text: 'Loading live usage…', tone: '' });
@@ -46,6 +49,13 @@ export function Dashboard() {
     setRefreshing(true);
     setStatus({ text: 'Refreshing provider quotas…', tone: '' });
     const overviewRefresh = refreshOverview();
+    const registryRefresh = (async () => {
+      try {
+        const response = await fetch('/api/accounts', { cache: 'no-store' });
+        if (!response.ok) throw new Error('Account inventory unavailable');
+        setRegistry(await response.json()); setRegistryError('');
+      } catch { setRegistryError('Account inventory could not be refreshed; showing the last observed account list.'); }
+    })();
     const billingRefresh = (async () => {
       // Start billing immediately, independently of provider quota latency.
       try {
@@ -78,12 +88,12 @@ export function Dashboard() {
         text: `${ok}/${total} provider cards loaded · generated ${fmtDate(data.generatedAt, data.timezone)}`,
         tone: ok === total ? 'ok' : ok ? 'warn' : 'danger',
       });
-      nextRefreshAt.current = Date.now() + AUTO_REFRESH_MS;
+      nextRefreshAt.current = Date.now() + (data.refreshing ? 3_000 : AUTO_REFRESH_MS);
     } catch (error) {
       setStatus({ text: `Dashboard API error: ${msg(error)}`, tone: 'danger' });
       nextRefreshAt.current = Date.now() + AUTO_REFRESH_MS;
     } finally {
-      await Promise.all([billingRefresh, overviewRefresh]);
+      await Promise.all([billingRefresh, overviewRefresh, registryRefresh]);
       refreshingRef.current = false;
       setRefreshing(false);
     }
@@ -99,7 +109,7 @@ export function Dashboard() {
       const t = Date.now();
       setNow(t);
       if (nextRefreshAt.current && t >= nextRefreshAt.current && !refreshingRef.current) {
-        void refresh(true);
+        void refresh(false);
       }
     }, 1000);
     return () => clearInterval(id);
@@ -110,11 +120,12 @@ export function Dashboard() {
     <main className="shell product-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">Your AI spending, in one place</p>
+          <p className="eyebrow">Your AI accounts, in one place</p>
           <h1>AI bills</h1>
-          <p className="muted">Subscriptions, renewal dates and where your usage goes.</p>
+          <p className="muted">Current allowances, connection health and who is using them.</p>
         </div>
         <div className="actions">
+          {overview?.links?.proxyManagementUrl ? <a className="small-button" href={overview.links.proxyManagementUrl} target="_blank" rel="noreferrer">CLIProxyAPI ↗</a> : null}
           <button type="button" onClick={() => refresh(true)} disabled={refreshing}>
             Refresh now
           </button>
@@ -127,7 +138,8 @@ export function Dashboard() {
       </nav>
 
       {overview && overviewError ? <p className="data-note" role="status">{overviewError}. Showing the last loaded overview.</p> : null}
-      <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} />
+      {registryError ? <p className="data-note" role="status">{registryError}</p> : null}
+      <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} />
 
       {view === 'accounts' ? <>
         <section className="product-panel">

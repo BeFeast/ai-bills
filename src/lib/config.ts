@@ -24,6 +24,7 @@ export type AccountConfig = {
   email: string;
   claude_org_id?: string;
   cdp_http?: string;
+  cdp_profile_id?: string;
   codex_home?: string;
   quota_snapshot_key?: string;
 };

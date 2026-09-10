@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Complete one bounded browser-quota refresh from the existing snapshot schedule."""
+import json
+import os
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def refresh(url, request=None, clock=time.monotonic, sleep=time.sleep, deadline_seconds=240):
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
+        raise ValueError('Invalid browser refresh endpoint')
+    query = dict(urllib.parse.parse_qsl(parsed.query))
+    query.pop('refresh', None)
+    base = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
+    first = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(dict(query, refresh='1'))))
+    if request is None:
+        opener = urllib.request.build_opener(NoRedirect)
+        def request(target, timeout):
+            with opener.open(urllib.request.Request(target, headers={'Accept': 'application/json'}), timeout=timeout) as response:
+                return json.load(response)
+    deadline = clock() + deadline_seconds
+    target = first
+    while clock() < deadline:
+        result = request(target, min(10, max(.1, deadline - clock())))
+        if not isinstance(result, dict) or not isinstance(result.get('accounts'), list):
+            raise ValueError('Invalid browser refresh response')
+        if not result.get('refreshing'):
+            accounts = result['accounts']
+            return {'accounts': len(accounts), 'sources_ok': sum(row.get('ok') is True for row in accounts),
+                    'sources_failed': sum(row.get('ok') is not True for row in accounts)}
+        target = base  # Observe the existing refresh; never launch one per poll.
+        sleep(min(2, max(0, deadline - clock())))
+    raise TimeoutError('Browser quota refresh exceeded its deadline')
+
+
+if __name__ == '__main__':
+    try:
+        result = refresh(os.environ['AI_BILLS_BROWSER_REFRESH_URL'])
+        print(json.dumps(result))
+        sys.exit(1 if result['sources_failed'] else 0)
+    except Exception as error:
+        # Do not log configured endpoints, response bodies or credentials.
+        print(json.dumps({'error': type(error).__name__, 'source': 'browser-quota-refresh'}))
+        sys.exit(1)

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
+import { sourceHealth } from '@/lib/source-health';
 
 export const dynamic = 'force-dynamic';
 
 export function GET() {
-  return NextResponse.json({ ok: true, service: 'ai-bills', generatedAt: new Date().toISOString() });
+  return NextResponse.json(sourceHealth(), { headers: { 'cache-control': 'no-store' } });
 }

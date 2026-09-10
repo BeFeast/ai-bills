@@ -18,6 +18,28 @@ def load(name):
 
 
 class ClaudeQuotaTests(unittest.TestCase):
+    def test_inactive_session_preserves_weekly_exhaustion(self):
+        module = load('ai-quota-projection')
+        now = datetime(2026, 1, 10, 12, tzinfo=timezone.utc)
+        reset = (now + timedelta(days=1)).isoformat()
+        account = {'ok': True, 'fetched_at': now.isoformat(), 'data': {
+            'five_hour': {'utilization': 0, 'resets_at': None},
+            'seven_day': {'utilization': 100, 'resets_at': reset}}}
+        payload = {'claude_usage': {'a' * 24: account}}
+        result = module.project(payload, now)['a' * 24]
+        self.assertEqual(result['remaining_fraction'], 0)
+        self.assertEqual(result['reset_at'], reset)
+        self.assertIsNone(module.project(payload, now + timedelta(minutes=11))['a' * 24]['remaining_fraction'])
+
+        # Only the inactive session shape is ignorable. Malformed active usage
+        # cannot become an assertion of available capacity.
+        for used, invalid_reset in [(1, None), (False, None), (0, 'invalid')]:
+            with self.subTest(used=used, reset=invalid_reset):
+                account['data']['five_hour'] = {'utilization': used, 'resets_at': invalid_reset}
+                self.assertIsNone(module.project(payload, now)['a' * 24]['remaining_fraction'])
+        account['data'] = {'five_hour': {'utilization': 0, 'resets_at': None}}
+        self.assertIsNone(module.project(payload, now)['a' * 24]['remaining_fraction'])
+
     def test_canonical_oauth_identity_without_email_ambiguity_or_refresh(self):
         module = load('ai-claude-quotas')
         with tempfile.TemporaryDirectory() as directory:

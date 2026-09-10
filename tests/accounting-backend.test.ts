@@ -53,6 +53,19 @@ describe('source adapters and inventory', () => {
     expect(rows.every(row => !row.routingEnrolled && row.billingMode === 'unknown')).toBe(true);
     expect(JSON.stringify(rows)).not.toMatch(/test-secret|secret-a|secret-b|private.invalid/);
   });
+  test('direct Meta and OpenCode Muse remain independent accounts without inferred quota or routing', async () => {
+    const config = loadConfig('tests/fixtures/accounts.toml');
+    config.accounting = { declared_accounts: [
+      { id: 'direct-meta', provider: 'meta', label: 'Muse Code / Meta', website_url: 'https://dev.meta.ai/' },
+      { id: 'opencode-muse', provider: 'opencode', label: 'OpenCode Muse', website_url: 'https://opencode.ai/' },
+    ] };
+    const view = await accountRegistry(config);
+    const accounts = view.accounts.filter(row => ['Muse Code / Meta', 'OpenCode Muse'].includes(row.label));
+    expect(accounts).toHaveLength(2);
+    expect(new Set(accounts.map(row => row.id)).size).toBe(2);
+    expect(accounts.every(row => row.quota.remaining === null && row.quota.status === 'unknown' && row.routingEnrolled !== true)).toBe(true);
+    expect(accounts.find(row => row.provider === 'meta')?.websiteUrl).toBe('https://dev.meta.ai/');
+  });
   test('remote sanitized collector inventory works without access to the OAuth directory', async () => {
     const path = join(await directory(), 'snapshot.json');
     await writeFile(path, JSON.stringify({ account_registry: { generatedAt: '2020-01-01T00:00:00Z', accounts: [{ id: 'a'.repeat(24), provider: 'test', label: 'Remote OAuth', origin: 'oauth', access_token: 'never-output', routingEnrolled: true }], sources: [] } }));
