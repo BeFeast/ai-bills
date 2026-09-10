@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { accountingOverview, appendFinancialRecords, currentMonth, freshness, readFinancialSource, validateRecord } from '../src/lib/accounting';
+import { accountingOverview, appendFinancialRecords, currentMonth, freshness, opaqueId, readFinancialSource, validateRecord } from '../src/lib/accounting';
 import { accountRegistry, discoverConfiguredAccounts } from '../src/lib/accounts';
 import { loadConfig, resetConfigCache } from '../src/lib/config';
 const directories: string[] = [];
@@ -78,7 +78,15 @@ describe('source adapters and inventory', () => {
       credits: { ok: true, observedAt, balanceUsd: 10, totalUsageUsd: 1 },
       key: { ok: true, observedAt, usageUsd: 0, limitUsd: null },
     } }));
-    const view = await accountRegistry(config);
+    let view = await accountRegistry(config);
+    expect(view.accounts.find(row => row.label === 'OpenRouter main')?.proxyConfigured).toBe(false);
+    const snapshot = JSON.parse(await readFile(config.billing.snapshot_path, 'utf8'));
+    snapshot.account_registry = { generatedAt: observedAt, accounts: [{ id: 'a'.repeat(24), provider: 'OpenRouter', label: 'Proxy credential', origin: 'configured' }] };
+    await writeFile(config.billing.snapshot_path, JSON.stringify(snapshot));
+    config.accounting.account_bindings = [{ id: opaqueId('declared:openrouter-main'), members: [opaqueId('declared:openrouter-main'), 'a'.repeat(24)], label: 'OpenRouter main' }];
+    view = await accountRegistry(config);
+    expect(view.accounts.find(row => row.funds)?.proxyConfigured).toBe(true);
+    expect(view.accounts.find(row => row.funds)?.routingEnrolled).not.toBe(true);
     expect(view.accounts.find(row => row.label === 'OpenRouter main')?.funds?.accountBalance.usd).toBe(10);
     expect(view.accounts.find(row => row.label === 'Other OpenRouter account')?.funds).toBeUndefined();
     expect(view.sources.find(row => row.id === 'openrouter-key-usage')?.status).toBe('fresh');
