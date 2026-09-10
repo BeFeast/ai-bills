@@ -66,6 +66,23 @@ describe('source adapters and inventory', () => {
     expect(accounts.every(row => row.quota.remaining === null && row.quota.status === 'unknown' && row.routingEnrolled !== true)).toBe(true);
     expect(accounts.find(row => row.provider === 'meta')?.websiteUrl).toBe('https://dev.meta.ai/');
   });
+  test('OpenRouter funds attach only to the explicitly declared account', async () => {
+    const config = loadConfig('tests/fixtures/accounts.toml');
+    config.accounting = { openrouter_account_id: 'openrouter-main', declared_accounts: [
+      { id: 'openrouter-main', provider: 'openrouter', label: 'OpenRouter main' },
+      { id: 'openrouter-other', provider: 'openrouter', label: 'Other OpenRouter account' },
+    ] };
+    config.billing.snapshot_path = join(await directory(), 'snapshot.json');
+    const observedAt = new Date().toISOString();
+    await writeFile(config.billing.snapshot_path, JSON.stringify({ openrouter: {
+      credits: { ok: true, observedAt, balanceUsd: 10, totalUsageUsd: 1 },
+      key: { ok: true, observedAt, usageUsd: 0, limitUsd: null },
+    } }));
+    const view = await accountRegistry(config);
+    expect(view.accounts.find(row => row.label === 'OpenRouter main')?.funds?.accountBalance.usd).toBe(10);
+    expect(view.accounts.find(row => row.label === 'Other OpenRouter account')?.funds).toBeUndefined();
+    expect(view.sources.find(row => row.id === 'openrouter-key-usage')?.status).toBe('fresh');
+  });
   test('remote sanitized collector inventory works without access to the OAuth directory', async () => {
     const path = join(await directory(), 'snapshot.json');
     await writeFile(path, JSON.stringify({ account_registry: { generatedAt: '2020-01-01T00:00:00Z', accounts: [{ id: 'a'.repeat(24), provider: 'test', label: 'Remote OAuth', origin: 'oauth', access_token: 'never-output', routingEnrolled: true }], sources: [] } }));
