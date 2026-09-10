@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ProductSubscription } from '@/lib/overview';
 
-import type { AccountBrowserState as BrowserState } from '@/lib/account-browser-types';
+import { canOpenAccountBrowser, type AccountBrowserState as BrowserState } from '@/lib/account-browser-types';
 
 const labels: Record<BrowserState['status'], string> = {
   unconfigured: 'Account browser not configured', login_required: 'Sign-in required',
@@ -57,7 +57,7 @@ export function AccountBrowserAccess({ subscription, account, children }: Access
       const next: BrowserState & { error?: string } = await response.json();
       if (next.status) setState(next);
       setNow(Date.now());
-      if (!next.remoteUrl) throw new Error(next.message || next.error || 'The account browser could not be opened.');
+      if (!canOpenAccountBrowser(next, response.status) || !next.remoteUrl) throw new Error(next.message || next.error || 'The account browser could not be opened.');
       const url = new URL(next.remoteUrl, window.location.origin);
       if (!['https:', 'http:'].includes(url.protocol)) throw new Error('The account browser address is unavailable.');
       tab.location.replace(url.href);
