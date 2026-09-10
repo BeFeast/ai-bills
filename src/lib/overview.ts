@@ -35,7 +35,7 @@ const key = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
 const url = (value: unknown): string | null => { try { const parsed = new URL(text(value)); return ['https:', 'http:'].includes(parsed.protocol) && !/\s/.test(text(value)) ? parsed.href : null; } catch { return null; } };
 const date = (value: unknown): string | null => { const v = text(value); return /^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(v) && Number.isFinite(Date.parse(v)) ? v : null; };
 const links: Record<string, [string, string]> = {
-  anthropic: ['https://claude.ai/login', 'https://claude.ai/settings/billing'],
+  anthropic: ['https://claude.ai/login', 'https://claude.ai/new#settings/usage'],
   openai: ['https://chatgpt.com/auth/login', 'https://chatgpt.com/#settings'],
   google: ['https://accounts.google.com/', 'https://one.google.com/settings'],
   ollamacloud: ['https://ollama.com/signin', 'https://ollama.com/settings'],

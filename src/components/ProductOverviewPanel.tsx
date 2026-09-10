@@ -92,7 +92,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
           : a.account.provider === 'cursor' ? cursorCycleEnd(payload as CursorUsagePayload)
           : kimiCodingUsage(payload as KimiUsagePayload)?.detail?.resetTime;
         return <article className="account-status-row" key={a.account.key}>
-          <span className="provider-identity"><ProviderIcon provider={a.account.provider} /><span><strong>{a.account.label.toLowerCase().startsWith(a.account.provider.toLowerCase()) ? a.account.label : `${a.account.provider} · ${a.account.label}`} </strong><small>{a.account.email || 'Email not recorded'}</small></span></span>
+          <span className="provider-identity"><ProviderIcon provider={a.account.provider} /><span><strong>{a.account.label.toLowerCase().startsWith(a.account.provider.toLowerCase()) ? a.account.label : `${a.account.provider} · ${a.account.label}`}</strong><small>{a.account.email || 'Email not recorded'}</small></span></span>
           <div className="account-allowance"><strong>{remaining === null ? 'Quota unknown' : remaining === 0 ? 'Exhausted' : `${Number(remaining.toFixed(1))}% left`}</strong><small>{reset ? `Reset ${fmtDate(reset,'Asia/Jerusalem')}` : 'Reset unknown'}</small></div>
           <div className="account-source"><small>{detail}</small><small>{Number.isFinite(observed) ? `Observed ${fmtDate(a.fetchedAt,'Asia/Jerusalem')}` : 'No observation yet'}</small></div>
           {subscription ? <AccountBrowserAccess subscription={subscription} /> : <AccountBrowserAccess account={a.account} />}

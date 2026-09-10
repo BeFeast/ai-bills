@@ -17,7 +17,7 @@ profile_id = "ai-bills-example-account"
 cdp_http = "http://browser-host.example:18811"
 remote_url = "https://browser.example/vnc.html?autoconnect=true&resize=scale"
 login_url = "https://claude.ai/login"
-manage_url = "https://claude.ai/settings/billing"
+manage_url = "https://claude.ai/new#settings/usage"
 proxy_account_id = "existing-routing-account"
 ```
 
