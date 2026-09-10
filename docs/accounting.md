@@ -273,3 +273,27 @@ the configured account selector when a subscription link is absent; a regression
 fixture deliberately omits those plan links. Duplicate provider prefixes and merged
 provider/account label text are also corrected. Provider sign-in and quota readiness
 still require live verification; successful CDP discovery alone is insufficient.
+
+### Live acceptance and restart race
+
+The compact UI and access correction were deployed through the application lifecycle
+owner on September 10. Six configured account rows fit in the first desktop viewport;
+manual controls also exist for configured accounts with no linked plan. The next
+scheduled snapshot delivered fresh API-source observations. The requested Claude
+management destination is `https://claude.ai/new#settings/usage`.
+
+Kimi and Cursor manual leases both passed open, reopen, renew and explicit close,
+with no active profile after close and a successful switch under capacity one.
+Quota collection now reaches their intended browser profiles. The existing website
+sessions are not authenticated for quota collection: Kimi reports a missing auth
+cookie and Cursor returns HTTP401. These remain source/sign-in gaps, not zero quota
+or proof that proxy OAuth is broken. No sign-in credentials were entered or changed.
+
+A point-in-time idle deployment check is not a quiescence barrier. An automatic quota
+lease started between the check and app recreation, leaving the old process's lease
+until its five-minute controller TTL. Cleanup verified the exact lease ID, quota
+purpose and start time before the new app's start, then released only that orphaned
+quota lease through the normal controller API. The container/controller stayed up;
+manual leases were not touched. A future coordinated refresh pause would remove
+this race. Until then, verify ownership before any cleanup and never treat every
+active browser as disposable during deployment.
