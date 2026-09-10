@@ -302,3 +302,7 @@ The local candidate passed collector failure/allowlist tests, account/key scope 
 staleness tests, explicit registry binding verification, TypeScript and build. A
 bounded live read-only collector call returned both sources successfully. A captured
 balance is a timestamped observation, not proof of subsequent inference availability.
+
+### OpenRouter rollout verification (2026-09-10)
+
+Source `356f3bd` is deployed. The existing scheduled collector delivered both independent API observations at 18:40 UTC; production showed exactly one bound OpenRouter account, fresh credits/key sources, and the configured CLIProxyAPI identity association. Browser acceptance issued zero account-browser requests. A separate automation routing policy is not evidence that a directly configured proxy account is disconnected. The optional failed-acquire browser guard remains outside this deployment. No inference was performed by this collector or its acceptance checks.
