@@ -118,18 +118,16 @@ export function Dashboard() {
   const secondsLeft = nextRefreshAt.current && now ? Math.max(0, Math.ceil((nextRefreshAt.current - now) / 1000)) : 60;
   return (
     <main className="shell product-shell">
-      <header className="hero">
+      <header className="hero compact-hero">
         <div>
-          <p className="eyebrow">Your AI accounts, in one place</p>
           <h1>AI bills</h1>
-          <p className="muted">Current allowances, connection health and who is using them.</p>
         </div>
         <div className="actions">
           {overview?.links?.proxyManagementUrl ? <a className="small-button" href={overview.links.proxyManagementUrl} target="_blank" rel="noreferrer">CLIProxyAPI ↗</a> : null}
           <button type="button" onClick={() => refresh(true)} disabled={refreshing}>
-            Refresh now
+            Refresh
           </button>
-          <div className="countdown">Auto-refresh in {secondsLeft}s</div>
+          <div className="countdown">Refresh in {secondsLeft}s</div>
         </div>
       </header>
 

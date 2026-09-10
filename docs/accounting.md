@@ -252,3 +252,12 @@ manual open/close/switch from the actual clients, and replacement monitoring tha
 covers active consumers. Unsupported provider quota adapters and missing historic
 usage identifiers cannot be recovered by a UI change. Neither existing usage logs
 nor proxy auth enabled/disabled state are rewritten by this candidate.
+
+### Compact status overview follow-up
+
+The Overview now starts with compact account rows: allowance, reset, source freshness
+and manual/provider access. Desktop acceptance requires all six configured fixture
+accounts within the first 850-pixel viewport, with the first row above 200 pixels.
+Header and navigation are compact; summary KPI cards, hypothetical API cost and
+subscription price tables live in their dedicated accounting/subscription views.
+Unknown source status and independent account declarations remain visible.

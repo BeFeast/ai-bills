@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { ProductOverview } from '@/lib/overview';
 import type { ProviderUsage } from '@/lib/usage';
-import { kimiCodingUsage, kimiUsagePercent, cursorLegacyPercent, type ClaudeUsagePayload, type CodexUsagePayload, type KimiUsagePayload, type CursorUsagePayload } from '@/lib/usage';
+import { kimiCodingUsage, kimiUsagePercent, cursorLegacyPercent, codexWindowResetIso, cursorCycleEnd, type ClaudeUsagePayload, type CodexUsagePayload, type KimiUsagePayload, type CursorUsagePayload } from '@/lib/usage';
 import { fmtMoney, fmtTokens, fmtDate } from './format';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
@@ -75,27 +75,38 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
   const api = data.usage.apiEquivalentUsd ?? data.usage.pricedApiEquivalentUsd;
   const partialApi = data.usage.apiEquivalentUsd === null && api !== null;
   const month = new Date(`${data.month}-15T12:00:00Z`).toLocaleDateString('en-GB',{month:'long',year:'numeric'});
-  const otherAccounts = registry.filter(account => !['claude', 'codex'].includes(account.provider));
+  const otherAccounts = registry.filter(account => !accounts.some(row => row.account.provider === account.provider));
   const shownAccounts = view === 'overview' ? otherAccounts.filter(account => /meta|muse|kimi|xai|x.ai|cursor|ollama/i.test(account.provider)) : otherAccounts;
   return <>
-    {view === 'overview' ? <section className="product-panel" aria-label="Account availability">
-      <div className="section-heading"><div><h2>Account availability</h2><p>Automatic quota observations. Website sign-in is only needed when a source asks for it.</p></div><button className="small-button" onClick={() => onView('accounts')}>Accounts & sign-in →</button></div>
-      <div className="quota-strip">{!accounts.length ? <p className="data-note">Loading account quotas…</p> : null}{accounts.map(a => {
+    {view === 'overview' ? <section className="product-panel compact-accounts" aria-label="Account availability">
+      <div className="section-heading"><div><h2>Account availability</h2></div><button className="small-button" onClick={() => onView('accounts')}>Accounts & sign-in →</button></div>
+      <div className="account-status-list">{!accounts.length ? <p className="data-note">Loading account quotas…</p> : null}{accounts.map(a => {
         const observed = Date.parse(a.fetchedAt); const age = Date.now() - observed;
         const fresh = a.ok && Number.isFinite(age) && age >= -60_000 && age <= 600_000;
         const used = quotaUsed(a); const remaining = fresh && used !== null ? Math.max(0, Math.min(100, 100-used)) : null;
         const detail = !a.ok ? a.status === 401 || a.status === 403 ? 'Sign-in needs attention' : a.error?.includes('first quota') ? 'First observation pending' : 'Source unavailable · other accounts continue updating' : !fresh ? 'Observation stale · availability unknown' : remaining === 0 ? 'Allowance exhausted · see reset windows' : remaining === null ? 'Quota not reported by this source' : 'Most restricted observed window';
-        return <button className="quota-mini" key={a.account.key} onClick={() => onView('accounts')}><span className="provider-identity"><ProviderIcon provider={a.account.provider} /><span><small>{a.account.provider}</small>{a.account.email || 'Email not recorded'}</span></span><strong>{remaining === null ? 'Quota unknown' : remaining === 0 ? 'Exhausted' : `${Number(remaining.toFixed(1))}% left`}</strong><div className="quota-track"><i style={{width:`${remaining ?? 0}%`,background:remaining !== null && remaining < 15 ? 'var(--warn)' : 'var(--accent)'}} /></div><small>{detail}</small>{Number.isFinite(observed) ? <small>Observed {fmtDate(a.fetchedAt,'Asia/Jerusalem')}</small> : null}</button>;
+        const subscription = subscriptions.find(plan => plan.accountKeys.includes(a.account.key));
+        const payload = a.data;
+        const reset = a.account.provider === 'claude' ? (payload as ClaudeUsagePayload)?.seven_day?.resets_at || (payload as ClaudeUsagePayload)?.five_hour?.resets_at
+          : a.account.provider === 'codex' ? codexWindowResetIso((payload as CodexUsagePayload)?.rate_limit?.primary_window ?? null)
+          : a.account.provider === 'cursor' ? cursorCycleEnd(payload as CursorUsagePayload)
+          : kimiCodingUsage(payload as KimiUsagePayload)?.detail?.resetTime;
+        return <article className="account-status-row" key={a.account.key}>
+          <span className="provider-identity"><ProviderIcon provider={a.account.provider} /><span><strong>{a.account.provider} · {a.account.label}</strong><small>{a.account.email || 'Email not recorded'}</small></span></span>
+          <div className="account-allowance"><strong>{remaining === null ? 'Quota unknown' : remaining === 0 ? 'Exhausted' : `${Number(remaining.toFixed(1))}% left`}</strong><small>{reset ? `Reset ${fmtDate(reset,'Asia/Jerusalem')}` : 'Reset unknown'}</small></div>
+          <div className="account-source"><small>{detail}</small><small>{Number.isFinite(observed) ? `Observed ${fmtDate(a.fetchedAt,'Asia/Jerusalem')}` : 'No observation yet'}</small></div>
+          {subscription ? <AccountBrowserAccess subscription={subscription} /> : <button className="small-button" onClick={() => onView('accounts')}>Account details →</button>}
+        </article>;
       })}</div>
       {subscriptions.filter(s => !s.accountKeys.some(key => accounts.some(a => a.account.key === key))).length ? <p className="data-note">{subscriptions.filter(s => !s.accountKeys.some(key => accounts.some(a => a.account.key === key))).length} plans have no linked automatic quota source. Their allowance is unknown. <button className="text-button" onClick={() => onView('subscriptions')}>View source coverage →</button></p> : null}
     </section> : null}
-    {view === 'overview' ? <section className="product-summary" aria-label="Subscription overview">
+    {view === 'details' ? <section className="product-summary" aria-label="Subscription overview">
       <button className="summary-answer" onClick={() => onView('subscriptions')}><span>Active subscriptions</span><strong>{data.summary.activeSubscriptionCount}{data.summary.subscriptionCountComplete === false ? '+' : ''}</strong><small>{data.summary.subscriptionCountComplete ? 'Plans and accounts' : 'Some plan statuses need checking'} →</small></button>
       <button className="summary-answer" onClick={() => onView('subscriptions')}><span>Subscription cost / month</span><strong>{data.summary.unknownPriceCount && data.summary.knownMonthlyCosts.length ? '≥ ' : ''}{costs}{data.summary.monthlyCostEvidence === 'estimated' ? ' est.' : ''}</strong><small>{data.summary.unknownPriceCount ? `${data.summary.unknownPriceCount} prices still need checking` : data.summary.monthlyCostEvidence === 'estimated' ? 'Includes estimated plan prices' : 'Recurring plan prices'} →</small></button>
       <button className="summary-answer" onClick={() => onView('usage')}><span>If paid by API · {month}</span><strong>{data.usage.tokens === null ? 'Usage unavailable' : api === null ? 'Pricing incomplete' : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`}</strong><small>{data.usage.reconciliation?.status === 'partial' ? 'Native observations may overlap; see confirmed subtotal' : data.usage.tokens === null ? 'Monthly usage has not been imported' : partialApi ? 'Known prices; some models unpriced' : `${fmtTokens(data.usage.tokens)} tokens measured`} →</small></button>
       <button className="summary-answer" onClick={() => onView('subscriptions')}><span>Next renewal / expiry</span><strong>{upcoming[0] ? date(upcoming[0].renewsAt || upcoming[0].endsAt) : 'Dates need checking'}</strong><small>{upcoming[0] ? `${upcoming[0].provider} · ${upcoming[0].label}` : 'Open billing beside each plan'} →</small></button>
     </section> : null}
-    {view === 'overview' || view === 'accounts' ? <section className="product-panel"><div className="section-heading"><div><h2>Other accounts</h2><p>Accounts are tracked independently of CLIProxyAPI. A model listing does not prove available quota or funds.</p></div>{view === 'overview' ? <button className="small-button" onClick={() => onView('accounts')}>All {registry.length} accounts →</button> : null}</div><div className="quota-strip">
+    {view === 'overview' || view === 'accounts' ? <section className="product-panel"><div className="section-heading"><div><h2>Other subscriptions & accounts</h2><p>Quota unknown until an automatic source is connected.</p></div>{view === 'overview' ? <button className="small-button" onClick={() => onView('accounts')}>All {registry.length} accounts →</button> : null}</div><div className="quota-strip">
       {shownAccounts.map(account => {
         const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
         const subscription = data.subscriptions.find(plan => normalize(plan.provider) === normalize(account.provider));
@@ -107,17 +118,17 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
       {!shownAccounts.length ? <p className="data-note">Account inventory has not supplied additional accounts yet.</p> : null}
     </div></section> : null}
 
-    {view === 'overview' || view === 'subscriptions' ? <section className="product-panel" id="subscriptions">
-      <div className="section-heading"><div><h2>Subscriptions</h2><p>What you pay, when it renews, and where to manage it.</p></div>{view === 'overview' ? <button className="small-button" onClick={() => onView('subscriptions')}>All plans →</button> : null}</div>
+    {view === 'subscriptions' ? <section className="product-panel" id="subscriptions">
+      <div className="section-heading"><div><h2>Subscriptions</h2><p>What you pay, when it renews, and where to manage it.</p></div></div>
       <div className="table-wrap"><table className="subscription-table"><thead><tr><th>Subscription / account</th><th>Plan</th><th>Cost</th><th>Renewal or expiry</th><th>Access</th></tr></thead><tbody>
-      {(view === 'overview' ? subscriptions.slice(0,4) : data.subscriptions).map(s => <tr key={s.id}>
+      {data.subscriptions.map(s => <tr key={s.id}>
         <td data-label="Subscription"><div className="provider-identity"><ProviderIcon provider={s.provider} /><div><strong>{s.label}</strong><small>{s.provider}{s.status === 'cancelled' || s.status === 'expired' ? ` · ${s.status}` : s.status !== 'active' ? ' · status unverified' : ''}</small></div></div></td>
         <td data-label="Plan">{s.plan || 'Plan not recorded'}</td>
         <td data-label="Cost"><strong>{money(s.amount,s.currency)}</strong>{s.amount !== null ? <small>per {s.period === 'year' ? 'year' : s.period === 'month' ? 'month' : 'billing period'}{s.costEvidence === 'estimated' ? ' · estimate' : ''}</small> : null}</td>
         <td data-label="Renewal / expiry">{s.renewsAt ? <><strong>{date(s.renewsAt)}</strong><small>{s.renewsAt.slice(0,10) < today ? 'Past renewal; check billing' : 'Renews'}</small></> : s.endsAt ? <><strong>{date(s.endsAt)}</strong><small>{s.endsAt.slice(0,10) < today ? 'Recorded end date' : 'Ends'}</small></> : <><span className="date-missing">Date not recorded</span><small>Check account billing</small></>}</td>
         <td data-label="Access"><AccountBrowserAccess subscription={s}>{view === 'subscriptions' ? <button className="small-button" aria-label={`Edit ${s.label} subscription`} onClick={() => { setSaveError(''); setDraft({ id: s.id, label: s.label, amount: s.amount === null ? '' : String(s.amount), currency: s.currency, period: s.period, renewsAt: s.renewsAt?.slice(0,10) || '', endsAt: s.endsAt?.slice(0,10) || '', status: s.status }); }}>Edit</button> : null}</AccountBrowserAccess></td>
       </tr>)}</tbody></table></div>
-      {view === 'overview' && subscriptions.length > 4 ? <button className="text-button" onClick={() => onView('subscriptions')}>Show all {subscriptions.length} plan entries →</button> : null}
+      
     </section> : null}
 
     {view === 'overview' || view === 'usage' ? <section className="product-panel"><div className="section-heading"><div><h2>Who uses the most?</h2><p>{month} · {data.usage.tokens === null ? 'Monthly usage unavailable' : `${fmtTokens(data.usage.tokens)} tokens · ${data.usage.requests?.toLocaleString() ?? 'Unknown'} requests`}</p></div>{view === 'overview' ? <button className="small-button" onClick={() => onView('usage')}>Usage details →</button> : null}</div>
