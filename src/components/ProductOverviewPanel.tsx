@@ -92,10 +92,10 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
           : a.account.provider === 'cursor' ? cursorCycleEnd(payload as CursorUsagePayload)
           : kimiCodingUsage(payload as KimiUsagePayload)?.detail?.resetTime;
         return <article className="account-status-row" key={a.account.key}>
-          <span className="provider-identity"><ProviderIcon provider={a.account.provider} /><span><strong>{a.account.provider} · {a.account.label}</strong><small>{a.account.email || 'Email not recorded'}</small></span></span>
+          <span className="provider-identity"><ProviderIcon provider={a.account.provider} /><span><strong>{a.account.label.toLowerCase().startsWith(a.account.provider.toLowerCase()) ? a.account.label : `${a.account.provider} · ${a.account.label}`} </strong><small>{a.account.email || 'Email not recorded'}</small></span></span>
           <div className="account-allowance"><strong>{remaining === null ? 'Quota unknown' : remaining === 0 ? 'Exhausted' : `${Number(remaining.toFixed(1))}% left`}</strong><small>{reset ? `Reset ${fmtDate(reset,'Asia/Jerusalem')}` : 'Reset unknown'}</small></div>
           <div className="account-source"><small>{detail}</small><small>{Number.isFinite(observed) ? `Observed ${fmtDate(a.fetchedAt,'Asia/Jerusalem')}` : 'No observation yet'}</small></div>
-          {subscription ? <AccountBrowserAccess subscription={subscription} /> : <button className="small-button" onClick={() => onView('accounts')}>Account details →</button>}
+          {subscription ? <AccountBrowserAccess subscription={subscription} /> : <AccountBrowserAccess account={a.account} />}
         </article>;
       })}</div>
       {subscriptions.filter(s => !s.accountKeys.some(key => accounts.some(a => a.account.key === key))).length ? <p className="data-note">{subscriptions.filter(s => !s.accountKeys.some(key => accounts.some(a => a.account.key === key))).length} plans have no linked automatic quota source. Their allowance is unknown. <button className="text-button" onClick={() => onView('subscriptions')}>View source coverage →</button></p> : null}
@@ -128,7 +128,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
         <td data-label="Renewal / expiry">{s.renewsAt ? <><strong>{date(s.renewsAt)}</strong><small>{s.renewsAt.slice(0,10) < today ? 'Past renewal; check billing' : 'Renews'}</small></> : s.endsAt ? <><strong>{date(s.endsAt)}</strong><small>{s.endsAt.slice(0,10) < today ? 'Recorded end date' : 'Ends'}</small></> : <><span className="date-missing">Date not recorded</span><small>Check account billing</small></>}</td>
         <td data-label="Access"><AccountBrowserAccess subscription={s}>{view === 'subscriptions' ? <button className="small-button" aria-label={`Edit ${s.label} subscription`} onClick={() => { setSaveError(''); setDraft({ id: s.id, label: s.label, amount: s.amount === null ? '' : String(s.amount), currency: s.currency, period: s.period, renewsAt: s.renewsAt?.slice(0,10) || '', endsAt: s.endsAt?.slice(0,10) || '', status: s.status }); }}>Edit</button> : null}</AccountBrowserAccess></td>
       </tr>)}</tbody></table></div>
-      
+
     </section> : null}
 
     {view === 'overview' || view === 'usage' ? <section className="product-panel"><div className="section-heading"><div><h2>Who uses the most?</h2><p>{month} · {data.usage.tokens === null ? 'Monthly usage unavailable' : `${fmtTokens(data.usage.tokens)} tokens · ${data.usage.requests?.toLocaleString() ?? 'Unknown'} requests`}</p></div>{view === 'overview' ? <button className="small-button" onClick={() => onView('usage')}>Usage details →</button> : null}</div>

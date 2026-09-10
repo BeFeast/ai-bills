@@ -757,3 +757,5 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
   .account-status-row .action-link { padding: 4px; font-size: 10px; }
   .account-status-row .small-button { padding: 4px; font-size: 10px; }
 }
+
+.quota-mini .provider-identity > span { display: flex; flex-direction: column; gap: 3px; }

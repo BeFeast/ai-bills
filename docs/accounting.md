@@ -261,3 +261,15 @@ accounts within the first 850-pixel viewport, with the first row above 200 pixel
 Header and navigation are compact; summary KPI cards, hypothetical API cost and
 subscription price tables live in their dedicated accounting/subscription views.
 Unknown source status and independent account declarations remain visible.
+
+### Post-rollout access correction
+
+Live acceptance found two deployment gaps that the original fixture did not model:
+browser quota accounts retained legacy CDP endpoints while acquiring newly bound
+profile leases, and two configured accounts had no linked subscription-plan entry,
+which hid their manual access control in the compact row. The follow-up configuration
+must use the endpoint of the exact leased profile. Account controls now fall back to
+the configured account selector when a subscription link is absent; a regression
+fixture deliberately omits those plan links. Duplicate provider prefixes and merged
+provider/account label text are also corrected. Provider sign-in and quota readiness
+still require live verification; successful CDP discovery alone is insufficient.
