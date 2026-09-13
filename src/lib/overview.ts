@@ -25,10 +25,13 @@ export type ProductOverview = {
   subscriptions: ProductSubscription[];
   summary: { activeSubscriptionCount: number; subscriptionCountComplete: boolean; knownMonthlyCosts: { currency: string; amount: number }[]; unknownPriceCount: number; monthlyCostEvidence: 'verified' | 'declared' | 'estimated' | 'unknown' };
   usage: { period: 'month'; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; tokens: number | null; requests: number | null; byClient: OverviewUsageGroup[]; byModel: OverviewUsageGroup[]; byAccount?: OverviewUsageGroup[]; reconciliation?: { status: string; confirmedTokens: number | null; confirmedRequests: number | null; nativeObservations: number | null }; unpriced: Record<string, number>; observedAt: string | null };
+  features: { routing: boolean };
 };
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row => value && typeof value === 'object' && !Array.isArray(value) ? value as Row : {};
 const rows = (value: unknown): Row[] => Array.isArray(value) ? value.map(row) : [];
+/** The routing service was retired; its tab and proxy linkage only render when it is explicitly configured. */
+export const routingConfigured = () => Boolean(process.env.AI_BILLS_ROUTING_URL && process.env.AI_BILLS_ROUTING_TOKEN);
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
 const number = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 const key = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -69,7 +72,7 @@ function groups(value: unknown): OverviewUsageGroup[] {
 }
 
 /** Product projection: subscriptions are commercial plans, never credential rows. */
-export function buildProductOverview(config: AppConfig, input: unknown, month = currentMonth(config.server.timezone), overrides: Record<string, SubscriptionOverride> = {}): ProductOverview {
+export function buildProductOverview(config: AppConfig, input: unknown, month = currentMonth(config.server.timezone), overrides: Record<string, SubscriptionOverride> = {}, features: ProductOverview['features'] = { routing: routingConfigured() }): ProductOverview {
   const snapshot = row(input);
   const explicit = (config.subscriptions ?? []).map(value => subscription(value as unknown as Row, value.id));
   const sourceExplicit = rows(snapshot.subscriptions).map((value, index) => subscription(value, `subscription-${index}`));
@@ -99,7 +102,7 @@ export function buildProductOverview(config: AppConfig, input: unknown, month = 
     usage: { period: 'month', apiEquivalentUsd: number(current.api_equivalent_usd), pricedApiEquivalentUsd: number(current.priced_api_equivalent_usd) ?? number(current.api_equivalent_usd),
       tokens: number(current.tokens_total), requests: number(current.requests), byClient: groups(current.by_client), byModel: groups(current.by_model), byAccount: groups(current.by_account), unpriced,
       reconciliation: { status: text(reconciliation.status) || 'unknown', confirmedTokens: number(reconciliation.confirmed_tokens), confirmedRequests: number(reconciliation.confirmed_requests), nativeObservations: number(reconciliation.unreconciled_native_observations) },
-      observedAt: Object.keys(current).length ? date(ledger.generated) || date(snapshot.generated) : null } };
+      observedAt: Object.keys(current).length ? date(ledger.generated) || date(snapshot.generated) : null }, features };
 }
 export async function productOverview(config: AppConfig = loadConfig()): Promise<ProductOverview> {
   let snapshot: unknown = {};

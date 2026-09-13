@@ -116,7 +116,7 @@ async function openTab(connection: AccountBrowserConnection, binding: AccountBro
 
 async function routingState(): Promise<unknown> {
   const base = process.env.AI_BILLS_ROUTING_URL; const token = process.env.AI_BILLS_ROUTING_TOKEN;
-  if (!base || !token) throw new Error('Routing service unavailable');
+  if (!base || !token) return null; // Routing service retired: no linkage claim, not an outage.
   const url = safeUrl(`${base.replace(/\/$/, '')}/control/state`);
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(3000) });
   if (!response.ok) throw new Error('Routing state unavailable');
@@ -167,7 +167,7 @@ async function observeBrowser(config: AppConfig, selector: AccountBrowserSelecto
   Object.assign(state, { subscriptionId: binding.subscription_id ?? null, accountKey: account.key, provider: account.provider,
     intendedEmail: account.email, profileId: binding.profile_id, configured: true, remoteUrl: binding.remote_url,
     proxyAccountId: binding.proxy_account_id ?? null });
-  const proxy = binding.proxy_account_id ? deps.routing().then(value => { state.proxy = projectBrowserProxy(value, binding.proxy_account_id!); }).catch(() => { state.proxy.status = 'unavailable'; }) : Promise.resolve();
+  const proxy = binding.proxy_account_id ? deps.routing().then(value => { if (value != null) state.proxy = projectBrowserProxy(value, binding.proxy_account_id!); }).catch(() => { state.proxy.status = 'unavailable'; }) : Promise.resolve();
   const previous = queues.get(binding.profile_id) ?? Promise.resolve();
   let release!: () => void;
   const pending = new Promise<void>(resolve => { release = resolve; });

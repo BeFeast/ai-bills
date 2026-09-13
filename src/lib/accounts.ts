@@ -128,7 +128,7 @@ export async function accountRegistry(config: AppConfig = loadConfig()): Promise
   const routing = await readRoutingEnrollment();
   if (routing.policy) applyRoutingEnrollment(unique, routing.policy);
   else for (const row of unique) row.routingEnrolled = null;
-  sources.push(routing.source);
+  if (routing.source) sources.push(routing.source);
   source('declared-external', config.accounting?.declared_inventory_complete ? 'fresh' : 'missing', config.accounting?.declared_inventory_complete ? 'Operator declared the external account inventory complete' : 'External services not declared by the operator remain coverage gaps', generatedAt);
   return { generatedAt, accounts: unique, sources, complete: sources.every((row) => row.status === 'fresh') };
 
@@ -197,10 +197,10 @@ export function applyRoutingEnrollment(accounts: RegistryAccount[], policy: Enro
   }
 }
 
-async function readRoutingEnrollment(): Promise<{ policy?: EnrollmentPolicy; source: Freshness }> {
+async function readRoutingEnrollment(): Promise<{ policy?: EnrollmentPolicy; source: Freshness | null }> {
   const id = 'routing-enrollment'; const maxAgeSeconds = 60;
   const url = process.env.AI_BILLS_ROUTING_URL; const token = process.env.AI_BILLS_ROUTING_TOKEN;
-  if (!url || !token) return { source: { id, status: 'missing', observedAt: null, maxAgeSeconds, message: 'Routing policy source is not configured; enrollment is unknown' } };
+  if (!url || !token) return { source: null }; // Routing service retired: enrollment is not a coverage gap.
   try {
     const response = await fetch(`${url.replace(/\/$/, '')}/control/state`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: AbortSignal.timeout(1500), redirect: 'error' });
     if (!response.ok) throw new Error('Policy unavailable');
