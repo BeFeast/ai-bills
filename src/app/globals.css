@@ -759,3 +759,12 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 }
 
 .quota-mini .provider-identity > span { display: flex; flex-direction: column; gap: 3px; }
+
+/* Declared-only accounts: one compact line each, never a quota card. */
+.declared-list h3 { font-size: 13px; color: var(--ink-soft); margin: 18px 0 6px; font-weight: 500; }
+.declared-list ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 32px; }
+.declared-list li { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 7px 0; border-bottom: 1px solid var(--hairline); }
+.declared-list li > span { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.declared-list li strong { font-weight: 500; color: var(--ink); }
+.declared-list li small { color: var(--muted); font-size: 11px; }
+@media (max-width: 640px) { .declared-list ul { grid-template-columns: 1fr; } }
