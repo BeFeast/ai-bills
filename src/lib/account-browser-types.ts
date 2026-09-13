@@ -10,3 +10,9 @@ export type AccountBrowserState = {
   proxy: { status: 'unlinked' | 'unavailable' | 'not_found' | 'linked'; policyVersion: number | null;
     enabled: boolean | null; nativeBound: boolean | null; quotaState: string | null; observedAt: string | null };
 };
+
+/** A configured URL is not evidence that its browser actually started. */
+export function canOpenAccountBrowser(state: Pick<AccountBrowserState, 'status' | 'remoteUrl'>, httpStatus: number): boolean {
+  return Boolean(state.remoteUrl) && [200, 409].includes(httpStatus)
+    && ['ready', 'login_required', 'identity_unknown', 'mismatch'].includes(state.status);
+}
