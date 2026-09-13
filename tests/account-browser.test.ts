@@ -155,6 +155,8 @@ describe('account-specific website management', () => {
     const settings = config(); const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
     deps.routing.mockRejectedValueOnce(new Error('offline'));
     expect(await accountBrowser(settings, { accountKey: 'personal' }, undefined, deps)).toMatchObject({ status: 'ready', proxy: { status: 'unavailable', policyVersion: null } });
+    deps.routing.mockResolvedValueOnce(null as never);
+    expect(await accountBrowser(settings, { accountKey: 'personal' }, undefined, deps)).toMatchObject({ status: 'ready', proxy: { status: 'unlinked' } });
     delete settings.account_browsers![0].proxy_account_id;
     expect(await accountBrowser(settings, { accountKey: 'personal' }, undefined, deps)).toMatchObject({ status: 'ready', proxy: { status: 'unlinked' } });
     expect(projectBrowserProxy({ policy: { version: 10, accounts: [{ id: 'different', enabled: true }] } }, 'expected')).toMatchObject({ status: 'not_found', enabled: null });

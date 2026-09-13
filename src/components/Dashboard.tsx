@@ -132,7 +132,7 @@ export function Dashboard() {
       </header>
 
       <nav className="product-nav" aria-label="Dashboard sections">
-        {([['overview', 'Overview'], ['subscriptions', 'Subscriptions'], ['accounts', 'Accounts & sign-in'], ['usage', 'Usage'], ['routing', 'Models & routing'], ['details', 'Accounting details']] as const).map(([id, label]) => <button key={id} type="button" aria-current={view === id ? 'page' : undefined} onClick={() => setView(id)}>{label}</button>)}
+        {([['overview', 'Overview'], ['subscriptions', 'Subscriptions'], ['accounts', 'Accounts & sign-in'], ['usage', 'Usage'], ['routing', 'Models & routing'], ['details', 'Accounting details']] as const).filter(([id]) => id !== 'routing' || overview?.features?.routing === true).map(([id, label]) => <button key={id} type="button" aria-current={view === id ? 'page' : undefined} onClick={() => setView(id)}>{label}</button>)}
       </nav>
 
       {overview && overviewError ? <p className="data-note" role="status">{overviewError}. Showing the last loaded overview.</p> : null}

@@ -7,7 +7,9 @@ import { openRouterFunds, type OpenRouterFunds } from './openrouter';
 import { peekUsageObservations } from './usage-observations';
 import { codexPrimaryWindow, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, type ProviderUsage, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload } from './usage';
 
-export type RegistryAccount = { id: string; provider: string; label: string; origin: 'declared' | 'oauth' | 'configured' | 'external'; funds?: OpenRouterFunds; proxyConfigured?: boolean; websiteUrl?: string; operatorNote?: string; billingMode: 'included' | 'metered' | 'unknown'; routingEnrolled: boolean | null; memberIds?: string[]; quota: { status: 'fresh' | 'stale' | 'error' | 'unknown'; remaining: number | null; resetAt: string | null; observedAt?: string | null; unit?: 'percent' | 'requests' }; coverage: { status: 'partial' | 'unsupported' | 'available'; reason: string }; observedAt: string };
+/** The proxy's own view of a credential it holds: state and today's request counters, never tokens. */
+export type ProxyCredential = { kind: 'oauth' | 'upstream-key'; status: string; successToday: number; failedToday: number; email?: string; observedAt: string | null };
+export type RegistryAccount = { id: string; provider: string; label: string; origin: 'declared' | 'oauth' | 'configured' | 'external'; funds?: OpenRouterFunds; proxyConfigured?: boolean; proxyCredential?: ProxyCredential; websiteUrl?: string; operatorNote?: string; billingMode: 'included' | 'metered' | 'unknown'; routingEnrolled: boolean | null; memberIds?: string[]; quota: { status: 'fresh' | 'stale' | 'error' | 'unknown'; remaining: number | null; resetAt: string | null; observedAt?: string | null; unit?: 'percent' | 'requests' }; coverage: { status: 'partial' | 'unsupported' | 'available'; reason: string }; observedAt: string };
 export type AccountRegistry = { generatedAt: string; accounts: RegistryAccount[]; sources: Freshness[]; complete: boolean };
 type ObjectRow = Record<string, unknown>;
 const object = (value: unknown): ObjectRow => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectRow : {};
@@ -125,13 +127,39 @@ export async function accountRegistry(config: AppConfig = loadConfig()): Promise
     if (row) { row.proxyConfigured = accounts.some(member => member.origin === 'configured' && (row.memberIds || [row.id]).includes(member.id)); row.funds = funds; row.websiteUrl ||= 'https://openrouter.ai/settings/credits'; row.coverage = { status: 'partial', reason: 'Account credits and key usage have independent API observations; inference availability is unverified' }; }
     sources.push(funds.accountBalance.freshness, funds.keyUsage.freshness);
   }
+  applyProxyCredentials(unique, snapshot, accounts, config.accounts, config.accounting?.account_bindings ?? []);
   const routing = await readRoutingEnrollment();
   if (routing.policy) applyRoutingEnrollment(unique, routing.policy);
   else for (const row of unique) row.routingEnrolled = null;
-  sources.push(routing.source);
+  if (routing.source) sources.push(routing.source);
   source('declared-external', config.accounting?.declared_inventory_complete ? 'fresh' : 'missing', config.accounting?.declared_inventory_complete ? 'Operator declared the external account inventory complete' : 'External services not declared by the operator remain coverage gaps', generatedAt);
   return { generatedAt, accounts: unique, sources, complete: sources.every((row) => row.status === 'fresh') };
 
+}
+
+const normalizeName = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+/** Attach CLIProxyAPI's own state for credentials the collector already projected. OAuth rows match by provider plus the bound
+ * account email, or by provider when the proxy holds exactly one credential for it; upstream keys match by provider name. */
+export function applyProxyCredentials(accounts: RegistryAccount[], snapshot: unknown, discovered: readonly RegistryAccount[], configured: AppConfig['accounts'], bindings: AccountBinding[]) {
+  const raw = object(snapshot); const observedAt = text(raw.generated) || null;
+  const origins = new Map(discovered.map(row => [row.id, row.origin]));
+  const auths = rows(raw.proxy_auths).map(row => ({ provider: normalizeName(text(row.provider)), email: text(row.email), status: text(row.status) || 'unknown', success: Number(row.today_success) || 0, failed: Number(row.today_failed) || 0 }));
+  const usage = rows(raw.proxy_usage).map(row => ({ upstream: normalizeName(text(row.upstream)), success: Number(row.success) || 0, failed: Number(row.failed) || 0 }));
+  for (const row of accounts) {
+    const members = row.memberIds || [row.id]; const provider = normalizeName(row.provider);
+    if (members.some(id => origins.get(id) === 'oauth')) {
+      const key = bindings.find(binding => binding.id === row.id)?.quota_account_key;
+      const email = configured.find(account => account.key === key)?.email;
+      const candidates = auths.filter(auth => auth.provider === provider);
+      const match = email ? candidates.find(auth => auth.email === email) : candidates.length === 1 ? candidates[0] : undefined;
+      if (match) row.proxyCredential = { kind: 'oauth', status: match.status, successToday: match.success, failedToday: match.failed, ...(match.email ? { email: match.email } : {}), observedAt };
+      continue;
+    }
+    if (members.some(id => origins.get(id) === 'configured')) {
+      const match = usage.find(entry => entry.upstream === provider);
+      if (match) row.proxyCredential = { kind: 'upstream-key', status: 'configured', successToday: match.success, failedToday: match.failed, observedAt };
+    }
+  }
 }
 
 /** Merge only operator-supplied aliases. Similar names or shared email never imply identity. */
@@ -197,10 +225,10 @@ export function applyRoutingEnrollment(accounts: RegistryAccount[], policy: Enro
   }
 }
 
-async function readRoutingEnrollment(): Promise<{ policy?: EnrollmentPolicy; source: Freshness }> {
+async function readRoutingEnrollment(): Promise<{ policy?: EnrollmentPolicy; source: Freshness | null }> {
   const id = 'routing-enrollment'; const maxAgeSeconds = 60;
   const url = process.env.AI_BILLS_ROUTING_URL; const token = process.env.AI_BILLS_ROUTING_TOKEN;
-  if (!url || !token) return { source: { id, status: 'missing', observedAt: null, maxAgeSeconds, message: 'Routing policy source is not configured; enrollment is unknown' } };
+  if (!url || !token) return { source: null }; // Routing service retired: enrollment is not a coverage gap.
   try {
     const response = await fetch(`${url.replace(/\/$/, '')}/control/state`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: AbortSignal.timeout(1500), redirect: 'error' });
     if (!response.ok) throw new Error('Policy unavailable');

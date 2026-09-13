@@ -100,4 +100,17 @@ describe('source adapters and inventory', () => {
     expect(view.sources.find(row => row.id === 'collector-account-registry')?.status).toBe('stale');
     expect(JSON.stringify(view)).not.toContain('never-output');
   });
+  test('proxy credential state attaches to OAuth and upstream-key inventory rows without inference', async () => {
+    const path = join(await directory(), 'snapshot.json');
+    const oauthId = 'b'.repeat(24); const keyId = 'c'.repeat(24);
+    await writeFile(path, JSON.stringify({ generated: '2026-09-13T08:00:00Z', account_registry: { generatedAt: new Date().toISOString(), accounts: [
+      { id: oauthId, provider: 'xai', label: 'xai OAuth', origin: 'oauth' }, { id: keyId, provider: 'OpenCode Go', label: 'OpenCode Go API 1', origin: 'configured' }], sources: [] },
+      proxy_auths: [{ provider: 'xai', email: 'x@example.test', status: 'active', today_success: 5, today_failed: 1 }, { provider: 'claude', email: 'a@example.test', status: 'active', today_success: 9, today_failed: 0 }],
+      proxy_usage: [{ upstream: 'opencode go', success: 3, failed: 2, last_hour: 1 }] }));
+    const config = loadConfig('tests/fixtures/accounts.toml'); config.billing.snapshot_path = path;
+    const view = await accountRegistry(config);
+    expect(view.accounts.find(row => row.id === oauthId)?.proxyCredential).toMatchObject({ kind: 'oauth', status: 'active', successToday: 5, failedToday: 1, email: 'x@example.test', observedAt: '2026-09-13T08:00:00Z' });
+    expect(view.accounts.find(row => row.id === keyId)?.proxyCredential).toMatchObject({ kind: 'upstream-key', successToday: 3, failedToday: 2 });
+    expect(view.accounts.filter(row => row.origin === 'declared' || row.origin === 'external').every(row => !row.proxyCredential)).toBe(true);
+  });
 });

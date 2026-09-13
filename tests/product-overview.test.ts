@@ -69,4 +69,9 @@ describe('product overview', () => {
     expect(result.subscriptions[0].renewsAt).toBeNull();
     expect(result.subscriptions[0].manageUrl).toContain('chatgpt.com');
   });
+  it('reports whether the retired routing service is configured without inventing totals', () => {
+    expect(buildProductOverview(config, {}, '2026-09', {}, { routing: true }).features.routing).toBe(true);
+    expect(buildProductOverview(config, {}, '2026-09', {}, { routing: false }).features.routing).toBe(false);
+    expect(buildProductOverview(config, {}, '2026-09').usage.tokens).toBeNull();
+  });
 });
