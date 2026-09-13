@@ -3,10 +3,11 @@ import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { loadConfig, type AppConfig } from './config';
 import { freshness, opaqueId, type Freshness, type AccountBinding } from './accounting';
+import { openRouterFunds, type OpenRouterFunds } from './openrouter';
 import { peekUsageObservations } from './usage-observations';
 import { codexPrimaryWindow, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, type ProviderUsage, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload } from './usage';
 
-export type RegistryAccount = { id: string; provider: string; label: string; origin: 'declared' | 'oauth' | 'configured' | 'external'; websiteUrl?: string; operatorNote?: string; billingMode: 'included' | 'metered' | 'unknown'; routingEnrolled: boolean | null; memberIds?: string[]; quota: { status: 'fresh' | 'stale' | 'error' | 'unknown'; remaining: number | null; resetAt: string | null; observedAt?: string | null; unit?: 'percent' | 'requests' }; coverage: { status: 'partial' | 'unsupported' | 'available'; reason: string }; observedAt: string };
+export type RegistryAccount = { id: string; provider: string; label: string; origin: 'declared' | 'oauth' | 'configured' | 'external'; funds?: OpenRouterFunds; proxyConfigured?: boolean; websiteUrl?: string; operatorNote?: string; billingMode: 'included' | 'metered' | 'unknown'; routingEnrolled: boolean | null; memberIds?: string[]; quota: { status: 'fresh' | 'stale' | 'error' | 'unknown'; remaining: number | null; resetAt: string | null; observedAt?: string | null; unit?: 'percent' | 'requests' }; coverage: { status: 'partial' | 'unsupported' | 'available'; reason: string }; observedAt: string };
 export type AccountRegistry = { generatedAt: string; accounts: RegistryAccount[]; sources: Freshness[]; complete: boolean };
 type ObjectRow = Record<string, unknown>;
 const object = (value: unknown): ObjectRow => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectRow : {};
@@ -116,6 +117,13 @@ export async function accountRegistry(config: AppConfig = loadConfig()): Promise
     if (row.quota.status === 'fresh') row.coverage = { status: 'partial', reason: 'Current quota observed; financial completeness is reported separately' };
     sources.push({ id: `quota:${row.id}`, status: row.quota.status === 'unknown' ? 'unsupported' : row.quota.status, observedAt: row.quota.observedAt || null, maxAgeSeconds: 600,
       message: row.quota.status === 'fresh' ? 'Provider quota observation is current' : row.quota.status === 'unknown' ? 'No supported quota observation for this account' : 'Quota observation is stale or failed' });
+  }
+  if (config.accounting?.openrouter_account_id) {
+    const identity = opaqueId(`declared:${config.accounting.openrouter_account_id}`);
+    const row = unique.find(account => (account.memberIds || [account.id]).includes(identity));
+    const funds = openRouterFunds(snapshot);
+    if (row) { row.proxyConfigured = accounts.some(member => member.origin === 'configured' && (row.memberIds || [row.id]).includes(member.id)); row.funds = funds; row.websiteUrl ||= 'https://openrouter.ai/settings/credits'; row.coverage = { status: 'partial', reason: 'Account credits and key usage have independent API observations; inference availability is unverified' }; }
+    sources.push(funds.accountBalance.freshness, funds.keyUsage.freshness);
   }
   const routing = await readRoutingEnrollment();
   if (routing.policy) applyRoutingEnrollment(unique, routing.policy);

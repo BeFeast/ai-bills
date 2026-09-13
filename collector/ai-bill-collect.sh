@@ -45,6 +45,12 @@ VAST=$(curl -sf -m 15 "https://console.vast.ai/api/v0/users/current/" \
   -H "Authorization: Bearer $(secret /ai/gpu-providers VAST_API_KEY)" \
   | jq '{credit}') || VAST='{}'
 
+# Optional OpenRouter source: only sanitized account/key observations leave this process.
+OPENROUTER='{}'
+if [ -n "${AI_BILLS_OPENROUTER_SECRET_NAME:-}" ]; then
+  OPENROUTER=$(secret /ai/providers "$AI_BILLS_OPENROUTER_SECRET_NAME" | uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-openrouter-balance") || OPENROUTER='{"credits":{"ok":false,"error":"Credential source unavailable"},"key":{"ok":false,"error":"Credential source unavailable"}}'
+fi
+
 # --- proxy: auth-file (subscription) health + upstream request counters ---
 AUTHS=$(curl -sf -m 10 "$CLIPROXY_MGMT_URL/auth-files" -H "Authorization: Bearer $MGMT" \
   | jq '[.files[] | {provider, email, status,
@@ -122,7 +128,7 @@ REGISTRY=$(uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-
 
 jq -n \
   --arg providers_status "$PROVIDERS_STATUS" --arg payments_status "$PAYMENTS_STATUS" --arg ledger_status "$LEDGER_STATUS" \
-  --argjson runpod "$RUNPOD" --argjson vast "$VAST" \
+  --argjson runpod "$RUNPOD" --argjson vast "$VAST" --argjson openrouter "$OPENROUTER" \
   --argjson auths "$AUTHS" --argjson usage "$USAGE" \
   --argjson cost "$COST" --argjson providers "$PROVIDERS" \
   --argjson payments "$PAYMENTS" \
@@ -132,7 +138,7 @@ jq -n \
   --argjson claude_usage "$CLAUDE_USAGE" \
   --argjson codex_usage "$CODEX_USAGE" \
   --argjson account_quotas "$ACCOUNT_QUOTAS" \
-  '{generated: (now | todate), source_receipts: [{id: "provider-subscriptions", status: $providers_status, observedAt: (now|todate)}, {id: "payments", status: $payments_status, observedAt: (now|todate)}, {id: "token-ledger", status: $ledger_status, observedAt: (now|todate)}], runpod: $runpod, vast: $vast,
+  '{generated: (now | todate), source_receipts: [{id: "provider-subscriptions", status: $providers_status, observedAt: (now|todate)}, {id: "payments", status: $payments_status, observedAt: (now|todate)}, {id: "token-ledger", status: $ledger_status, observedAt: (now|todate)}], runpod: $runpod, vast: $vast, openrouter: $openrouter,
     proxy_auths: $auths, proxy_usage: $usage,
     maestro_cost_today: $cost, providers: $providers, subscriptions: $subscriptions, payments: $payments,
     usage_ledger: $ledger, claude_usage: $claude_usage, codex_usage: $codex_usage, account_quotas:$account_quotas, account_registry: $registry}' > "$OUT"

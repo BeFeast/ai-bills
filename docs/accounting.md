@@ -274,6 +274,38 @@ fixture deliberately omits those plan links. Duplicate provider prefixes and mer
 provider/account label text are also corrected. Provider sign-in and quota readiness
 still require live verification; successful CDP discovery alone is insufficient.
 
+## OpenRouter automatic account credits and current-key usage
+
+Issue #28 adds two bounded read-only API observations to the existing five-minute
+snapshot collector: account-wide `/api/v1/credits` and current-key `/api/v1/key`.
+They are independent scopes. Account remaining credit is total credits minus total
+account usage; current-key usage is not the account's total usage. A null key limit
+means no per-key spending cap, not unlimited account funds. No inference, model
+availability check, browser login, funding operation or new daemon is involved.
+
+The collector reads its credential from stdin, projects only numeric fields and
+source status, rejects redirects, and never includes provider labels, hashes, raw
+errors or credentials in the snapshot. Each endpoint has a ten-second deadline;
+a credits permission failure does not hide an otherwise valid key observation.
+Invalid numbers and failed/stale observations never become a zero balance.
+
+The operator enables `AI_BILLS_OPENROUTER_SECRET_NAME` in the existing collector
+environment and sets `accounting.openrouter_account_id` to an explicitly declared
+account ID. The latter attaches the funds observation only to that account (or its
+explicit identity binding), not every inventory row named OpenRouter. The dashboard
+shows account balance/spend separately from key usage/cap and exposes both source
+freshness states. Passive health reads the delivered snapshot; it never contacts
+the provider. Financial journals and token accounting remain separate evidence.
+
+Official reference: [account credits](https://openrouter.ai/docs/api/api-reference/credits/get-credits).
+The local candidate passed collector failure/allowlist tests, account/key scope and
+staleness tests, explicit registry binding verification, TypeScript and build. A
+bounded live read-only collector call returned both sources successfully. A captured
+balance is a timestamped observation, not proof of subsequent inference availability.
+
+### OpenRouter rollout verification (2026-09-10)
+
+Source `356f3bd` is deployed. The existing scheduled collector delivered both independent API observations at 18:40 UTC; production showed exactly one bound OpenRouter account, fresh credits/key sources, and the configured CLIProxyAPI identity association. Browser acceptance issued zero account-browser requests. A separate automation routing policy is not evidence that a directly configured proxy account is disconnected. The optional failed-acquire browser guard remains outside this deployment. No inference was performed by this collector or its acceptance checks.
 ### Live acceptance and restart race
 
 The compact UI and access correction were deployed through the application lifecycle

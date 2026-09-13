@@ -17,7 +17,7 @@ export type FinancialSource = {
   fields?: Partial<Record<keyof FinancialInput, string>>; currency?: string;
 };
 export type AccountBinding = { id: string; label?: string; members: string[]; quota_account_key?: string; billing_mode?: 'included' | 'metered' | 'unknown' };
-export type AccountingConfig = { account_bindings?: AccountBinding[]; declared_inventory_complete?: boolean; journal_path?: string; registry_snapshot_path?: string; proxy_auth_dir?: string; proxy_config_path?: string; declared_accounts?: DeclaredAccount[]; sources?: FinancialSource[] };
+export type AccountingConfig = { openrouter_account_id?: string; account_bindings?: AccountBinding[]; declared_inventory_complete?: boolean; journal_path?: string; registry_snapshot_path?: string; proxy_auth_dir?: string; proxy_config_path?: string; declared_accounts?: DeclaredAccount[]; sources?: FinancialSource[] };
 export type AccountingOverview = { month: string; currency: 'USD'; paymentsUsd: number | null; accruedUsd: number | null; apiEquivalentUsd: number | null; records: FinancialRecord[]; coverage: Freshness[]; complete: boolean; diagnostics: string[] };
 
 const KINDS = new Set<FinancialKind>(['payment', 'accrual', 'api-equivalent', 'balance', 'subscription']);

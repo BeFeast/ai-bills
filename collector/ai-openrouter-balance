@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Read account credits and this key's usage separately; never perform inference."""
+import json
+import math
+import sys
+from datetime import datetime, timezone
+from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.error import HTTPError
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+def number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError('Invalid credit observation')
+    return value
+
+def collect(key, open_url=None):
+    observed = datetime.now(timezone.utc).isoformat()
+    if open_url is None:
+        open_url = build_opener(NoRedirect).open
+    result = {'observedAt': observed}
+    for name, path in [('credits', 'credits'), ('key', 'key')]:
+        row = {'ok': False, 'observedAt': observed, 'status': None}
+        if not key:
+            row['error'] = 'Credential unavailable'
+            result[name] = row
+            continue
+        request = Request('https://openrouter.ai/api/v1/' + path, headers={'Authorization': 'Bearer ' + key, 'Accept': 'application/json'})
+        try:
+            with open_url(request, timeout=10) as response:
+                data = json.load(response)['data']
+            if name == 'credits':
+                total = number(data['total_credits']); used = number(data['total_usage'])
+                row.update(totalCreditsUsd=total, totalUsageUsd=used, balanceUsd=total-used)
+            else:
+                usage = number(data['usage'])
+                limit = None if data['limit'] is None else number(data['limit'])
+                remaining = data.get('limit_remaining')
+                if remaining is not None: remaining = number(remaining)
+                row.update(usageUsd=usage, limitUsd=limit, remainingUsd=remaining)
+            row.update(ok=True, status=200)
+        except HTTPError as error:
+            row.update(status=error.code, error='OpenRouter source rejected (HTTP %s)' % error.code)
+            error.close()
+        except Exception:
+            row['error'] = 'OpenRouter source unavailable or invalid'
+        result[name] = row
+    return result
+
+if __name__ == '__main__':
+    print(json.dumps(collect(sys.stdin.read().strip())))
