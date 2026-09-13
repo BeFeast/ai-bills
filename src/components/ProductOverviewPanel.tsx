@@ -135,7 +135,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
       })}
       {!shownAccounts.length ? <p className="data-note">Account inventory has not supplied additional accounts yet.</p> : null}
     </div>
-    {view === 'accounts' && declaredOnly.length ? <div className="declared-list"><h3>Declared, no automatic source · {declaredOnly.length}</h3><ul>{declaredOnly.map(account => <li key={account.id}><ProviderIcon provider={account.provider} /><span><strong>{account.label}</strong><small>{account.provider}{account.billingMode !== 'unknown' ? ` · ${account.billingMode}` : ''}{account.operatorNote ? ` · ${account.operatorNote}` : ''}</small></span>{account.websiteUrl ? <a className="action-link" href={account.websiteUrl} target="_blank" rel="noreferrer">Website ↗</a> : null}</li>)}</ul></div> : null}
+    {view === 'accounts' && declaredOnly.length ? <div className="declared-list"><h3>Declared, no automatic source · {declaredOnly.length}</h3><ul>{declaredOnly.map(account => <li key={account.id}><ProviderIcon provider={account.provider} /><div className="declared-text"><strong>{account.label}</strong><small>{account.provider}{account.billingMode !== 'unknown' ? ` · ${account.billingMode}` : ''}{account.operatorNote ? ` · ${account.operatorNote}` : ''}</small></div>{account.websiteUrl ? <a className="action-link" href={account.websiteUrl} target="_blank" rel="noreferrer">Website ↗</a> : null}</li>)}</ul></div> : null}
     {view === 'overview' && declaredOnly.length ? <p className="data-note">{declaredOnly.length} declared accounts have no automatic source. <button className="text-button" onClick={() => onView('accounts')}>See the list →</button></p> : null}
     </section> : null}
 
