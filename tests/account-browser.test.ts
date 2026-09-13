@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runInNewContext } from 'node:vm';
 import type { AppConfig } from '../src/lib/config';
 import { accountBrowser, identityExpression, parseAccountBrowserInput, projectBrowserProxy } from '../src/lib/account-browser';
@@ -6,6 +6,7 @@ import type { AccountBrowserConnection, BrowserTarget } from '../src/lib/account
 import { GET, POST } from '../src/app/api/account-browser/route';
 
 let sequence = 0;
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 function config(): AppConfig {
   return { accounts: [{ key: 'personal', provider: 'claude', label: 'Personal', email: 'intended@example.test' }],
     account_browsers: [{ subscription_id: 'subscription-personal', account_key: 'personal', profile_id: `ai-bills-test-${++sequence}`,
@@ -35,6 +36,37 @@ function browser(value: unknown, initial?: BrowserTarget[]) {
 }
 
 describe('account-specific website management', () => {
+  it('does not claim a browser closed when this process has no tracked lease', async () => {
+    const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
+    const state = await accountBrowser(config(), { accountKey: 'personal' }, 'close', deps);
+    expect(state.message).toContain('closure cannot be confirmed');
+    expect(deps.connect).not.toHaveBeenCalled();
+  });
+
+  it('reuses a manual lease, renews it explicitly, and releases it before another account opens', async () => {
+    vi.stubEnv('AI_BILLS_BROWSER_LIFECYCLE_URL', 'http://lifecycle.example.test');
+    vi.stubEnv('AI_BILLS_BROWSER_LIFECYCLE_TOKEN', 'fixture-token');
+    let active = false; let opens = 0; let closes = 0;
+    const expiry = Date.parse('2099-01-01T00:00:00Z') / 1000;
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === 'POST') { if (active) return new Response('{}', { status: 409 }); active = true; opens++; }
+      if (options.method === 'DELETE') { active = false; closes++; return new Response('{}'); }
+      return new Response(JSON.stringify({ lease_id: 'fixture-lease', expires_at: expiry }));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const settings = config(); const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
+    const first = await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps);
+    expect(first.manualLeaseExpiresAt).toBe('2099-01-01T00:00:00.000Z');
+    expect((await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps)).status).toBe('ready');
+    expect(opens).toBe(1);
+    await accountBrowser(settings, { accountKey: 'personal' }, 'renew', deps);
+    expect(fetch.mock.calls.filter(([, options]) => options.method === 'PATCH')).toHaveLength(2);
+    const closed = await accountBrowser(settings, { accountKey: 'personal' }, 'close', deps);
+    expect(closed.manualLeaseExpiresAt).toBeNull(); expect(closes).toBe(1);
+    expect((await accountBrowser(config(), { accountKey: 'personal' }, 'manage', deps)).status).toBe('ready');
+    expect(opens).toBe(2);
+  });
+
   it('reads identity and current exact proxy linkage without navigation or budget writes', async () => {
     const deps = browser({ state: 'authenticated', email: 'INTENDED@example.test' });
     const before = JSON.stringify(deps.targets);

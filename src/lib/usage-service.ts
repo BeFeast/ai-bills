@@ -13,10 +13,23 @@ export async function refreshUsage(): Promise<UsageCache> {
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     const config = loadConfig();
-    const results = await Promise.all(config.accounts.map(async (account) => ({
-      ...await fetchUsageThroughCdp(account),
+    const previous = new Map(cache?.results.map(result => [result.account.key, result]) ?? []);
+    const results: ProviderUsage[] = config.accounts.map(account => previous.get(account.key) ?? ({
       account: publicUsageAccount(account, config.server.codex_proxy_management_url),
-    })));
+      ok: false, fetchedAt: '', sourceUrl: '', error: 'Waiting for the first quota observation',
+    }));
+    cache = { results, generatedAt: new Date().toISOString() };
+    const update = async (account: typeof config.accounts[number], index: number) => {
+      results[index] = { ...await fetchUsageThroughCdp(account),
+        account: publicUsageAccount(account, config.server.codex_proxy_management_url) };
+      rememberUsageObservations([...results]);
+    };
+    const indexed = config.accounts.map((account, index) => ({ account, index }));
+    const browserSources = indexed.filter(({ account }) => ['kimi', 'cursor'].includes(account.provider));
+    await Promise.all([
+      ...indexed.filter(({ account }) => !['kimi', 'cursor'].includes(account.provider)).map(({ account, index }) => update(account, index)),
+      (async () => { for (const { account, index } of browserSources) await update(account, index); })(),
+    ]);
     rememberUsageObservations(results);
     cache = { results, generatedAt: new Date().toISOString() };
     refreshPromise = null;
@@ -34,6 +47,7 @@ export type UsageResponseBody = {
   accounts: ProviderUsage[];
   combined: ReturnType<typeof combinedOverview>;
   apiShape: Record<string, string[]>;
+  refreshing?: boolean;
 };
 
 function cacheAgeMs(entry: UsageCache | null, now = Date.now()): number {
@@ -48,13 +62,24 @@ export async function getUsageResponse(force = false): Promise<UsageResponseBody
   // Auto-refresh used to call /api/usage without ?refresh=1, which forever returned the
   // first in-process snapshot. Honour TTL so the dashboard actually tracks live quotas.
   const stale = cacheAgeMs(cache) >= ttlMs;
-  const data = force || !cache || stale ? await refreshUsage() : cache;
+  if (force || !cache || stale) {
+    const pending = refreshUsage();
+    // Publish independently completed accounts. An unavailable browser must not
+    // hold fresh API/snapshot quotas behind its connection timeout.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([pending, new Promise<void>(resolve => { timer = setTimeout(resolve, 100); })]);
+    if (timer) clearTimeout(timer);
+    // The ongoing shared refresh handles its error even after this response ends.
+    void pending.catch(() => undefined);
+  }
+  const data = cache;
   return {
     generatedAt: data?.generatedAt ?? null,
     timezone: config.server.timezone,
     accounts: data?.results ?? [],
     combined: combinedOverview(data?.results ?? []),
     apiShape: Object.fromEntries((data?.results ?? []).map((result) => [result.account.key, apiShapeSummary(result.data)])),
+    refreshing: refreshPromise !== null,
   };
 }
 

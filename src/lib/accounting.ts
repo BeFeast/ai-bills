@@ -8,7 +8,7 @@ export type Freshness = { id: string; status: 'fresh' | 'stale' | 'missing' | 'e
 export type FinancialKind = 'payment' | 'accrual' | 'api-equivalent' | 'balance' | 'subscription';
 export type FinancialRecord = { id: string; sourceId: string; sourceRecordId: string; accountId: string; provider: string; kind: FinancialKind; amount: number; currency: string; date: string; observedAt: string; note?: string };
 export type FinancialInput = Omit<FinancialRecord, 'id' | 'observedAt'>;
-export type DeclaredAccount = { id: string; provider: string; label: string; billing_mode?: 'included' | 'metered' | 'unknown'; origin?: 'external' | 'declared'; source_ids?: string[] };
+export type DeclaredAccount = { id: string; provider: string; label: string; website_url?: string; operator_note?: string; billing_mode?: 'included' | 'metered' | 'unknown'; origin?: 'external' | 'declared'; source_ids?: string[] };
 export type FinancialSource = {
   id: string; kind: 'json-file' | 'json-http' | 'manual' | 'unsupported'; path?: string; url?: string;
   authorization?: SecretRef; max_age_seconds?: number; account_id?: string; provider?: string;

@@ -166,14 +166,29 @@ def rows_for(day):
     # Proxy observation is preferred for matched native observations because it
     # carries selected account/attempt metadata. Do not merge separate attempts.
     proxy_ids = {r.get("upstream_request_id") for r in records if r.get("via") == "proxy" and r.get("upstream_request_id")}
+    # Multiple Claude assistant content blocks describe one provider message.
+    # Keep its latest usage snapshot; equal token tuples alone are never identity.
+    native_messages = {}
+    for row in records:
+        if row.get("via") == "direct" and row.get("native_message_id"):
+            key = (row.get("client"), row.get("session"), row["native_message_id"])
+            previous = native_messages.get(key)
+            if previous is None or (row.get("ts") or "") >= (previous.get("ts") or ""):
+                native_messages[key] = row
     seen = set()
-    for row in attribute_routing(records):
+    selected = [row for row in records if not (row.get("via") == "direct" and row.get("native_message_id"))
+                or native_messages[(row.get("client"), row.get("session"), row["native_message_id"])] is row]
+    for row in attribute_routing(selected):
         upstream = row.get("upstream_request_id")
         if row.get("via") != "proxy" and upstream and upstream in proxy_ids:
             continue
-        identity = row.get("attempt_id") or row.get("request_id") or upstream
+        if row.get("via") == "direct" and not upstream and row.get("native_kind") != "codex":
+            # Native logs can describe traffic already observed by the proxy.
+            # Without a request join, do not add the two sources as unique usage.
+            row = dict(row, accounting_status="unreconciled_native")
+        identity = row.get("attempt_id") or row.get("request_id") or upstream or row.get("native_message_id")
         if identity:
-            key = (row.get("provider"), row.get("account"), row.get("via"), identity)
+            key = (row.get("provider"), row.get("account"), row.get("via"), row.get("session") if row.get("native_message_id") else None, identity)
             if key in seen: continue
             seen.add(key)
         yield row
@@ -184,7 +199,7 @@ def rollup(defaults, models, days=30):
     today = local_day()
     month = today[:7]
     per_day = collections.defaultdict(collections.Counter)
-    periods = {key: {"total": collections.Counter(), "dims": {dim: collections.defaultdict(collections.Counter) for dim in ("client", "model", "via")}, "unpriced": collections.Counter()} for key in ("today", "month")}
+    periods = {key: {"total": collections.Counter(), "unreconciled": collections.Counter(), "dims": {dim: collections.defaultdict(collections.Counter) for dim in ("client", "model", "via", "account")}, "unpriced": collections.Counter()} for key in ("today", "month")}
 
     def add(counter, row, api, marginal, priced, tokens):
         counter["api_micro"] += round(api * 1e6)
@@ -203,6 +218,13 @@ def rollup(defaults, models, days=30):
             continue
         api, marginal, priced = cost(row, defaults, models)
         tokens = sum((row.get(field) or 0) for field in ("in_uncached", "cache_read", "cache_write", "out_total"))
+        if row.get("accounting_status") == "unreconciled_native":
+            for name, selected in (("today", day == today), ("month", day.startswith(month + "-"))):
+                if selected:
+                    add(periods[name]["unreconciled"], row, api, marginal, priced, tokens)
+            # The retained observations remain readable via rows_for; neither
+            # trends nor ranked unique-usage totals combine them with proxy data.
+            continue
         add(per_day[day], row, api, marginal, priced, tokens)
         for name, selected in (("today", day == today), ("month", day.startswith(month + "-"))):
             if not selected:
@@ -222,11 +244,19 @@ def rollup(defaults, models, days=30):
     def project(name, label):
         period = periods[name]
         total = period["total"]
+        unresolved = period["unreconciled"]
         result = {"date": label, "period": "day" if name == "today" else "month",
                   "period_start": today if name == "today" else month + "-01", "period_end": today,
-                  "requests": total["requests"], "failed": total["failed"],
+                  "requests": None if unresolved["requests"] else total["requests"], "failed": total["failed"],
                   "counts": {field: total[field] for field in ("in_uncached", "cache_read", "cache_write", "out_total")},
-                  "tokens_total": total["tokens"], **amounts(total), "unpriced": dict(period["unpriced"])}
+                  "tokens_total": None if unresolved["requests"] else total["tokens"], **amounts(total), "unpriced": dict(period["unpriced"]),
+                  "reconciliation": {"status": "partial" if unresolved["requests"] else "observations_only",
+                      "confirmed_tokens": total["tokens"], "confirmed_requests": total["requests"],
+                      "unreconciled_native_observations": unresolved["requests"],
+                      "unreconciled_native_token_observations": unresolved["tokens"]}}
+        if unresolved["requests"]:
+            result["api_equivalent_usd"] = None
+            result["marginal_usd"] = None
         for dim, groups in period["dims"].items():
             result["by_" + dim] = [{"name": key, **amounts(value), "tokens": value["tokens"], "requests": value["requests"]}
                                   for key, value in sorted(groups.items(), key=lambda item: (-item[1]["tokens"], item[0]))]
@@ -235,6 +265,7 @@ def rollup(defaults, models, days=30):
     cutoff = (date.fromisoformat(today) - timedelta(days=days)).isoformat()
     return {"generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "today": project("today", today), "month": project("month", month),
+            "trend_scope": "confirmed_observations",
             "trend": [{"date": day, **amounts(value), "tokens": value["tokens"]}
                       for day, value in sorted(per_day.items()) if day >= cutoff]}
 
@@ -257,8 +288,12 @@ def main():
     unpriced = collections.Counter()
     flat = collections.Counter()
     totals = collections.Counter()
+    unreconciled = 0
 
     for r in rows_for(day):
+        if r.get("accounting_status") == "unreconciled_native":
+            unreconciled += 1
+            continue
         # Direct rows carry no provider (the log a row came from does not identify
         # the upstream), so resolve it from the price table by model name.
         if args.by == "provider" and not r.get("provider"):
@@ -297,15 +332,23 @@ def main():
                            "api_equivalent_usd": None if v["api_unknown"] else v["api_cents"] / 100_000,
                            "marginal_usd": None if v["marg_unknown"] else v["marg_cents"] / 100_000} for k, v in agg.items()},
             "unpriced_models": dict(unpriced),
+            "reconciliation": {"status": "partial" if unreconciled else "observations_only",
+                               "unreconciled_native_observations": unreconciled,
+                               "groups_scope": "confirmed_observations"},
         }
         print(json.dumps(out, indent=1))
         return
 
     if not agg:
+        if unreconciled:
+            print(f"{unreconciled} native observations need reconciliation; unique usage is unknown")
+            return
         print(f"no ledger rows for {args.day}")
         return
 
     hdr = f"{args.by:<16}{'req':>6}{'fail':>6}{'in':>12}{'cache_r':>13}{'cache_w':>12}{'out':>10}{'API $':>10}{'est $*':>9}"
+    if unreconciled:
+        print(f"Confirmed subtotal only: {unreconciled} native observations may overlap; combined usage is unknown.")
     print(hdr); print("-" * len(hdr))
     for k, v in sorted(agg.items(), key=lambda x: -x[1]["api_cents"]):
         print(f"{k:<16}{v['ok']:>6}{v['attempts']-v['ok']:>6}{v['in_uncached']:>12,}{v['cache_read']:>13,}"

@@ -33,7 +33,17 @@ def project(snapshot, now=None):
                 continue
             data = entry.get('data') or {}
             if provider == 'claude':
-                windows = [(w.get('utilization'), w.get('resets_at')) for k in ('five_hour', 'seven_day') if isinstance(w := data.get(k), dict)]
+                windows = []
+                for kind in ('five_hour', 'seven_day'):
+                    window = data.get(kind)
+                    if not isinstance(window, dict):
+                        continue
+                    used, reset = window.get('utilization'), window.get('resets_at')
+                    # An inactive Claude session has zero usage and no reset yet.
+                    # It must not hide an independently observed weekly limit.
+                    if kind == 'five_hour' and type(used) in (int, float) and used == 0 and reset is None:
+                        continue
+                    windows.append((used, reset))
             else:
                 limits = data.get('rate_limit') or {}
                 windows = [(w.get('used_percent'), w.get('reset_at')) for k in ('primary_window', 'secondary_window') if isinstance(w := limits.get(k), dict)]
