@@ -64,3 +64,19 @@ the provider credential is valid. Active policy version, enrollment and quota st
 are separate from verified website identity. The gateway's local reservation ledger
 remains the only authority for the paid budget. Website actions never rebind native
 IDs, clear reservations or infer proxy identity from a matching email.
+
+### Distinguish an unavailable profile from a login page
+
+A configured remote URL must not be opened when profile acquisition fails. The
+API can return that URL together with `unavailable` (HTTP503, or HTTP409 for a
+manage action); navigating anyway exposes the reverse proxy's generic unavailable
+page for an idle profile. The client must retain the actionable dashboard error
+and close its newly reserved tab. A running browser with `login_required`,
+`identity_unknown` or `mismatch` remains a valid manual-access destination.
+
+HTTP200 plus an HTML content type is insufficient noVNC acceptance. Verify a real
+noVNC document, successful WebSocket/RFB connection and a rendered canvas. In the
+September10 follow-up, the active Kimi manual profile passed public WebSocket and
+1920×1080 canvas verification with `view_only=true` and shared VNC; the idle Cursor
+URL returned HTTP503 with the generic unavailable placeholder. Without the user's
+specific URL, these observations do not identify which page their screenshot showed.
