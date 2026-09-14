@@ -70,7 +70,11 @@ renews it on further opens or Keep open, and releases it on Close browser.
 **Close browser affects all providers sharing that profile.** Read-only account
 checks reuse an active manual lease. Lease expiry remains controlled by the
 lifecycle owner. A bookmarked noVNC URL alone does not acquire a lease or start an
-idle browser: open it through the dashboard account action first.
+idle browser. Use the dashboard's **Bookmark browser access** link instead:
+`/account-browser?accountKey=claude-example` (or a configured `subscriptionId`)
+resolves the intended account and exposes the existing Open browser, Keep open
+and Close browser controls. Visiting this stable entrance is passive; only an
+explicit action acquires a lease. The old raw noVNC URLs remain unchanged.
 
 Configuration changes do not move cookies, start browsers, or register profiles
 with the lifecycle owner. Provisioning/migration remains a separately approved
