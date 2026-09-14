@@ -77,6 +77,6 @@ describe('bookmarkable account browser entrance', () => {
   it('explains profile-wide close for an explicitly shared browser', async () => {
     const settings = config(); settings.account_browsers![0].shared_identity_email = account.email;
     vi.mocked(loadConfig).mockReturnValue(settings);
-    expect(renderToStaticMarkup(await Page({ searchParams: Promise.resolve({ accountKey: 'personal' }) }))).toContain('Close browser affects every provider sharing this profile.');
+    expect(renderToStaticMarkup(await Page({ searchParams: Promise.resolve({ accountKey: 'personal' }) }))).toContain('Close session releases browser access for every provider sharing this profile.');
   });
 });

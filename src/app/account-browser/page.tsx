@@ -23,8 +23,8 @@ export default async function AccountBrowserPage({ searchParams }: { searchParam
   return <main>
     <h1>Account browser</h1>
     <p>{account.provider} · {account.email}</p>
-    <p>Bookmark this page. Open the browser below to start a bounded session, then use Keep open when you need more time.</p>
-    {binding.shared_identity_email ? <p>Close browser affects every provider sharing this profile.</p> : null}
+    <p>Bookmark this page. Open the browser below to start a bounded session, then use Extend session when you need more time.</p>
+    {binding.shared_identity_email ? <p>Close session releases browser access for every provider sharing this profile.</p> : null}
     <AccountBrowserAccess account={{ key: account.key, provider: account.provider, email: account.email }} browserSelector={selector} showEntranceLink={false} />
     <p><a href="/">Back to dashboard</a></p>
   </main>;

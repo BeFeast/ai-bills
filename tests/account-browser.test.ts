@@ -147,6 +147,7 @@ describe('account-specific website management', () => {
     expect(fetch.mock.calls.filter(([, options]) => options.method === 'PATCH')).toHaveLength(2);
     const closed = await accountBrowser(settings, { accountKey: 'personal' }, 'close', deps);
     expect(closed.manualLeaseExpiresAt).toBeNull(); expect(closes).toBe(1);
+    expect(closed.message).toBe('Browser access released; saved sign-in is preserved.');
     expect((await accountBrowser(config(), { accountKey: 'personal' }, 'manage', deps)).status).toBe('ready');
     expect(opens).toBe(2);
   });

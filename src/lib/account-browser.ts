@@ -211,7 +211,7 @@ async function observeBrowser(config: AppConfig, selector: AccountBrowserSelecto
       await releaseBrowserLease(lease, true);
       manualLeases.delete(binding.profile_id);
       Object.assign(state, { status: 'identity_unknown', manualLeaseExpiresAt: null,
-        message: 'Browser closed; saved sign-in is preserved.', observedAt: new Date().toISOString() });
+        message: 'Browser access released; saved sign-in is preserved.', observedAt: new Date().toISOString() });
       await proxy;
       return state;
     }

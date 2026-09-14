@@ -66,14 +66,16 @@ quota adapters or change native OAuth ownership.
 Operations serialize per profile. Each provider/account owns its own login and
 billing tabs, including tabs temporarily redirected to an SSO page. The browser
 lifecycle integration still acquires a bounded manual lease on Open browser,
-renews it on further opens or Keep open, and releases it on Close browser.
-**Close browser affects all providers sharing that profile.** Read-only account
+renews it on further opens or Extend session, and releases it on Close session.
+**Close session releases the shared access lease for all providers using that profile.**
+Whether the browser stops or remains available is controlled by the lifecycle
+owner; releasing access does not assert that the browser process stopped. Read-only account
 checks reuse an active manual lease. Lease expiry remains controlled by the
 lifecycle owner. A bookmarked noVNC URL alone does not acquire a lease or start an
 idle browser. Use the dashboard's **Bookmark browser access** link instead:
 `/account-browser?accountKey=claude-example` (or a configured `subscriptionId`)
-resolves the intended account and exposes the existing Open browser, Keep open
-and Close browser controls. Visiting this stable entrance is passive; only an
+resolves the intended account and exposes the existing Open browser, Extend session
+and Close session controls. Visiting this stable entrance is passive; only an
 explicit action acquires a lease. The old raw noVNC URLs remain unchanged.
 
 Configuration changes do not move cookies, start browsers, or register profiles
