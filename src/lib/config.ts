@@ -7,6 +7,8 @@ export type AccountBrowserConfig = {
   subscription_id?: string;
   account_key: string;
   profile_id: string;
+  /** Explicit sign-in identity shared by all bindings of this browser. */
+  shared_identity_email?: string;
   cdp_http: string;
   remote_url: string;
   login_url: string;

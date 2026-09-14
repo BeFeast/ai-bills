@@ -43,11 +43,33 @@ export function resolveBrowserBinding(config: AppConfig, selector: AccountBrowse
   const accounts = config.accounts.filter(account => account.key === binding.account_key);
   if (accounts.length !== 1 || !email(accounts[0].email)) throw new Error('Account identity missing');
   const account = accounts[0];
-  if (!/^ai-bills-[a-z0-9][a-z0-9-]{1,70}$/.test(binding.profile_id)) throw new Error('Dedicated browser profile required');
+  const sharedIdentity = binding.shared_identity_email;
+  if (sharedIdentity !== undefined && (!email(sharedIdentity) || normalizeEmail(sharedIdentity) !== normalizeEmail(account.email))) throw new Error('Shared browser identity must match the expected account email');
+  const profilePattern = sharedIdentity === undefined ? /^ai-bills-[a-z0-9][a-z0-9-]{1,70}$/ : /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,80}$/;
+  if (!profilePattern.test(binding.profile_id)) throw new Error('Invalid browser profile');
   const endpoint = validateCdpEndpoint({ ...account, cdp_http: binding.cdp_http });
   const remote = safeUrl(binding.remote_url);
-  if (bindings.some(other => other !== binding && (other.profile_id === binding.profile_id || safeUrl(other.cdp_http).origin === endpoint
-    || (safeUrl(other.remote_url).origin === remote.origin && safeUrl(other.remote_url).pathname === remote.pathname)))) throw new Error('Browser profile must have exactly one account binding');
+  for (const other of bindings) {
+    if (other === binding) continue;
+    const otherEndpoint = safeUrl(other.cdp_http).origin;
+    const otherRemote = safeUrl(other.remote_url);
+    const overlaps = other.profile_id === binding.profile_id || otherEndpoint === endpoint
+      || (otherRemote.origin === remote.origin && otherRemote.pathname === remote.pathname);
+    if (!overlaps) continue;
+    const otherAccounts = config.accounts.filter(candidate => candidate.key === other.account_key);
+    if (sharedIdentity === undefined || !email(other.shared_identity_email)
+      || normalizeEmail(other.shared_identity_email) !== normalizeEmail(sharedIdentity)
+      || otherAccounts.length !== 1 || !email(otherAccounts[0].email)
+      || normalizeEmail(otherAccounts[0].email) !== normalizeEmail(sharedIdentity)
+      || other.profile_id !== binding.profile_id || otherEndpoint !== endpoint
+      || validateCdpEndpoint({ ...otherAccounts[0], cdp_http: other.cdp_http }) !== endpoint
+      || otherRemote.href !== remote.href) throw new Error('Conflicting shared browser binding');
+    // A provider has one cookie identity inside a profile. Keep its account and
+    // subscription selectors unambiguous even when other providers share it.
+    if (other.account_key === binding.account_key
+      || (binding.subscription_id && other.subscription_id === binding.subscription_id)
+      || otherAccounts[0].provider === account.provider) throw new Error('Duplicate provider identity in shared browser');
+  }
   const hosts = providerHosts[account.provider];
   if (!hosts) throw new Error('Unsupported account provider');
   safeUrl(binding.manage_url, hosts); safeUrl(binding.login_url, hosts); safeUrl(binding.remote_url);
@@ -95,7 +117,7 @@ async function identity(connection: AccountBrowserConnection, targets: BrowserTa
 
 async function openTab(connection: AccountBrowserConnection, binding: AccountBrowserConfig, account: AccountConfig, targets: BrowserTarget[], action: 'login' | 'manage') {
   const url = action === 'login' ? binding.login_url : binding.manage_url;
-  const key = `${binding.profile_id}:${action}`;
+  const key = JSON.stringify([binding.profile_id, account.key, account.provider, action]);
   const known = ownedTabs.get(key);
   const target = known && known.url === url ? targets.find(target => {
     if (target.targetId !== known.id || target.type !== 'page') return false;
@@ -133,9 +155,9 @@ export function projectBrowserProxy(value: unknown, accountId: string): AccountB
 }
 
 const messages: Record<AccountBrowserStatus, string> = {
-  unconfigured: 'No dedicated account browser is configured. A website link uses your current browser account.',
-  login_required: 'Open the dedicated browser to sign in and verify the intended website account. Proxy OAuth is separate.',
-  identity_unknown: 'Website identity could not be verified. Open the dedicated browser; billing navigation remains disabled.',
+  unconfigured: 'No account browser is configured. A website link uses your current browser account.',
+  login_required: 'Open the account browser to sign in and verify the intended website account. Proxy OAuth is separate.',
+  identity_unknown: 'Website identity could not be verified. Open the account browser; billing navigation remains disabled.',
   mismatch: 'This browser is signed in to a different account. Recover the website login before opening billing.',
   ready: 'Website account identity matches. Proxy status and budget remain controlled by routing.',
   unavailable: 'Account browser is unavailable or its binding is invalid. Existing proxy credentials are unchanged.',
