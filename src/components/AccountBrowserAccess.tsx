@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ProductSubscription } from '@/lib/overview';
 
-import { canOpenAccountBrowser, type AccountBrowserState as BrowserState } from '@/lib/account-browser-types';
+import { canOpenAccountBrowser, type AccountBrowserSelector, type AccountBrowserState as BrowserState } from '@/lib/account-browser-types';
 
 const labels: Record<BrowserState['status'], string> = {
   unconfigured: 'Account browser not configured', login_required: 'Sign-in required',
@@ -11,11 +11,12 @@ const labels: Record<BrowserState['status'], string> = {
   ready: 'Verified account', unavailable: 'Account browser unavailable',
 };
 
-type AccessProps = ({ subscription: ProductSubscription; account?: never } | { subscription?: never; account: { key: string; provider: string; email: string } }) & { children?: ReactNode };
-export function AccountBrowserAccess({ subscription, account, children }: AccessProps) {
+type AccessProps = ({ subscription: ProductSubscription; account?: never } | { subscription?: never; account: { key: string; provider: string; email: string } }) & { children?: ReactNode; showEntranceLink?: boolean; browserSelector?: AccountBrowserSelector };
+export function AccountBrowserAccess({ subscription, account, children, showEntranceLink = true, browserSelector }: AccessProps) {
   const provider = subscription?.provider || account?.provider || '';
   const label = subscription?.label || account?.email || 'Email not recorded';
-  const selector: Record<string, string> = subscription ? { subscriptionId: subscription.id } : { accountKey: account!.key };
+  const selected = browserSelector ?? (subscription ? { subscriptionId: subscription.id } : { accountKey: account!.key });
+  const selector: Record<string, string> = selected.subscriptionId ? { subscriptionId: selected.subscriptionId } : { accountKey: selected.accountKey! };
   const [state, setState] = useState<BrowserState | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -85,16 +86,18 @@ export function AccountBrowserAccess({ subscription, account, children }: Access
   const fresh = Number.isFinite(age) && age >= -60_000 && age <= (state?.maxAgeSeconds ?? 30) * 1000;
   const ready = state?.status === 'ready' && fresh;
   const status = state?.status === 'ready' && !fresh ? 'Verification needs refreshing' : state ? labels[state.status] : error || 'Browser checked when opened';
+  const hasBrowserAccess = state?.configured || (!state && (account || subscription?.accountKeys.length));
   return <div className="account-browser-access">
     {account ? <small>Provider website · separate browser sign-in</small> : null}
     <div className="row-actions">
-      {state?.configured || (!state && (account || subscription?.accountKeys.length)) ? <button className="small-button" disabled={busy} onClick={openAccount} title={`${provider} · ${state?.intendedEmail || label}`}>
+      {hasBrowserAccess ? <button className="small-button" disabled={busy} onClick={openAccount} title={`${provider} · ${state?.intendedEmail || label}`}>
         {busy ? 'Opening…' : ready ? 'Manage account ↗' : subscription ? 'Open browser ↗' : 'Open account browser ↗'}
       </button> : null}
       {subscription?.manageUrl || subscription?.loginUrl ? <a className="action-link" href={subscription.manageUrl || subscription.loginUrl!} target="_blank" rel="noreferrer" title={`Opens the provider website in your current browser. Check which account is signed in: ${label}.`}>Provider website ↗</a> : null}
+      {showEntranceLink && hasBrowserAccess ? <a className="action-link" href={`/account-browser?${new URLSearchParams(selector).toString()}`} title="Bookmark this entrance to start the browser when needed">Bookmark browser access</a> : null}
       {children}
     </div>
-    {state?.manualLeaseExpiresAt ? <div className="row-actions"><small>{Date.parse(state.manualLeaseExpiresAt) <= now ? 'Browser lease expired at ' : 'Browser closes at '}{new Date(state.manualLeaseExpiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small><button className="small-button" disabled={busy} onClick={() => void updateLease('renew')}>Keep open</button><button className="small-button" disabled={busy} onClick={() => void updateLease('close')}>Close browser</button></div> : null}
+    {state?.manualLeaseExpiresAt ? <div className="row-actions"><small>{Date.parse(state.manualLeaseExpiresAt) <= now ? 'Browser lease expired at ' : 'Browser access expires at '}{new Date(state.manualLeaseExpiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small><button className="small-button" disabled={busy} onClick={() => void updateLease('renew')}>Extend session</button><button className="small-button" disabled={busy} onClick={() => void updateLease('close')}>Close session</button></div> : null}
     <div className="account-browser-meta">
       <small className={`account-browser-status ${ready ? 'verified' : ''}`} role="status">{state?.status === 'unconfigured' && (subscription?.loginUrl || subscription?.manageUrl) ? 'Current browser session' : status}</small>
       <button className="account-browser-refresh" onClick={() => void refresh()} disabled={busy} aria-label={`Refresh ${provider} account browser status`} title="Check account status again">↻</button>
