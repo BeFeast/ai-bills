@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 export type SidebarItem<T extends string> = { id: T; label: string; icon?: ReactNode; count?: number };
 
 type SidebarProps<T extends string> = {
-  brand: { mark: ReactNode; name: string; sub?: string };
+  brand: { mark: ReactNode; name: ReactNode; sub?: ReactNode };
   sectionLabel?: string;
   items: SidebarItem<T>[];
   activeId: T;

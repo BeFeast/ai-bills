@@ -2,8 +2,9 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'AI bills — subscriptions & usage',
-  description: 'Your AI subscriptions, renewal dates, costs and usage in one place.',
+  title: 'Zecori — your AI treasurer',
+  applicationName: 'Zecori',
+  description: 'Zecori keeps the books on your AI resources: subscriptions, payments, prepaid credits, remaining quota, resets and upcoming renewals. By BeFeast.',
 };
 
 // Applies the persisted scheme before first paint so a dark reload does not flash light.

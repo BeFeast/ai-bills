@@ -5,6 +5,7 @@ import type { OverviewUsageGroup, ProductOverview, ProductSubscription } from '@
 import type { ProviderUsage } from '@/lib/usage';
 import { buildLimitsHero } from '@/lib/limits-hero';
 import { LimitsHero } from './LimitsHero';
+import { ZecoriMark } from './Brand';
 import { fmtMoney, fmtTokens, fmtDate } from './format';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
@@ -48,7 +49,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
     } catch (cause) { setSaveError(cause instanceof Error ? cause.message : 'Unable to save subscription.'); }
     finally { setSaving(false); }
   }
-  if (!data) return <Card title="Your subscriptions and usage"><p className="t-small">{error || 'Loading subscription prices and usage…'}</p></Card>;
+  if (!data) return <Card title="Your subscriptions and usage" aria-label="Zecori is loading"><div className="intro"><ZecoriMark size={56} /><div className="intro__text"><p className="intro__lead">Zecori, your AI treasurer, is opening the books.</p><p className="t-small">{error || 'Loading subscription prices, remaining quota and usage…'}</p></div></div></Card>;
   const subscriptions = data.subscriptions.filter(s => s.status !== 'cancelled' && s.status !== 'expired');
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Jerusalem' });
   const upcoming = subscriptions.filter(s => (s.renewsAt || s.endsAt || '').slice(0,10) >= today).sort((a,b) => (a.renewsAt || a.endsAt || '').localeCompare(b.renewsAt || b.endsAt || ''));

@@ -42,6 +42,19 @@ a:focus-visible, summary:focus-visible, button:focus-visible { outline: none; bo
 .bf-sb__name { font: 600 14px var(--font-sans); color: var(--text); }
 .bf-sb__sub { font-size: 10px; color: var(--text-faint); }
 .bf-sb__mark { width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0; display: block; }
+/* Zecori identity: the character mark keeps its ivory background inside a brass hairline; the wordmark swaps per scheme */
+.zecori-mark { border-radius: 9px; background: var(--zecori-ivory); box-shadow: 0 0 0 1px var(--zecori-brass); object-fit: cover; }
+.zecori-wordmark { display: inline-flex; align-items: center; line-height: 1; }
+.zecori-wordmark img { width: auto; }
+.zecori-wordmark .zecori-wordmark__light { display: block; }
+.zecori-wordmark .zecori-wordmark__dark { display: none; }
+[data-theme="dark"] .zecori-wordmark .zecori-wordmark__light { display: none; }
+[data-theme="dark"] .zecori-wordmark .zecori-wordmark__dark { display: block; }
+.bf-sb__brand .zecori-wordmark { margin-bottom: 3px; }
+.bf-sb__brand .bf-sb__sub { line-height: 1.35; }
+.intro { display: flex; align-items: center; gap: 16px; }
+.intro__text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.intro__lead { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
 .bf-sb__link { width: 100%; border: 0; background: transparent; text-align: left; }
 .bf-sb__link:focus-visible { box-shadow: var(--focus-ring); }
 .bf-sb__icon { display: inline-flex; width: 16px; justify-content: center; flex-shrink: 0; }
