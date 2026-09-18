@@ -159,12 +159,18 @@ def fingerprint(row):
     return key if any(key[1:]) else None
 
 def matches_proxy(row, proxy_prints):
-    """True when a proxy row with the same fingerprint was observed within the window."""
+    """True when a proxy row with the same fingerprint was observed within the window.
+    The nearest candidate is consumed, so one proxy observation explains one native row."""
     key = fingerprint(row)
     instant = parse_ts(row.get("ts"))
-    if not key or not instant:
+    candidates = proxy_prints.get(key) if key and instant else None
+    if not candidates:
         return False
-    return any(abs((candidate - instant).total_seconds()) <= FINGERPRINT_WINDOW_SECONDS for candidate in proxy_prints.get(key, ()))
+    nearest = min(range(len(candidates)), key=lambda index: abs((candidates[index] - instant).total_seconds()))
+    if abs((candidates[nearest] - instant).total_seconds()) > FINGERPRINT_WINDOW_SECONDS:
+        return False
+    del candidates[nearest]
+    return True
 
 def rows_for(day):
     # Preserve raw ledger; reconcile observations in the read projection only.

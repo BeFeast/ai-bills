@@ -259,6 +259,8 @@ class MonthOverviewTests(unittest.TestCase):
                 dict(tokens, model='claude-fixture', ts='2026-09-07T01:00:00Z', via='direct', native_kind='claude', native_message_id='m4', session='s3', account='work@example.invalid', provider='claude'),
                 # Codex native session with identity.
                 dict(tokens, model='gpt-fixture', ts='2026-09-07T04:07:00Z', via='direct', native_kind='codex', session='c1', account='personal@example.invalid', provider='codex'),
+                # A second native turn with the proxy row's tuple: the one proxy observation is already consumed, so this is real usage.
+                dict(tokens, model='claude-fixture', ts='2026-09-07T04:08:00Z', via='direct', native_kind='claude', native_message_id='m5', session='s1', account='work@example.invalid', provider='claude'),
             ]
             (Path(directory) / 'ledger-fixture.jsonl').write_text('\n'.join(json.dumps(row) for row in records))
             original = report.local_day
@@ -266,11 +268,11 @@ class MonthOverviewTests(unittest.TestCase):
                     patch.object(report, 'utc_now', return_value=datetime(2026, 9, 7, 5, 0, tzinfo=timezone.utc)):
                 rows = list(report.rows_for(None))
                 result = report.rollup({}, {'claude-fixture': {'in': 1, 'out': 2}, 'gpt-fixture': {'in': 1, 'out': 2}})['last_24h']
-            self.assertEqual([row.get('native_message_id') for row in rows if row.get('via') == 'direct'], ['m2', 'm3', 'm4', None])
+            self.assertEqual([row.get('native_message_id') for row in rows if row.get('via') == 'direct'], ['m2', 'm3', 'm4', None, 'm5'])
             self.assertEqual(result['reconciliation']['unreconciled_native_observations'], 1)
-            self.assertEqual(result['reconciliation']['confirmed_requests'], 4)
+            self.assertEqual(result['reconciliation']['confirmed_requests'], 5)
             by_upstream = {(row['provider'], row['name']): row['requests'] for row in result['by_upstream']}
-            self.assertEqual(by_upstream, {('claude', 'work@example.invalid'): 3, ('codex', 'personal@example.invalid'): 1})
+            self.assertEqual(by_upstream, {('claude', 'work@example.invalid'): 4, ('codex', 'personal@example.invalid'): 1})
 
     def test_extractor_stamps_signed_in_identity_and_scans_every_codex_home(self):
         import base64
