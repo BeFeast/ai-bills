@@ -78,10 +78,11 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
   </article>;
 }
 
-export function LimitsHero({ hero, now, subscriptions, loading, onView }: { hero: LimitsHeroData; now: number; subscriptions: ProductSubscription[]; loading?: boolean; onView: (view: 'accounts') => void }) {
+export function LimitsHero({ hero, now, subscriptions, onView }: { hero: LimitsHeroData; now: number; subscriptions: ProductSubscription[]; onView: (view: 'accounts') => void }) {
   const refreshed = hero.refreshedAt && Number.isFinite(Date.parse(hero.refreshedAt)) ? new Date(hero.refreshedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: TZ }) : null;
   return <Card id="limits-now" title="Limits now" subtitle={`Accounts used in the last ${hero.windowHours}h${refreshed ? ` · refreshed ${refreshed}` : ''}`} actions={<Button variant="secondary" size="sm" onClick={() => onView('accounts')}>Accounts &amp; sign-in →</Button>} aria-label="Limits now">
-    {hero.cards.length ? <div className="hero-grid">{hero.cards.map((card) => <HeroCard key={card.id} card={card} now={now} recencyKnown={hero.recencyKnown} subscriptions={subscriptions} />)}</div>
-      : <p className="hero-empty">{loading ? 'Loading account quotas…' : hero.recencyKnown ? 'No account with a quota source was used in the last 24h and none is running low.' : 'No quota observations yet.'}</p>}
+    {hero.loading ? <p className="hero-empty">Loading account quotas…</p>
+      : hero.cards.length ? <div className="hero-grid">{hero.cards.map((card) => <HeroCard key={card.id} card={card} now={now} recencyKnown={hero.recencyKnown} subscriptions={subscriptions} />)}</div>
+      : <p className="hero-empty">{hero.recencyKnown ? 'No account with a quota source was used in the last 24h and none is running low.' : 'No quota observations yet.'}</p>}
   </Card>;
 }
