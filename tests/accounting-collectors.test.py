@@ -1,6 +1,7 @@
 import importlib.machinery
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,7 +82,7 @@ class CollectorTests(unittest.TestCase):
                           cache_read=20, cache_write=30, out_total=5, billing_mode='included')
             records = [dict(common, via='proxy', account='example', attempt_id='attempt-one', upstream_request_id='request-one'),
                        dict(common, via='proxy', account='example', attempt_id='attempt-two', upstream_request_id='request-two'),
-                       dict(common, via='direct', session='example'),
+                       dict(common, via='direct', session='example', out_total=7),
                        dict(common, via='direct', upstream_request_id='request-one')]
             (Path(directory) / 'ledger-fixture.jsonl').write_text('\n'.join(map(json.dumps, records)))
             original = report.local_day
@@ -92,7 +93,7 @@ class CollectorTests(unittest.TestCase):
             self.assertIsNone(result['api_equivalent_usd'])
             self.assertEqual(result['reconciliation'], {'status': 'partial', 'confirmed_tokens': 130,
                 'confirmed_requests': 2, 'unreconciled_native_observations': 1,
-                'unreconciled_native_token_observations': 65})
+                'unreconciled_native_token_observations': 67})
             self.assertEqual(result['by_account'][0]['name'], 'example')
             self.assertEqual(result['by_account'][0]['requests'], 2)
 
@@ -238,6 +239,82 @@ class MonthOverviewTests(unittest.TestCase):
             account = {row['name']: row for row in rolling['by_account']}['a@example.invalid']
             self.assertEqual((account['requests'], account['rate_limited'], account['last_request_at']), (4, 2, '2026-09-07T01:00:00+00:00'))
             self.assertEqual(result['month']['by_account'][0]['last_request_at'], '2026-09-07T02:00:00+00:00' if result['month']['by_account'][0]['name'] == 'sk-key' else '2026-09-07T01:00:00+00:00')
+
+    def test_native_rows_reconcile_by_fingerprint_or_signed_in_identity(self):
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            report.LEDGER_DIR = directory
+            tokens = dict(model='claude-fixture-20260101', in_uncached=10, cache_read=20, cache_write=30, out_total=5)
+            records = [
+                dict(tokens, ts='2026-09-07T04:00:00Z', via='proxy', provider='claude', account='work@example.invalid', upstream_request_id='proxy-one'),
+                # Same model and token tuple four minutes later in a Claude Code log without a request id: the proxy already observed it.
+                dict(tokens, model='claude-fixture', ts='2026-09-07T04:04:00Z', via='direct', native_kind='claude', native_message_id='m1', session='s1', account='work@example.invalid', provider='claude'),
+                # Different tuple, signed-in identity known: attributed native usage.
+                dict(tokens, model='claude-fixture', out_total=9, ts='2026-09-07T04:05:00Z', via='direct', native_kind='claude', native_message_id='m2', session='s1', account='work@example.invalid', provider='claude'),
+                # Different tuple, no identity: still unreconciled.
+                dict(tokens, model='claude-fixture', out_total=11, ts='2026-09-07T04:06:00Z', via='direct', native_kind='claude', native_message_id='m3', session='s2'),
+                # Same tuple as the proxy row but hours later: not the same observation.
+                dict(tokens, model='claude-fixture', ts='2026-09-07T01:00:00Z', via='direct', native_kind='claude', native_message_id='m4', session='s3', account='work@example.invalid', provider='claude'),
+                # Codex native session with identity.
+                dict(tokens, model='gpt-fixture', ts='2026-09-07T04:07:00Z', via='direct', native_kind='codex', session='c1', account='personal@example.invalid', provider='codex'),
+            ]
+            (Path(directory) / 'ledger-fixture.jsonl').write_text('\n'.join(json.dumps(row) for row in records))
+            original = report.local_day
+            with patch.object(report, 'local_day', side_effect=lambda ts=None: '2026-09-07' if ts is None else original(ts)), \
+                    patch.object(report, 'utc_now', return_value=datetime(2026, 9, 7, 5, 0, tzinfo=timezone.utc)):
+                rows = list(report.rows_for(None))
+                result = report.rollup({}, {'claude-fixture': {'in': 1, 'out': 2}, 'gpt-fixture': {'in': 1, 'out': 2}})['last_24h']
+            self.assertEqual([row.get('native_message_id') for row in rows if row.get('via') == 'direct'], ['m2', 'm3', 'm4', None])
+            self.assertEqual(result['reconciliation']['unreconciled_native_observations'], 1)
+            self.assertEqual(result['reconciliation']['confirmed_requests'], 4)
+            by_upstream = {(row['provider'], row['name']): row['requests'] for row in result['by_upstream']}
+            self.assertEqual(by_upstream, {('claude', 'work@example.invalid'): 3, ('codex', 'personal@example.invalid'): 1})
+
+    def test_extractor_stamps_signed_in_identity_and_scans_every_codex_home(self):
+        import base64
+        from unittest.mock import patch
+        extract = module('ai-usage-extract')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.claude.json').write_text(json.dumps({'oauthAccount': {'emailAddress': ' Work@Example.invalid '}}))
+            with patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': directory}):
+                self.assertEqual(extract.claude_identity(), 'work@example.invalid')
+            with patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': str(root / 'missing')}):
+                self.assertIsNone(extract.claude_identity())
+            claims = base64.urlsafe_b64encode(json.dumps({'email': 'personal@example.invalid'}).encode()).decode().rstrip('=')
+            home = root / 'codex-personal'; (home / 'sessions' / '2026').mkdir(parents=True)
+            (home / 'auth.json').write_text(json.dumps({'auth_mode': 'chatgpt', 'tokens': {'id_token': f'header.{claims}.signature'}}))
+            self.assertEqual(extract.codex_identity(str(home)), 'personal@example.invalid')
+            (root / 'apikey-home').mkdir(); (root / 'apikey-home' / 'auth.json').write_text(json.dumps({'OPENAI_API_KEY': 'sk-secret'}))
+            self.assertIsNone(extract.codex_identity(str(root / 'apikey-home')))
+            with patch.dict(os.environ, {'CODEX_HOME': str(root / 'default')}):
+                self.assertEqual(extract.codex_homes([str(home), str(home)]), [str(root / 'default'), str(home)])
+            events = [{'type': 'session_meta', 'timestamp': '2026-09-10T10:00:00Z', 'payload': {'id': 'session-one', 'model_provider': 'openai', 'originator': 'codex-tui'}},
+                      {'type': 'turn_context', 'payload': {'model': 'gpt-fixture'}},
+                      {'type': 'event_msg', 'timestamp': '2026-09-10T10:01:00Z', 'payload': {'type': 'token_count', 'info': {'last_token_usage': {'input_tokens': 5, 'output_tokens': 1}}}}]
+            (home / 'sessions' / '2026' / 'rollout.jsonl').write_text('\n'.join(json.dumps(event) for event in events))
+            rows = list(extract.codex_rows('2026-09-10', 0, str(home), extract.codex_identity(str(home))))
+            self.assertEqual([(row['id'], row['model'], row['account_email']) for row in rows], [('session-one:1', 'gpt-fixture', 'personal@example.invalid')])
+            self.assertEqual(list(extract.codex_rows('2026-09-10', 0, str(root / 'apikey-home'), None)), [])
+            claude_log = root / 'claude.jsonl'
+            claude_log.write_text(json.dumps({'type': 'assistant', 'uuid': 'u1', 'sessionId': 's', 'timestamp': '2026-09-10T10:00:00Z', 'message': {'id': 'm', 'model': 'claude-fixture', 'usage': {'input_tokens': 1}}}))
+            with patch.object(extract, 'recent', return_value=[str(claude_log)]):
+                self.assertEqual(list(extract.claude_rows('2026-09-10', 0, 'work@example.invalid'))[0]['account_email'], 'work@example.invalid')
+
+    def test_direct_collector_projects_identity_and_configured_codex_homes(self):
+        collect = module('ai-usage-collect-direct')
+        self.assertEqual(collect.host_spec('box'), ('box', 'python3 - --since {since}'))
+        host, shell = collect.host_spec({'host': 'win', 'shell': 'wsl python3 - --since {since}', 'codex_homes': ['/home/me/.codex-work', "/odd path/.codex"]})
+        self.assertEqual((host, shell), ('win', "wsl python3 - --since {since} --codex-home /home/me/.codex-work --codex-home '/odd path/.codex'"))
+        row = collect.ledger_row('box', {'kind': 'claude', 'id': 'u1', 'tool': 'claude', 'model': 'claude-fixture', 'ts': '2026-09-10T10:00:00Z', 'in_uncached': 1, 'account_email': 'Work@Example.invalid'})
+        self.assertEqual((row['account'], row['provider'], row['client'], row['schema']), ('work@example.invalid', 'claude', 'box:claude', 3))
+        pointed = collect.ledger_row('box', {'kind': 'claude', 'id': 'u2', 'tool': 'claude', 'model': 'kimi-k3', 'ts': '2026-09-10T10:00:00Z', 'account_email': 'work@example.invalid'})
+        self.assertEqual((pointed['account'], pointed['provider']), ('work@example.invalid', None))
+        anonymous = collect.ledger_row('box', {'kind': 'codex', 'id': 's:1', 'tool': 'codex', 'model': 'gpt-fixture', 'ts': '2026-09-10T10:00:00Z'})
+        self.assertEqual((anonymous['account'], anonymous['provider'], anonymous['status']), (None, None, 200))
+        self.assertEqual(collect.ledger_row('box', {'kind': 'codex', 'id': 's:2', 'tool': 'codex', 'model': 'gpt-fixture', 'ts': '', 'account_email': 'p@example.invalid'})['provider'], 'codex')
 
     def test_timestamp_parsing_tolerates_nanoseconds_and_naive_values(self):
         report = module('ai-usage-report')

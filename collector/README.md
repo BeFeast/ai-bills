@@ -62,6 +62,23 @@ Both carry per-client/model rankings, full API-equivalent (null if any price is
 missing), and `priced_api_equivalent_usd` as the known subtotal. Ledger files are
 never rewritten. Rankings sort by total tokens; API-equivalent is not a debit.
 
+Native rows carry the identity the client is signed into on the host: `ai-usage-extract`
+reads the Claude Code config (`~/.claude.json`, or `CLAUDE_CONFIG_DIR`) for the OAuth
+email and each Codex home's `auth.json` for the id-token email, and stamps it as
+`account_email`; `ai-usage-collect-direct` stores it as the ledger `account` with
+`provider` set only when the log names a native model (`claude-*` in a Claude log, any
+non-proxied Codex session). A host entry in `hosts.json` may list extra profile homes:
+`{"host": "box", "codex_homes": ["/home/me/.codex-work"]}`; the default home
+(`CODEX_HOME` or `~/.codex`) is always scanned. API-key Codex auth has no email, and a
+signed-out client leaves `account` empty.
+
+Current Claude Code logs carry no request id, so the report reconciles native Claude
+rows against proxy rows by fingerprint: the same base model and identical token buckets
+observed by the proxy within ten minutes is the same request, and the proxy row (which
+names the credential that served it) is kept. Native rows that match nothing and carry a
+signed-in identity are attributed to that account like proxy rows; rows without identity
+remain `unreconciled_native` and stay out of unique totals and rankings.
+
 `last_24h` is a third projection with `period: "rolling_24h"`: every row whose
 timestamp falls in the 24 hours before the report ran, independent of the report
 timezone, so it never empties at midnight. It is recency evidence for the
