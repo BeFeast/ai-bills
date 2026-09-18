@@ -75,15 +75,16 @@ export function maskAccountName(name: string): string {
   if (/^sk-/i.test(trimmed) || (trimmed.length >= 32 && !/[@\s]/.test(trimmed))) return `${trimmed.slice(0, 8)}…${trimmed.slice(-4)}`;
   return trimmed;
 }
-function group(value: Row): OverviewUsageGroup {
+/** `mask` only for account-shaped names: model and client ids are never credentials and must stay intact. */
+function group(value: Row, mask = false): OverviewUsageGroup {
   const lastRequestAt = date(value.last_request_at);
-  return { name: maskAccountName(text(value.name)), tokens: number(value.tokens) ?? 0, requests: number(value.requests) ?? 0,
+  return { name: mask ? maskAccountName(text(value.name)) : text(value.name), tokens: number(value.tokens) ?? 0, requests: number(value.requests) ?? 0,
     apiEquivalentUsd: number(value.api_equivalent_usd), pricedApiEquivalentUsd: number(value.priced_api_equivalent_usd) ?? number(value.api_equivalent_usd),
     ...(number(value.failed) !== null ? { failed: number(value.failed)! } : {}), ...(number(value.rate_limited) !== null ? { rateLimited: number(value.rate_limited)! } : {}),
     ...(lastRequestAt ? { lastRequestAt } : {}) };
 }
-function groups(value: unknown): OverviewUsageGroup[] {
-  return rows(value).map(group).filter(value => value.name).sort((a, b) => b.tokens - a.tokens);
+function groups(value: unknown, mask = false): OverviewUsageGroup[] {
+  return rows(value).map(value => group(value, mask)).filter(value => value.name).sort((a, b) => b.tokens - a.tokens);
 }
 /** The collector's rolling window is the only recency evidence; a calendar day or month is never relabelled as it. */
 function recentUsage(ledger: Row, snapshot: Row): OverviewRecentUsage | undefined {
@@ -92,8 +93,8 @@ function recentUsage(ledger: Row, snapshot: Row): OverviewRecentUsage | undefine
   const windowHours = number(candidate.window_hours) ?? 24;
   return { windowHours, observedAt: date(ledger.generated) || date(snapshot.generated), periodStart: date(candidate.period_start), periodEnd: date(candidate.period_end),
     requests: number(candidate.requests), failed: number(candidate.failed) ?? 0, rateLimited: number(candidate.rate_limited) ?? 0,
-    byUpstream: rows(candidate.by_upstream).map(value => ({ ...group(value), provider: text(value.provider) })).filter(value => value.name && value.provider).sort((a, b) => b.requests - a.requests),
-    byAccount: groups(candidate.by_account) };
+    byUpstream: rows(candidate.by_upstream).map(value => ({ ...group(value, true), provider: text(value.provider) })).filter(value => value.name && value.provider).sort((a, b) => b.requests - a.requests),
+    byAccount: groups(candidate.by_account, true) };
 }
 
 /** Product projection: subscriptions are commercial plans, never credential rows. */
@@ -125,7 +126,7 @@ export function buildProductOverview(config: AppConfig, input: unknown, month = 
     subscriptionCountComplete: (rows(snapshot.providers).length > 0 || snapshot.subscription_inventory_complete === true) && unique.filter(value => !['cancelled', 'expired'].includes(value.status)).every(value => value.status === 'active' && value.quantity !== null), knownMonthlyCosts: [...costs].map(([currency, amount]) => ({ currency, amount })),
     unknownPriceCount: active.filter(value => value.amount === null || value.period === 'unknown').length, monthlyCostEvidence: active.some(value => value.costEvidence === 'estimated') ? 'estimated' : active.some(value => value.costEvidence === 'declared') ? 'declared' : active.length > 0 && active.every(value => value.costEvidence === 'verified') ? 'verified' : 'unknown' },
     usage: { period: 'month', apiEquivalentUsd: number(current.api_equivalent_usd), pricedApiEquivalentUsd: number(current.priced_api_equivalent_usd) ?? number(current.api_equivalent_usd),
-      tokens: number(current.tokens_total), requests: number(current.requests), byClient: groups(current.by_client), byModel: groups(current.by_model), byAccount: groups(current.by_account), unpriced,
+      tokens: number(current.tokens_total), requests: number(current.requests), byClient: groups(current.by_client), byModel: groups(current.by_model), byAccount: groups(current.by_account, true), unpriced,
       reconciliation: { status: text(reconciliation.status) || 'unknown', confirmedTokens: number(reconciliation.confirmed_tokens), confirmedRequests: number(reconciliation.confirmed_requests), nativeObservations: number(reconciliation.unreconciled_native_observations) },
       observedAt: Object.keys(current).length ? date(ledger.generated) || date(snapshot.generated) : null, last24h: recentUsage(ledger, snapshot) }, features };
 }
