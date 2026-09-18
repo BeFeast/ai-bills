@@ -4,7 +4,7 @@ import { ProductOverviewPanel } from '../src/components/ProductOverviewPanel';
 import { buildProductOverview } from '../src/lib/overview';
 import type { AppConfig } from '../src/lib/config';
 
-test('configured accounts retain browser access without a linked subscription plan', () => {
+test('a failing quota source stays on the overview with browser access, never as a fabricated quota', () => {
   const config = { server: { timezone: 'UTC' }, subscriptions: [], accounts: [] } as unknown as AppConfig;
   const data = buildProductOverview(config, {}, '2026-09');
   const html = renderToStaticMarkup(<ProductOverviewPanel data={data} accounts={[
@@ -15,5 +15,6 @@ test('configured accounts retain browser access without a linked subscription pl
   expect(html).not.toContain('Account details');
   expect(html).not.toContain('kimi · Kimi');
   expect(html).not.toContain('cursor · Cursor');
-  expect(html.match(/<strong[^>]*>Quota unknown<\/strong>/g)).toHaveLength(2);
+  expect(html.match(/bf-pill--bad">Source error/g)).toHaveLength(2);
+  expect(html).not.toContain('% left');
 });

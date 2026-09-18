@@ -22,7 +22,7 @@ type StatusTone = '' | 'ok' | 'warn' | 'danger';
 type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details';
 
 const VIEWS: Record<View, { label: string; subtitle: string }> = {
-  overview: { label: 'Overview', subtitle: 'Your AI spending, in one place' },
+  overview: { label: 'Overview', subtitle: 'Where you stand against your limits' },
   subscriptions: { label: 'Subscriptions', subtitle: 'What you pay, when it renews, and where to manage it' },
   accounts: { label: 'Accounts & sign-in', subtitle: 'Connect an account, renew access or check its remaining allowance' },
   usage: { label: 'Usage', subtitle: 'Where your usage goes this month' },

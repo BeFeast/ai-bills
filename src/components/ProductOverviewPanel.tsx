@@ -3,7 +3,8 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import type { OverviewUsageGroup, ProductOverview, ProductSubscription } from '@/lib/overview';
 import type { ProviderUsage } from '@/lib/usage';
-import { claudeLimitingWindow, kimiCodingUsage, kimiUsagePercent, cursorLegacyPercent, codexWindowResetIso, cursorCycleEnd, type ClaudeUsagePayload, type CodexUsagePayload, type KimiUsagePayload, type CursorUsagePayload } from '@/lib/usage';
+import { buildLimitsHero } from '@/lib/limits-hero';
+import { LimitsHero } from './LimitsHero';
 import { fmtMoney, fmtTokens, fmtDate } from './format';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
@@ -14,37 +15,6 @@ type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'd
 type SubscriptionDraft = { id: string; label: string; amount: string; currency: string; period: 'month' | 'year' | 'unknown'; renewsAt: string; endsAt: string; status: string };
 const money = (amount: number | null, currency = 'USD') => amount === null ? 'Price not recorded' : new Intl.NumberFormat('en', { style: 'currency', currency, maximumFractionDigits: 2 }).format(amount);
 function date(value: string | null) { return value && Number.isFinite(Date.parse(value)) ? new Date(value.length === 10 ? `${value}T12:00:00Z` : value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Jerusalem' }) : null; }
-function highestKnown(values: Array<number | null | undefined>) {
-  const known = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-  return known.length ? Math.max(...known) : null;
-}
-function quotaUsed(account: ProviderUsage): number | null {
-  if (account.account.provider === 'claude') {
-    return claudeLimitingWindow(account.data as ClaudeUsagePayload | undefined)?.usedPercent ?? null;
-  }
-  if (account.account.provider === 'codex') {
-    const data = account.data as CodexUsagePayload | undefined;
-    if (data?.rate_limit?.limit_reached || data?.rate_limit?.allowed === false) return 100;
-    return highestKnown([data?.rate_limit?.primary_window?.used_percent, data?.rate_limit?.secondary_window?.used_percent]);
-  }
-  if (account.account.provider === 'kimi') {
-    const data = account.data as KimiUsagePayload | undefined;
-    const coding = Array.isArray(data?.usages) ? kimiCodingUsage(data) : null;
-    return highestKnown([kimiUsagePercent(coding?.detail), ...(coding?.limits ?? []).map(window => kimiUsagePercent(window.detail))]);
-  }
-  if (account.account.provider === 'cursor') {
-    const data = account.data as CursorUsagePayload | undefined;
-    const plan = data?.currentPeriod?.planUsage;
-    if (typeof plan?.totalPercentUsed === 'number' && Number.isFinite(plan.totalPercentUsed)) return plan.totalPercentUsed;
-    if (typeof plan?.limit === 'number' && plan.limit > 0) {
-      if (typeof plan.used === 'number') return highestKnown([plan.used / plan.limit * 100]);
-      if (typeof plan.remaining === 'number') return highestKnown([(plan.limit - plan.remaining) / plan.limit * 100]);
-    }
-    return cursorLegacyPercent(data);
-  }
-  return null;
-}
-
 /** Client ids are free-form; map the known CLIs onto a provider mark, a display name and a share-bar colour. */
 function clientIdentity(name: string): { display: string; provider: string; color: string } {
   const id = name.toLowerCase();
@@ -61,7 +31,7 @@ const subscriptionColumns: Column<'sub' | 'plan' | 'cost' | 'renew' | 'access'>[
   { key: 'sub', label: 'Subscription / account' }, { key: 'plan', label: 'Plan' }, { key: 'cost', label: 'Cost' }, { key: 'renew', label: 'Renewal or expiry' }, { key: 'access', label: 'Access' },
 ];
 
-export function ProductOverviewPanel({ data, accounts, registry = [], view, onView, onUpdated, error }: { data: ProductOverview | null; accounts: ProviderUsage[]; registry?: RegistryAccount[]; view: View; onView: (view: View) => void; onUpdated?: () => void | Promise<void>; error?: string }) {
+export function ProductOverviewPanel({ data, accounts, registry = [], view, onView, onUpdated, error, now = Date.now() }: { data: ProductOverview | null; accounts: ProviderUsage[]; registry?: RegistryAccount[]; view: View; onView: (view: View) => void; onUpdated?: () => void | Promise<void>; error?: string; now?: number }) {
   const [draft, setDraft] = useState<SubscriptionDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -93,8 +63,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
   // A card needs evidence: an automatic observation or a CLIProxyAPI credential. Declared-only rows get one compact line instead.
   const liveAccounts = otherAccounts.filter(account => account.funds || account.proxyCredential || account.quota.status !== 'unknown');
   const declaredOnly = otherAccounts.filter(account => !liveAccounts.includes(account));
-  const shownAccounts = view === 'overview' ? liveAccounts.filter(account => /meta|muse|kimi|xai|x.ai|cursor|ollama|openrouter|antigravity/i.test(account.provider)) : liveAccounts;
-  const unlinkedPlans = subscriptions.filter(s => !s.accountKeys.some(key => accounts.some(a => a.account.key === key))).length;
+  const shownAccounts = liveAccounts;
   const usageSubtitle = data.usage.tokens === null ? (confirmedSubset ? `≥ ${fmtTokens(confirmedTokens ?? 0)} tokens · ≥ ${data.usage.reconciliation?.confirmedRequests?.toLocaleString() ?? 'Unknown'} requests · confirmed subset` : 'Monthly usage unavailable') : `${fmtTokens(data.usage.tokens)} tokens · ${data.usage.requests?.toLocaleString() ?? 'Unknown'} requests`;
   const shownSubscriptions = view === 'overview' ? subscriptions.slice(0, 4) : data.subscriptions;
 
@@ -122,8 +91,11 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
     </div>;
   }
 
+  const hero = view === 'overview' ? buildLimitsHero({ usage: accounts, registry, last24h: data.usage.last24h, now }) : null;
   return <>
-    {view === 'overview' ? <TileGrid>
+    {hero ? <LimitsHero hero={hero} now={now} subscriptions={subscriptions} loading={!accounts.length} onView={onView} /> : null}
+
+    {view === 'details' ? <TileGrid>
       <StatTile label="Active subscriptions" value={<>{data.summary.activeSubscriptionCount}{data.summary.subscriptionCountComplete === false ? '+' : ''}</>} note={data.summary.subscriptionCountComplete ? 'Plans and accounts' : 'Some plan statuses need checking'} onClick={() => onView('subscriptions')} />
       <StatTile label="Subscription cost / month" value={`${data.summary.unknownPriceCount && data.summary.knownMonthlyCosts.length ? '≥ ' : ''}${costs}${data.summary.monthlyCostEvidence === 'estimated' ? ' est.' : ''}`} note={data.summary.unknownPriceCount ? `${data.summary.unknownPriceCount} prices still need checking` : data.summary.monthlyCostEvidence === 'estimated' ? 'Includes estimated plan prices' : 'Recurring plan prices'} onClick={() => onView('subscriptions')} />
       <StatTile label={`If paid by API · ${month}`} value={data.usage.tokens === null ? (confirmedSubset && api !== null ? `≥ ${fmtMoney(api)}` : 'Usage unavailable') : api === null ? 'Pricing incomplete' : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`} note={confirmedSubset ? `Confirmed subset · ≥ ${fmtTokens(confirmedTokens ?? 0)} tokens; native observations may overlap` : data.usage.reconciliation?.status === 'partial' ? 'Native observations may overlap; see confirmed subtotal' : data.usage.tokens === null ? 'Monthly usage has not been imported' : partialApi ? 'Known prices; some models unpriced' : `${fmtTokens(data.usage.tokens)} tokens measured`} onClick={() => onView('usage')} />
@@ -182,37 +154,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
       </div>
     </Card> : null}
 
-    {view === 'overview' ? <Card title="Quota remaining" subtitle="Current allowance across your connected accounts." actions={<Button variant="secondary" size="sm" onClick={() => onView('accounts')}>Accounts & sign-in →</Button>} aria-label="Account availability">
-      <div className="stack">
-        {!accounts.length ? <p className="t-small">Loading account quotas…</p> : null}
-        <div className="panel-grid">{accounts.map(a => {
-          const observed = Date.parse(a.fetchedAt); const age = Date.now() - observed;
-          const fresh = a.ok && Number.isFinite(age) && age >= -60_000 && age <= 600_000;
-          const used = quotaUsed(a); const remaining = fresh && used !== null ? Math.max(0, Math.min(100, 100-used)) : null;
-          const detail = !a.ok ? a.status === 401 || a.status === 403 ? 'Sign-in needs attention' : a.error?.includes('first quota') ? 'First observation pending' : 'Source unavailable · other accounts continue updating' : !fresh ? 'Observation stale · availability unknown' : remaining === 0 ? 'Allowance exhausted · see reset windows' : remaining === null ? 'Quota not reported by this source' : 'Most restricted observed window';
-          const subscription = subscriptions.find(plan => plan.accountKeys.includes(a.account.key));
-          const payload = a.data;
-          const reset = a.account.provider === 'claude' ? claudeLimitingWindow(payload as ClaudeUsagePayload)?.resetsAt
-            : a.account.provider === 'codex' ? codexWindowResetIso((payload as CodexUsagePayload)?.rate_limit?.primary_window ?? null)
-            : a.account.provider === 'cursor' ? cursorCycleEnd(payload as CursorUsagePayload)
-            : kimiCodingUsage(payload as KimiUsagePayload)?.detail?.resetTime;
-          const title = a.account.label.toLowerCase().startsWith(a.account.provider.toLowerCase()) ? a.account.label : `${a.account.provider} · ${a.account.label}`;
-          return <Panel className="quota" key={a.account.key}>
-            <button type="button" className="quota__nav" onClick={() => onView('accounts')} title={`${title} · ${detail}`}>
-              <div className="quota__head"><ProviderIcon provider={a.account.provider} /><div className="quota__id"><span className="t-micro">{a.account.provider}</span><span className="quota__email">{a.account.email || 'Email not recorded'}</span></div></div>
-              <strong className="quota__value">{remaining === null ? 'Quota unknown' : remaining === 0 ? 'Exhausted' : `${Number(remaining.toFixed(1))}% left`}</strong>
-              <Progress value={remaining ?? 0} tone={remaining !== null && remaining < 15 ? 'warn' : undefined} label={`${title} allowance remaining`} />
-              <span className="t-small">{remaining === null ? 'View account and sign-in options' : detail} →</span>
-              <span className="cell__sub">{reset ? `Reset ${fmtDate(reset,'Asia/Jerusalem')}` : 'Reset unknown'} · {Number.isFinite(observed) ? `Observed ${fmtDate(a.fetchedAt,'Asia/Jerusalem')}` : 'No observation yet'}</span>
-            </button>
-            <div className="quota__access">{subscription ? <AccountBrowserAccess subscription={subscription} /> : <AccountBrowserAccess account={a.account} />}</div>
-          </Panel>;
-        })}</div>
-        {unlinkedPlans ? <p className="t-small">{unlinkedPlans} plans have no linked automatic quota source. Their allowance is unknown. <button type="button" className="text-link" onClick={() => onView('subscriptions')}>View source coverage →</button></p> : null}
-      </div>
-    </Card> : null}
-
-    {view === 'overview' || view === 'accounts' ? <Card title="Other subscriptions & accounts" subtitle="Live CLIProxyAPI credentials and API observations. Declared accounts without an automatic source are listed below." actions={view === 'overview' ? <Button variant="secondary" size="sm" onClick={() => onView('accounts')}>All {registry.length} accounts →</Button> : null}>
+    {view === 'accounts' ? <Card title="Other subscriptions & accounts" subtitle="Live CLIProxyAPI credentials and API observations. Declared accounts without an automatic source are listed below.">
       <div className="stack">
         <div className="panel-grid">
           {shownAccounts.map(account => {
@@ -245,7 +187,6 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
         </div>
         {!shownAccounts.length ? <p className="t-small">Account inventory has not supplied additional accounts yet.</p> : null}
         {view === 'accounts' && declaredOnly.length ? <div className="stack stack--tight"><h3 className="t-h3">Declared, no automatic source · {declaredOnly.length}</h3><ul className="declared">{declaredOnly.map(account => <li key={account.id}><ProviderIcon provider={account.provider} /><Cell main={account.label} sub={`${account.provider}${account.billingMode !== 'unknown' ? ` · ${account.billingMode}` : ''}${account.operatorNote ? ` · ${account.operatorNote}` : ''}`} />{account.websiteUrl ? <ButtonLink variant="ghost" size="sm" href={account.websiteUrl} target="_blank" rel="noreferrer">Website ↗</ButtonLink> : null}</li>)}</ul></div> : null}
-        {view === 'overview' && declaredOnly.length ? <p className="t-small">{declaredOnly.length} declared accounts have no automatic source. <button type="button" className="text-link" onClick={() => onView('accounts')}>See the list →</button></p> : null}
       </div>
     </Card> : null}
 

@@ -33,6 +33,7 @@ import {
   type KimiQuotaDetail,
   type KimiUsagePayload,
   type ProviderUsage,
+  quotaTone,
 } from '@/lib/usage';
 import { countdown, fmtDate, fmtNumber, fmtPct, normalizePct, pickPct, resetLabel } from './format';
 import { CodexAuthBox, useCodexAuth } from './CodexAuth';
@@ -42,23 +43,8 @@ import { Button, ButtonLink, Notice, Pill, type PillTone } from './ui';
 
 type CardProps = { result: ProviderUsage; now: number; tz: string; onAuthorized: () => void };
 
-export type UsageEvidence = { state: 'fresh' | 'stale' | 'error' | 'unknown'; message: string };
-
-export function usageEvidence(result: ProviderUsage, now: number, maxAgeSeconds = 600): UsageEvidence {
-  if (!result.ok || (result.status !== undefined && result.status >= 400)) return { state: 'error', message: result.error || `Provider request failed (HTTP ${result.status ?? 'unknown'}). Quota and availability are unknown.` };
-  const observed = Date.parse(result.fetchedAt);
-  if (!now || !Number.isFinite(observed) || observed > now + 60_000) return { state: 'unknown', message: 'No valid provider observation time. Current quota and availability are unknown.' };
-  if (now - observed > maxAgeSeconds * 1000) return { state: 'stale', message: 'The last provider observation is stale. Current quota and availability are unknown.' };
-  if (!result.data || !Object.keys(result.data).length) return { state: 'unknown', message: 'The provider returned no quota data. Availability is unknown.' };
-  if (result.account.provider === 'claude') {
-    const data = result.data as ClaudeUsagePayload;
-    if (!data.five_hour && !data.seven_day && !data.limits?.length) return { state: 'unknown', message: 'Claude returned no quota windows. Model availability is unknown.' };
-  }
-  if (result.account.provider === 'codex' && !codexPrimaryWindow(result.data as CodexUsagePayload)) return { state: 'unknown', message: 'Codex returned no primary quota window. Availability is unknown.' };
-  if (result.account.provider === 'kimi' && kimiCodingUsage(result.data as KimiUsagePayload)?.detail.remaining == null) return { state: 'unknown', message: 'Kimi did not report remaining coding quota. Availability is unknown.' };
-  if (result.account.provider === 'cursor' && cursorUsagePercent(result.data as CursorUsagePayload) === null) return { state: 'unknown', message: 'Cursor did not report current usage. Availability is unknown.' };
-  return { state: 'fresh', message: 'Recent provider observation' };
-}
+import { usageEvidence, type UsageEvidence } from '@/lib/usage-evidence';
+export { usageEvidence, type UsageEvidence };
 
 const providerNames: Record<string, string> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', cursor: 'Cursor' };
 const providerName = (provider: string) => providerNames[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
@@ -137,11 +123,11 @@ function LimitCard({ label, provider, pct, reset, badge, rows, tone, now, tz }: 
   );
 }
 
+/** Shared thresholds with the Overview hero: bad when exhausted or under 10 % left, warn under 25 % left. */
 function limitTone(pct: number | null, severity?: string | null, blocked?: boolean): 'warn' | 'bad' | undefined {
   const sev = (severity ?? '').toLowerCase();
-  if (blocked || (pct !== null && pct >= 100) || /danger|critical|error/.test(sev)) return 'bad';
-  if ((pct !== null && pct >= 75) || sev.includes('warn')) return 'warn';
-  return undefined;
+  const exhausted = Boolean(blocked) || (pct !== null && pct >= 100) || /danger|critical|error/.test(sev);
+  return quotaTone(pct === null ? null : 100 - pct, exhausted) ?? (sev.includes('warn') ? 'warn' : undefined);
 }
 
 function Accordion({ title, rows, empty }: { title: string; rows: KvRows; empty?: string }) {
