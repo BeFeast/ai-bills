@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { Button, Pill, menuIcon, type PillTone } from '@/components/ui';
+import { Button, Pill, menuIcon, moonIcon, refreshIcon, sunIcon, type PillTone } from '@/components/ui';
 import { Sidebar, type SidebarItem } from './Sidebar';
 
 export type Theme = 'light' | 'dark';
@@ -79,8 +79,8 @@ export function AppShell<T extends string>({ brand, items, view, onView, sidebar
           <div className="topbar__tools">
             <Pill tone={status.tone} dot>{status.text}</Pill>
             {countdown ? <span className="topbar__countdown mono">{countdown}</span> : null}
-            <Button variant="secondary" size="sm" onClick={onRefresh} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh now'}</Button>
-            <Button variant="ghost" size="sm" onClick={onToggleTheme}>{theme === 'dark' ? 'Light scheme' : 'Dark scheme'}</Button>
+            <Button variant="secondary" size="sm" className={`bf-btn--icon${refreshing ? ' is-busy' : ''}`} onClick={onRefresh} disabled={refreshing} aria-label={refreshing ? 'Refreshing…' : 'Refresh now'} title={refreshing ? 'Refreshing…' : 'Refresh now'}>{refreshIcon}</Button>
+            <Button variant="ghost" size="sm" className="bf-btn--icon" onClick={onToggleTheme} aria-label={theme === 'dark' ? 'Light scheme' : 'Dark scheme'} title={theme === 'dark' ? 'Light scheme' : 'Dark scheme'}>{theme === 'dark' ? sunIcon : moonIcon}</Button>
           </div>
         </header>
         <main className="content" key={view}>{children}</main>

@@ -55,6 +55,11 @@ a:focus-visible, summary:focus-visible, button:focus-visible { outline: none; bo
 .topbar__tools { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .topbar__countdown { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
 .topbar .bf-pill--ok .bf-pill__dot { animation: bfPulse 2.4s ease-in-out infinite; }
+.bf-btn--icon { width: var(--control-h-sm); padding: 0; flex: 0 0 auto; }
+.bf-btn--icon:not(.bf-btn--sm) { width: var(--control-h); }
+.bf-btn--icon svg { flex-shrink: 0; }
+@keyframes bfSpin { to { transform: rotate(360deg); } }
+.bf-btn--icon.is-busy svg { animation: bfSpin 1.2s linear infinite; }
 
 .content { padding: 24px 28px 40px; max-width: 1200px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; flex: 1; animation: bfFadeUp 180ms var(--ease); }
 .app__footer { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 16px 28px; border-top: 1px solid var(--border-1); font-size: 12px; color: var(--text-faint); }

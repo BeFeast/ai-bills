@@ -11,4 +11,4 @@ export { Checkbox } from './Checkbox';
 export { StatTile, TileGrid } from './StatTile';
 export { Cell, Panel, Notice } from './Cell';
 export { Sparkline } from './Sparkline';
-export { navIcons, menuIcon } from './Icons';
+export { navIcons, menuIcon, refreshIcon, sunIcon, moonIcon } from './Icons';
