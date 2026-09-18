@@ -175,6 +175,7 @@ button.stat-tile:focus-visible { box-shadow: var(--focus-ring); }
 
 /* ---------------------------------------------------------------- subscriptions */
 .subs-table td { vertical-align: middle; }
+.subs-table td:nth-child(2) { white-space: nowrap; }
 .date-missing { color: var(--warn); font-weight: 500; }
 
 /* account browser access (subscriptions table, quota panels, account headers) */

@@ -15,5 +15,5 @@ test('configured accounts retain browser access without a linked subscription pl
   expect(html).not.toContain('Account details');
   expect(html).not.toContain('kimi · Kimi');
   expect(html).not.toContain('cursor · Cursor');
-  expect(html.match(/<strong>Quota unknown<\/strong>/g)).toHaveLength(2);
+  expect(html.match(/<strong[^>]*>Quota unknown<\/strong>/g)).toHaveLength(2);
 });
