@@ -148,6 +148,30 @@ def attribute_routing(records):
         projected.append(row)
     return projected
 
+FINGERPRINT_WINDOW_SECONDS = 600
+
+def base_model(model):
+    return re.sub(r"-\d{8}$", "", (model or "").split(":", 1)[0])
+
+def fingerprint(row):
+    """Model plus the four token buckets. All-zero tuples carry no identity and never match."""
+    key = (base_model(row.get("model")),) + tuple(row.get(field) or 0 for field in ("in_uncached", "cache_read", "cache_write", "out_total"))
+    return key if any(key[1:]) else None
+
+def matches_proxy(row, proxy_prints):
+    """True when a proxy row with the same fingerprint was observed within the window.
+    The nearest candidate is consumed, so one proxy observation explains one native row."""
+    key = fingerprint(row)
+    instant = parse_ts(row.get("ts"))
+    candidates = proxy_prints.get(key) if key and instant else None
+    if not candidates:
+        return False
+    nearest = min(range(len(candidates)), key=lambda index: abs((candidates[index] - instant).total_seconds()))
+    if abs((candidates[nearest] - instant).total_seconds()) > FINGERPRINT_WINDOW_SECONDS:
+        return False
+    del candidates[nearest]
+    return True
+
 def rows_for(day):
     # Preserve raw ledger; reconcile observations in the read projection only.
     if not os.path.isdir(LEDGER_DIR):
@@ -166,6 +190,12 @@ def rows_for(day):
     # Proxy observation is preferred for matched native observations because it
     # carries selected account/attempt metadata. Do not merge separate attempts.
     proxy_ids = {r.get("upstream_request_id") for r in records if r.get("via") == "proxy" and r.get("upstream_request_id")}
+    proxy_prints = collections.defaultdict(list)
+    for r in records:
+        if r.get("via") == "proxy":
+            print_key, instant = fingerprint(r), parse_ts(r.get("ts"))
+            if print_key and instant:
+                proxy_prints[print_key].append(instant)
     # Multiple Claude assistant content blocks describe one provider message.
     # Keep its latest usage snapshot; equal token tuples alone are never identity.
     native_messages = {}
@@ -182,10 +212,16 @@ def rows_for(day):
         upstream = row.get("upstream_request_id")
         if row.get("via") != "proxy" and upstream and upstream in proxy_ids:
             continue
-        if row.get("via") == "direct" and not upstream and row.get("native_kind") != "codex":
-            # Native logs can describe traffic already observed by the proxy.
-            # Without a request join, do not add the two sources as unique usage.
-            row = dict(row, accounting_status="unreconciled_native")
+        if row.get("via") == "direct" and row.get("native_kind") != "codex" and (not upstream or upstream not in proxy_ids):
+            # Native logs can describe traffic already observed by the proxy, and current
+            # Claude Code logs carry no request id. A proxy row with the same model and token
+            # tuple minutes apart is that observation: keep the proxy row, which names the
+            # credential that served it.
+            if matches_proxy(row, proxy_prints):
+                continue
+            if not row.get("account"):
+                # Without a join and without the signed-in identity the row cannot be placed.
+                row = dict(row, accounting_status="unreconciled_native")
         identity = row.get("attempt_id") or row.get("request_id") or upstream or row.get("native_message_id")
         if identity:
             key = (row.get("provider"), row.get("account"), row.get("via"), row.get("session") if row.get("native_message_id") else None, identity)

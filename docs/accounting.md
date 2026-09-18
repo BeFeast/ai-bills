@@ -350,3 +350,31 @@ are raw API keys are shown as fingerprints.
 
 Validation: `tests/accounting-collectors.test.py` (20 tests) and the Vitest suite
 pass; no collector installation, deployment or ledger rewrite was performed.
+
+## Native identity attribution — 2026-09-18
+
+Native Claude Code logs no longer carry a request id, so the request-ID join that
+kept native and proxy observations apart stopped matching anything: every native
+Claude row became `unreconciled_native` and no native usage reached the per-account
+breakdowns. Two changes:
+
+- The extractor stamps the signed-in identity on every native row (Claude Code
+  OAuth email from the client config; Codex email from each configured home's
+  `auth.json`), and the direct collector stores it as `account` with `provider`
+  set only when the log names a native model. Extra Codex profile homes are
+  declared per host in `hosts.json` (`codex_homes`); nothing is bound by hand.
+- The report reconciles native Claude rows by fingerprint: identical base model
+  and token buckets seen by the proxy within ten minutes is the same request and
+  the proxy row is kept. Unmatched rows with identity are attributed; unmatched
+  rows without identity stay unreconciled.
+
+Read-only replay on the live ledger: in the rolling 24-hour window 2,064 of 2,293
+native Claude rows matched a proxy row (median distance nine seconds) and the
+unreconciled count fell from 754 to 4; for the month it fell from 44,002 to
+13,516, the remainder being historical rows written before identity stamping.
+Residual risk: a native row for a proxied request whose tap row is missing would
+be attributed to the host's signed-in account rather than the proxy credential.
+
+Validation: `tests/accounting-collectors.test.py` (23 tests) passes; no collector
+installation, deployment, provider inference, account change or ledger rewrite
+was performed.

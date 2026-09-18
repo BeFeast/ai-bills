@@ -5,11 +5,52 @@ Runs ON each client host; ai-usage-collect-direct pulls it over SSH.
 Only reports traffic the CLIProxy tap cannot see:
   * Claude Code  — ~/.claude/projects/**/*.jsonl, per-assistant-message `usage`.
                    Proxied sessions are filtered collector-side by requestId.
-  * Codex        — ~/.codex/sessions/**/*.jsonl, `token_count` events. Sessions
+  * Codex        — <codex home>/sessions/**/*.jsonl, `token_count` events. Sessions
                    whose session_meta says model_provider=cliproxy are skipped
                    outright: those are already in the ledger via the tap.
+Every row carries `account_email`: the identity the client is signed into on this
+host (Claude: ~/.claude.json oauthAccount; Codex: the id_token in <home>/auth.json).
 """
-import argparse, glob, json, os, sys, time
+import argparse, base64, binascii, glob, json, os, sys, time
+
+def read_json(path):
+    try:
+        with open(os.path.expanduser(path)) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+def claude_identity():
+    """Email Claude Code is signed into here. CLAUDE_CONFIG_DIR relocates the file; signed out -> None."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or "~"
+    doc = read_json(os.path.join(base, ".claude.json")) or {}
+    email = ((doc.get("oauthAccount") or {}).get("emailAddress") or "")
+    return email.strip().lower() or None
+
+def jwt_claims(token):
+    """Payload of a JWT as a dict; no signature check — it is our own local auth file."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return claims if isinstance(claims, dict) else {}
+    except (IndexError, ValueError, binascii.Error, AttributeError):
+        return {}
+
+def codex_identity(home):
+    """Email from <home>/auth.json (id_token claim). API-key auth carries no email -> None."""
+    doc = read_json(os.path.join(home, "auth.json")) or {}
+    email = jwt_claims(((doc.get("tokens") or {}).get("id_token")) or "").get("email") or ""
+    return email.strip().lower() or None
+
+def codex_homes(extra=()):
+    """The default home (CODEX_HOME or ~/.codex) plus any explicitly configured profile homes."""
+    homes = []
+    for home in [os.environ.get("CODEX_HOME") or "~/.codex", *extra]:
+        path = os.path.expanduser(home)
+        if path not in homes:
+            homes.append(path)
+    return homes
 
 def recent(pattern, since_epoch):
     for path in glob.glob(os.path.expanduser(pattern), recursive=True):
@@ -19,7 +60,7 @@ def recent(pattern, since_epoch):
         except OSError:
             continue
 
-def claude_rows(since_ts, since_epoch):
+def claude_rows(since_ts, since_epoch, account_email=None):
     for path in recent("~/.claude/projects/**/*.jsonl", since_epoch):
         try:
             fh = open(path, errors="ignore")
@@ -55,10 +96,11 @@ def claude_rows(since_ts, since_epoch):
                     "cache_write": u.get("cache_creation_input_tokens") or 0,
                     "out_total": u.get("output_tokens") or 0,
                     "out_reasoning": 0,
+                    "account_email": account_email,
                 }
 
-def codex_rows(since_ts, since_epoch):
-    for path in recent("~/.codex/sessions/**/*.jsonl", since_epoch):
+def codex_rows(since_ts, since_epoch, home="~/.codex", account_email=None):
+    for path in recent(os.path.join(home, "sessions", "**", "*.jsonl"), since_epoch):
         try:
             fh = open(path, errors="ignore")
         except OSError:
@@ -106,6 +148,7 @@ def codex_rows(since_ts, since_epoch):
                     "cache_write": last.get("cache_write_input_tokens") or 0,
                     "out_total": last.get("output_tokens") or 0,
                     "out_reasoning": last.get("reasoning_output_tokens") or 0,
+                    "account_email": account_email,
                 }
 
 def main():
@@ -113,12 +156,17 @@ def main():
     ap.add_argument("--since", required=True, help="ISO timestamp watermark")
     ap.add_argument("--mtime-days", type=float, default=2.0,
                     help="only open files touched within this many days; widen for backfills")
+    ap.add_argument("--codex-home", action="append", default=[],
+                    help="additional Codex profile home to scan (repeatable); the default home is always scanned")
     args = ap.parse_args()
     # mtime is coarse and sessions get appended late, so this window is slack around
     # --since, not a second filter on it. Too narrow and a file that stopped being
     # written just before the cutoff is invisible.
     since_epoch = time.time() - 86400 * args.mtime_days
-    for row in list(claude_rows(args.since, since_epoch)) + list(codex_rows(args.since, since_epoch)):
+    rows = list(claude_rows(args.since, since_epoch, claude_identity()))
+    for home in codex_homes(args.codex_home):
+        rows.extend(codex_rows(args.since, since_epoch, home, codex_identity(home)))
+    for row in rows:
         if row.get("id"):
             print(json.dumps(row, ensure_ascii=False))
 
