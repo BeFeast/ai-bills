@@ -14,7 +14,7 @@ import type { AccountRegistry } from '@/lib/accounts';
 import { AppShell, useTheme } from './shell/AppShell';
 import type { SidebarItem } from './shell/Sidebar';
 import { ButtonLink, Notice, navIcons, type PillTone } from './ui';
-import { version } from '../../package.json';
+import pkg from '../../package.json';
 
 const AUTO_REFRESH_MS = 60_000;
 
@@ -148,7 +148,7 @@ export function Dashboard() {
       items={items}
       view={view}
       onView={setView}
-      sidebarFooter={`ai-bills v${version} · ${tz}`}
+      sidebarFooter={`ai-bills v${pkg.version} · ${tz}`}
       title={VIEWS[view].label}
       subtitle={VIEWS[view].subtitle}
       status={{ text: status.text, tone: statusTone[status.tone] }}
