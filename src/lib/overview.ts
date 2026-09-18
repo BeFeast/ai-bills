@@ -18,13 +18,16 @@ export type ProductSubscription = {
   sourceNote: string; observedAt: string | null;
   costEvidence: 'verified' | 'declared' | 'estimated' | 'unknown';
 };
-export type OverviewUsageGroup = { name: string; tokens: number; requests: number; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null };
+export type OverviewUsageGroup = { name: string; tokens: number; requests: number; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; failed?: number; rateLimited?: number; lastRequestAt?: string | null };
+/** One proxy upstream (provider + account) in the rolling 24-hour window. Names are masked when they look like keys. */
+export type OverviewUpstreamActivity = OverviewUsageGroup & { provider: string };
+export type OverviewRecentUsage = { windowHours: number; observedAt: string | null; periodStart: string | null; periodEnd: string | null; requests: number | null; failed: number; rateLimited: number; byUpstream: OverviewUpstreamActivity[]; byAccount: OverviewUsageGroup[] };
 export type ProductOverview = {
   month: string;
   links?: { proxyManagementUrl: string | null };
   subscriptions: ProductSubscription[];
   summary: { activeSubscriptionCount: number; subscriptionCountComplete: boolean; knownMonthlyCosts: { currency: string; amount: number }[]; unknownPriceCount: number; monthlyCostEvidence: 'verified' | 'declared' | 'estimated' | 'unknown' };
-  usage: { period: 'month'; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; tokens: number | null; requests: number | null; byClient: OverviewUsageGroup[]; byModel: OverviewUsageGroup[]; byAccount?: OverviewUsageGroup[]; reconciliation?: { status: string; confirmedTokens: number | null; confirmedRequests: number | null; nativeObservations: number | null }; unpriced: Record<string, number>; observedAt: string | null };
+  usage: { period: 'month'; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; tokens: number | null; requests: number | null; byClient: OverviewUsageGroup[]; byModel: OverviewUsageGroup[]; byAccount?: OverviewUsageGroup[]; reconciliation?: { status: string; confirmedTokens: number | null; confirmedRequests: number | null; nativeObservations: number | null }; unpriced: Record<string, number>; observedAt: string | null; last24h?: OverviewRecentUsage };
   features: { routing: boolean };
 };
 type Row = Record<string, unknown>;
@@ -66,9 +69,32 @@ function legacyProvider(raw: Row, index: number): ProductSubscription {
     cost_evidence: raw.cost_evidence ?? (original.startsWith('~') ? 'estimated' : parsed === null ? 'unknown' : 'declared'),
     source_note: raw.source_note ?? (text(raw.provider).includes('+') ? 'Grouped provider inventory: separate subscriptions and renewal dates still need to be recorded.' : 'Provider subscription inventory. Amount is declared, not a verified charge; record renewal date from billing settings.') }, `provider-${index}`);
 }
-function groups(value: unknown): OverviewUsageGroup[] {
-  return rows(value).map(value => ({ name: text(value.name), tokens: number(value.tokens) ?? 0, requests: number(value.requests) ?? 0,
-    apiEquivalentUsd: number(value.api_equivalent_usd), pricedApiEquivalentUsd: number(value.priced_api_equivalent_usd) ?? number(value.api_equivalent_usd) })).filter(value => value.name).sort((a, b) => b.tokens - a.tokens);
+/** Upstream-key providers are logged under the raw key; show a fingerprint, never the credential. */
+export function maskAccountName(name: string): string {
+  const trimmed = name.trim();
+  if (/^sk-/i.test(trimmed) || (trimmed.length >= 32 && !/[@\s]/.test(trimmed))) return `${trimmed.slice(0, 8)}…${trimmed.slice(-4)}`;
+  return trimmed;
+}
+/** `mask` only for account-shaped names: model and client ids are never credentials and must stay intact. */
+function group(value: Row, mask = false): OverviewUsageGroup {
+  const lastRequestAt = date(value.last_request_at);
+  return { name: mask ? maskAccountName(text(value.name)) : text(value.name), tokens: number(value.tokens) ?? 0, requests: number(value.requests) ?? 0,
+    apiEquivalentUsd: number(value.api_equivalent_usd), pricedApiEquivalentUsd: number(value.priced_api_equivalent_usd) ?? number(value.api_equivalent_usd),
+    ...(number(value.failed) !== null ? { failed: number(value.failed)! } : {}), ...(number(value.rate_limited) !== null ? { rateLimited: number(value.rate_limited)! } : {}),
+    ...(lastRequestAt ? { lastRequestAt } : {}) };
+}
+function groups(value: unknown, mask = false): OverviewUsageGroup[] {
+  return rows(value).map(value => group(value, mask)).filter(value => value.name).sort((a, b) => b.tokens - a.tokens);
+}
+/** The collector's rolling window is the only recency evidence; a calendar day or month is never relabelled as it. */
+function recentUsage(ledger: Row, snapshot: Row): OverviewRecentUsage | undefined {
+  const candidate = row(ledger.last_24h);
+  if (text(candidate.period) !== 'rolling_24h') return undefined;
+  const windowHours = number(candidate.window_hours) ?? 24;
+  return { windowHours, observedAt: date(ledger.generated) || date(snapshot.generated), periodStart: date(candidate.period_start), periodEnd: date(candidate.period_end),
+    requests: number(candidate.requests), failed: number(candidate.failed) ?? 0, rateLimited: number(candidate.rate_limited) ?? 0,
+    byUpstream: rows(candidate.by_upstream).map(value => ({ ...group(value, true), provider: text(value.provider) })).filter(value => value.name && value.provider).sort((a, b) => b.requests - a.requests),
+    byAccount: groups(candidate.by_account, true) };
 }
 
 /** Product projection: subscriptions are commercial plans, never credential rows. */
@@ -100,9 +126,9 @@ export function buildProductOverview(config: AppConfig, input: unknown, month = 
     subscriptionCountComplete: (rows(snapshot.providers).length > 0 || snapshot.subscription_inventory_complete === true) && unique.filter(value => !['cancelled', 'expired'].includes(value.status)).every(value => value.status === 'active' && value.quantity !== null), knownMonthlyCosts: [...costs].map(([currency, amount]) => ({ currency, amount })),
     unknownPriceCount: active.filter(value => value.amount === null || value.period === 'unknown').length, monthlyCostEvidence: active.some(value => value.costEvidence === 'estimated') ? 'estimated' : active.some(value => value.costEvidence === 'declared') ? 'declared' : active.length > 0 && active.every(value => value.costEvidence === 'verified') ? 'verified' : 'unknown' },
     usage: { period: 'month', apiEquivalentUsd: number(current.api_equivalent_usd), pricedApiEquivalentUsd: number(current.priced_api_equivalent_usd) ?? number(current.api_equivalent_usd),
-      tokens: number(current.tokens_total), requests: number(current.requests), byClient: groups(current.by_client), byModel: groups(current.by_model), byAccount: groups(current.by_account), unpriced,
+      tokens: number(current.tokens_total), requests: number(current.requests), byClient: groups(current.by_client), byModel: groups(current.by_model), byAccount: groups(current.by_account, true), unpriced,
       reconciliation: { status: text(reconciliation.status) || 'unknown', confirmedTokens: number(reconciliation.confirmed_tokens), confirmedRequests: number(reconciliation.confirmed_requests), nativeObservations: number(reconciliation.unreconciled_native_observations) },
-      observedAt: Object.keys(current).length ? date(ledger.generated) || date(snapshot.generated) : null }, features };
+      observedAt: Object.keys(current).length ? date(ledger.generated) || date(snapshot.generated) : null, last24h: recentUsage(ledger, snapshot) }, features };
 }
 export async function productOverview(config: AppConfig = loadConfig()): Promise<ProductOverview> {
   let snapshot: unknown = {};

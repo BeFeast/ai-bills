@@ -196,6 +196,60 @@ class MonthOverviewTests(unittest.TestCase):
             self.assertEqual(result['month']['unpriced'], {'unknown': 400})
             self.assertEqual(len((Path(directory) / 'ledger-fixture.jsonl').read_text().splitlines()), 4)
 
+    def test_rolling_24h_window_counts_rate_limits_and_last_request_per_upstream(self):
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            report.LEDGER_DIR = directory
+            # Report day 2026-09-07 in Asia/Jerusalem starts 2026-09-06T21:00Z; "now" is 05:00Z.
+            records = [
+                dict(ts='2026-09-06T04:59:00Z', via='proxy', provider='claude', account='a@example.invalid', client='c', model='m', in_uncached=1000),
+                dict(ts='2026-09-06T12:00:00.123456789Z', via='proxy', provider='claude', account='a@example.invalid', client='c', model='m', in_uncached=100),
+                dict(ts='2026-09-06T20:00:00Z', via='proxy', provider='claude', account='a@example.invalid', client='c', model='m', failed=True, status=429),
+                dict(ts='2026-09-06T23:00:00Z', via='proxy', provider='codex', account='a@example.invalid', client='c', model='m', failed=True, status='429'),
+                dict(ts='2026-09-07T01:00:00Z', via='proxy', provider='codex', account='a@example.invalid', client='c', model='m', failed=True, status=499),
+                dict(ts='2026-09-07T02:00:00Z', via='proxy', provider='openai-compatible-example', account='sk-key', client='c', model='m', in_uncached=10),
+            ]
+            (Path(directory) / 'ledger-fixture.jsonl').write_text('\n'.join(json.dumps(row) for row in records))
+            original = report.local_day
+            now = datetime(2026, 9, 7, 5, 0, tzinfo=timezone.utc)
+            with patch.object(report, 'local_day', side_effect=lambda ts=None: '2026-09-07' if ts is None else original(ts)), \
+                    patch.object(report, 'utc_now', return_value=now):
+                result = report.rollup({}, {'m': {'in': 1, 'out': 2}}, days=1)
+            rolling = result['last_24h']
+            self.assertEqual(rolling['period'], 'rolling_24h')
+            self.assertEqual(rolling['window_hours'], 24)
+            self.assertEqual(rolling['period_start'], '2026-09-06T05:00:00+00:00')
+            # The 04:59Z row is outside the rolling window even though the calendar month holds it.
+            self.assertEqual(rolling['requests'], 5)
+            self.assertEqual(rolling['failed'], 3)
+            self.assertEqual(rolling['rate_limited'], 2)
+            self.assertEqual(result['month']['requests'], 6)
+            self.assertEqual(result['today']['requests'], 3)
+            by_upstream = {(row['provider'], row['name']): row for row in rolling['by_upstream']}
+            self.assertEqual(set(by_upstream), {('claude', 'a@example.invalid'), ('codex', 'a@example.invalid'), ('openai-compatible-example', 'sk-key')})
+            self.assertEqual(by_upstream[('claude', 'a@example.invalid')]['rate_limited'], 1)
+            self.assertEqual(by_upstream[('claude', 'a@example.invalid')]['last_request_at'], '2026-09-06T20:00:00+00:00')
+            self.assertEqual(by_upstream[('codex', 'a@example.invalid')]['failed'], 2)
+            self.assertEqual(by_upstream[('codex', 'a@example.invalid')]['rate_limited'], 1)
+            self.assertEqual(by_upstream[('codex', 'a@example.invalid')]['last_request_at'], '2026-09-07T01:00:00+00:00')
+            # by_account keeps merging one identity across providers.
+            account = {row['name']: row for row in rolling['by_account']}['a@example.invalid']
+            self.assertEqual((account['requests'], account['rate_limited'], account['last_request_at']), (4, 2, '2026-09-07T01:00:00+00:00'))
+            self.assertEqual(result['month']['by_account'][0]['last_request_at'], '2026-09-07T02:00:00+00:00' if result['month']['by_account'][0]['name'] == 'sk-key' else '2026-09-07T01:00:00+00:00')
+
+    def test_timestamp_parsing_tolerates_nanoseconds_and_naive_values(self):
+        report = module('ai-usage-report')
+        self.assertEqual(report.parse_ts('2026-09-18T20:18:03.376880978Z').isoformat(), '2026-09-18T20:18:03.376880+00:00')
+        self.assertEqual(report.parse_ts('2026-09-18T20:18:03').isoformat(), '2026-09-18T20:18:03+00:00')
+        self.assertIsNone(report.parse_ts('not a time'))
+        self.assertIsNone(report.parse_ts(None))
+        self.assertTrue(report.is_rate_limited({'status': 429}))
+        self.assertTrue(report.is_rate_limited({'status': '429'}))
+        self.assertFalse(report.is_rate_limited({'status': None, 'failed': True}))
+        self.assertFalse(report.is_rate_limited({'status': True}))
+
     def test_subscription_source_preserves_individual_plans_and_only_allowed_metadata(self):
         inventory = module('ai-subscription-inventory')
         with tempfile.TemporaryDirectory() as directory:

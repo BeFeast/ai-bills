@@ -34,6 +34,33 @@ describe('account identity and quota evidence', () => {
     const failedRows = accounts(); applyQuotaObservations(failedRows, [failed], bindings, now);
     expect(failedRows[0].quota).toMatchObject({ status: 'error', remaining: null });
   });
+  it('follows the active Claude limit, including a scoped model week, before the fullest window', () => {
+    const rows = accounts(); const bindings = [{ id: rows[0].id, members: [], quota_account_key: 'quota-a' }];
+    const scoped = observation('quota-a');
+    scoped.data = { five_hour: { utilization: 7, resets_at: '2026-01-10T13:00:00Z' }, seven_day: { utilization: 43, resets_at: '2026-01-12T00:00:00Z' }, limits: [
+      { kind: 'session', percent: 7, resets_at: '2026-01-10T13:00:00Z', is_active: false },
+      { kind: 'weekly_all', percent: 43, resets_at: '2026-01-12T00:00:00Z', is_active: false },
+      { kind: 'weekly_scoped', percent: 83, severity: 'warning', resets_at: '2026-01-12T00:00:01Z', scope: { model: { display_name: 'Fable' } }, is_active: true },
+    ] };
+    applyQuotaObservations(rows, [scoped], bindings, now);
+    expect(rows[0].quota).toMatchObject({ status: 'fresh', remaining: 17, resetAt: '2026-01-12T00:00:01Z' });
+    // An active window that is not the fullest still wins: it is the one Claude enforces right now.
+    const activeSession = observation('quota-a');
+    activeSession.data = { five_hour: { utilization: 23, resets_at: '2026-01-10T13:00:00Z' }, seven_day: { utilization: 17, resets_at: '2026-01-12T00:00:00Z' }, limits: [
+      { kind: 'session', percent: 23, resets_at: '2026-01-10T13:00:00Z', is_active: false },
+      { kind: 'weekly_all', percent: 17, resets_at: '2026-01-12T00:00:00Z', is_active: false },
+      { kind: 'weekly_scoped', percent: 33, resets_at: '2026-01-12T00:00:01Z', scope: { model: { display_name: 'Fable' } }, is_active: true },
+    ] };
+    const activeRows = accounts(); applyQuotaObservations(activeRows, [activeSession], bindings, now);
+    expect(activeRows[0].quota).toMatchObject({ status: 'fresh', remaining: 67, resetAt: '2026-01-12T00:00:01Z' });
+    // Without any active flag the fullest window (scoped included) is the constraint.
+    const noActive = observation('quota-a');
+    noActive.data = { five_hour: { utilization: 10, resets_at: '2026-01-10T13:00:00Z' }, seven_day: { utilization: 20, resets_at: '2026-01-12T00:00:00Z' }, limits: [
+      { kind: 'weekly_scoped', percent: 90, resets_at: '2026-01-12T00:00:01Z', scope: { model: { display_name: 'Fable' } } },
+    ] };
+    const noActiveRows = accounts(); applyQuotaObservations(noActiveRows, [noActive], bindings, now);
+    expect(noActiveRows[0].quota).toMatchObject({ status: 'fresh', remaining: 10, resetAt: '2026-01-12T00:00:01Z' });
+  });
   it('uses active policy enrollment and route evidence, never snapshot enrollment', () => {
     const rows = accounts();
     applyRoutingEnrollment(rows, { accounts: [{ id: rows[0].id, enabled: true }], models: [{ routes: [{ account_id: rows[0].id, billing: 'included' }] }] });

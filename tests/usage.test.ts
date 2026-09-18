@@ -27,6 +27,9 @@ import {
   parseCursorUsagePayload,
   parseKimiUsagePayload,
   scopedModelLimits,
+  claudeWindows,
+  claudeLimitingWindow,
+  quotaTone,
   severityClass,
   windowUtilization,
   type CodexUsagePayload,
@@ -210,6 +213,36 @@ describe('usage helpers', () => {
     ];
     const combined = combinedOverview(results);
     expect(combined.averageCodexUtilization).toBe(70);
+  });
+});
+
+describe('claude windows', () => {
+  const payload = { five_hour: { utilization: 23, resets_at: '2026-09-18T23:40:00Z' }, seven_day: { utilization: 17, resets_at: '2026-09-24T17:00:00Z' }, limits: [
+    { kind: 'session', percent: 23, resets_at: '2026-09-18T23:40:00Z', is_active: false },
+    { kind: 'weekly_all', percent: 17, resets_at: '2026-09-24T17:00:00Z', is_active: false },
+    { kind: 'weekly_scoped', percent: 33, resets_at: '2026-09-24T17:00:01Z', scope: { model: { display_name: 'Fable' } }, is_active: true },
+  ] };
+  test('enumerates session, weekly all and each scoped window with labels and reset', () => {
+    expect(claudeWindows(payload).map((window) => [window.kind, window.label, window.usedPercent, window.isActive])).toEqual([
+      ['session', 'Session', 23, false], ['weekly_all', 'Weekly all models', 17, false], ['weekly_scoped', 'Fable weekly', 33, true],
+    ]);
+    expect(claudeWindows(payload)[2].resetsAt).toBe('2026-09-24T17:00:01Z');
+    expect(claudeWindows({ limits: [{ kind: 'session', percent: 5, resets_at: null }] })).toHaveLength(1);
+    expect(claudeWindows(undefined)).toEqual([]);
+  });
+  test('limiting window is the active one, otherwise the most used', () => {
+    expect(claudeLimitingWindow(payload)?.label).toBe('Fable weekly');
+    expect(claudeLimitingWindow({ ...payload, limits: payload.limits.map((limit) => ({ ...limit, is_active: false })) })?.label).toBe('Fable weekly');
+    expect(claudeLimitingWindow({ five_hour: { utilization: 60 }, seven_day: { utilization: 10 } })?.kind).toBe('session');
+    expect(claudeLimitingWindow({})).toBeNull();
+  });
+  test('shared thresholds: warn under 25 % left, bad under 10 % or exhausted', () => {
+    expect(quotaTone(80)).toBeUndefined();
+    expect(quotaTone(25)).toBeUndefined();
+    expect(quotaTone(24.9)).toBe('warn');
+    expect(quotaTone(9.9)).toBe('bad');
+    expect(quotaTone(50, true)).toBe('bad');
+    expect(quotaTone(null)).toBeUndefined();
   });
 });
 

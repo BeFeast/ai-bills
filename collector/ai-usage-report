@@ -193,13 +193,54 @@ def rows_for(day):
             seen.add(key)
         yield row
 
+ROLLING_WINDOW_HOURS = 24
+_TS_FRACTION = re.compile(r"(\.\d{6})\d+")
+
+def parse_ts(ts):
+    """Ledger timestamp -> aware UTC instant. Nanosecond fractions are truncated;
+    naive values are taken as UTC. Unparsable values return None."""
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        value = datetime.fromisoformat(_TS_FRACTION.sub(r"\1", ts.replace("Z", "+00:00")))
+    except (ValueError, TypeError):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+def is_rate_limited(row):
+    """HTTP 429 is the provider saying the quota is exhausted; other failures are not."""
+    status = row.get("status")
+    if isinstance(status, bool):
+        return False
+    try:
+        return int(status) == 429
+    except (TypeError, ValueError):
+        return False
+
 def rollup(defaults, models, days=30):
-    """Day and full current-calendar-month projections over the preserved ledger."""
+    """Day, full current-calendar-month and rolling-24h projections over the preserved ledger.
+
+    `today` and `month` follow the report timezone; `last_24h` is a rolling window of
+    wall-clock instants, so it never empties at midnight and is timezone independent.
+    """
     from datetime import timedelta
     today = local_day()
     month = today[:7]
+    now = utc_now()
+    window_start = now - timedelta(hours=ROLLING_WINDOW_HOURS)
     per_day = collections.defaultdict(collections.Counter)
-    periods = {key: {"total": collections.Counter(), "unreconciled": collections.Counter(), "dims": {dim: collections.defaultdict(collections.Counter) for dim in ("client", "model", "via", "account")}, "unpriced": collections.Counter()} for key in ("today", "month")}
+    # `upstream` groups by provider and account: one email can serve several providers,
+    # and upstream-key providers are identified by provider alone.
+    dims = ("client", "model", "via", "account", "upstream")
+    periods = {key: {"total": collections.Counter(), "unreconciled": collections.Counter(),
+                     "dims": {dim: collections.defaultdict(collections.Counter) for dim in dims},
+                     "latest": {dim: {} for dim in ("account", "upstream")}, "unpriced": collections.Counter()}
+               for key in ("today", "month", "last_24h")}
 
     def add(counter, row, api, marginal, priced, tokens):
         counter["api_micro"] += round(api * 1e6)
@@ -209,37 +250,53 @@ def rollup(defaults, models, days=30):
         counter["tokens"] += tokens
         counter["requests"] += 1
         counter["failed"] += bool(row.get("failed"))
+        counter["rate_limited"] += is_rate_limited(row)
         for field in ("in_uncached", "cache_read", "cache_write", "out_total"):
             counter[field] += row.get(field) or 0
+
+    def group_key(row, dim):
+        if dim == "upstream":
+            return (row.get("provider") or "?", row.get("account") or "?")
+        return row.get(dim) or "?"
 
     for row in rows_for(None):
         day = local_day(row.get("ts"))
         if not day or day > today:
             continue
+        instant = parse_ts(row.get("ts"))
+        selected = (("today", day == today), ("month", day.startswith(month + "-")),
+                    ("last_24h", instant is not None and instant >= window_start))
         api, marginal, priced = cost(row, defaults, models)
         tokens = sum((row.get(field) or 0) for field in ("in_uncached", "cache_read", "cache_write", "out_total"))
         if row.get("accounting_status") == "unreconciled_native":
-            for name, selected in (("today", day == today), ("month", day.startswith(month + "-"))):
-                if selected:
+            for name, chosen in selected:
+                if chosen:
                     add(periods[name]["unreconciled"], row, api, marginal, priced, tokens)
             # The retained observations remain readable via rows_for; neither
             # trends nor ranked unique-usage totals combine them with proxy data.
             continue
         add(per_day[day], row, api, marginal, priced, tokens)
-        for name, selected in (("today", day == today), ("month", day.startswith(month + "-"))):
-            if not selected:
+        for name, chosen in selected:
+            if not chosen:
                 continue
             period = periods[name]
             add(period["total"], row, api, marginal, priced, tokens)
             if not priced and tokens:
                 period["unpriced"][row.get("model") or "?"] += tokens
             for dim, groups in period["dims"].items():
-                add(groups[row.get(dim) or "?"], row, api, marginal, priced, tokens)
+                key = group_key(row, dim)
+                add(groups[key], row, api, marginal, priced, tokens)
+                latest = period["latest"].get(dim)
+                if latest is not None and instant is not None and (key not in latest or instant > latest[key]):
+                    latest[key] = instant
 
     def amounts(counter):
         return {"api_equivalent_usd": None if counter["api_unknown"] else counter["api_micro"] / 1e6,
                 "priced_api_equivalent_usd": counter["api_micro"] / 1e6,
                 "marginal_usd": None if counter["marg_unknown"] else counter["marg_micro"] / 1e6}
+
+    def stamp(value):
+        return value.isoformat(timespec="seconds")
 
     def project(name, label):
         period = periods[name]
@@ -248,23 +305,36 @@ def rollup(defaults, models, days=30):
         result = {"date": label, "period": "day" if name == "today" else "month",
                   "period_start": today if name == "today" else month + "-01", "period_end": today,
                   "requests": None if unresolved["requests"] else total["requests"], "failed": total["failed"],
+                  "rate_limited": total["rate_limited"],
                   "counts": {field: total[field] for field in ("in_uncached", "cache_read", "cache_write", "out_total")},
                   "tokens_total": None if unresolved["requests"] else total["tokens"], **amounts(total), "unpriced": dict(period["unpriced"]),
                   "reconciliation": {"status": "partial" if unresolved["requests"] else "observations_only",
                       "confirmed_tokens": total["tokens"], "confirmed_requests": total["requests"],
                       "unreconciled_native_observations": unresolved["requests"],
                       "unreconciled_native_token_observations": unresolved["tokens"]}}
+        if name == "last_24h":
+            result.update(period="rolling_24h", window_hours=ROLLING_WINDOW_HOURS,
+                          period_start=stamp(window_start), period_end=stamp(now))
         if unresolved["requests"]:
             result["api_equivalent_usd"] = None
             result["marginal_usd"] = None
         for dim, groups in period["dims"].items():
-            result["by_" + dim] = [{"name": key, **amounts(value), "tokens": value["tokens"], "requests": value["requests"]}
-                                  for key, value in sorted(groups.items(), key=lambda item: (-item[1]["tokens"], item[0]))]
+            latest = period["latest"].get(dim, {})
+            entries = []
+            for key, value in sorted(groups.items(), key=lambda item: (-item[1]["tokens"], item[0] if isinstance(item[0], tuple) else (item[0],))):
+                entry = {"name": key[1] if dim == "upstream" else key, **amounts(value), "tokens": value["tokens"],
+                         "requests": value["requests"], "failed": value["failed"], "rate_limited": value["rate_limited"]}
+                if dim == "upstream":
+                    entry["provider"] = key[0]
+                if dim in ("account", "upstream"):
+                    entry["last_request_at"] = stamp(latest[key]) if key in latest else None
+                entries.append(entry)
+            result["by_" + dim] = entries
         return result
 
     cutoff = (date.fromisoformat(today) - timedelta(days=days)).isoformat()
-    return {"generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "today": project("today", today), "month": project("month", month),
+    return {"generated": stamp(now),
+            "today": project("today", today), "month": project("month", month), "last_24h": project("last_24h", today),
             "trend_scope": "confirmed_observations",
             "trend": [{"date": day, **amounts(value), "tokens": value["tokens"]}
                       for day, value in sorted(per_day.items()) if day >= cutoff]}
