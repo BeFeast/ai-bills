@@ -208,6 +208,10 @@ export type CodexUsagePayload = {
   };
 };
 
+/** Placeholder error until an account's first observation lands; consumers treat it as pending, not failing. */
+export const PENDING_OBSERVATION = 'Waiting for the first quota observation';
+export const isPendingObservation = (result: ProviderUsage) => !result.ok && result.status === undefined && result.error === PENDING_OBSERVATION;
+
 export type ProviderUsage = {
   account: PublicUsageAccount;
   ok: boolean;

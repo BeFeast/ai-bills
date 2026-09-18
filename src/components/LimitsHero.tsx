@@ -83,6 +83,6 @@ export function LimitsHero({ hero, now, subscriptions, onView }: { hero: LimitsH
   return <Card id="limits-now" title="Limits now" subtitle={`Accounts used in the last ${hero.windowHours}h${refreshed ? ` · refreshed ${refreshed}` : ''}`} actions={<Button variant="secondary" size="sm" onClick={() => onView('accounts')}>Accounts &amp; sign-in →</Button>} aria-label="Limits now">
     {hero.loading ? <p className="hero-empty">Loading account quotas…</p>
       : hero.cards.length ? <div className="hero-grid">{hero.cards.map((card) => <HeroCard key={card.id} card={card} now={now} recencyKnown={hero.recencyKnown} subscriptions={subscriptions} />)}</div>
-      : <p className="hero-empty">{hero.recencyKnown ? 'No account with a quota source was used in the last 24h and none is running low.' : 'No quota observations yet.'}</p>}
+      : <p className="hero-empty">{hero.pending ? `Waiting for the first quota observation of ${hero.pending} account${hero.pending === 1 ? '' : 's'}…` : hero.recencyKnown ? 'No account with a quota source was used in the last 24h and none is running low.' : 'No quota observations yet.'}</p>}
   </Card>;
 }
