@@ -25,14 +25,13 @@ concurrency:
   group: ai-bills-deploy
   cancel-in-progress: false
 
+# Internal endpoints (stack manager, app host, alert topic) are operator config and
+# come from the secret manager at run time, never from this public file.
 env:
   REGISTRY: git.oklabs.uk
   IMAGE: git.oklabs.uk/befeast/ai-bills
-  DOCKHAND: http://10.10.0.13:13090
   STACK: ai-bills
-  APP_URL: http://10.10.0.13:13180
   STACK_SOURCE: https://git.oklabs.uk/BeFeast/infra-stacks/raw/branch/main/devbox/ai-bills/compose.yaml
-  NTFY: https://ntfy.oklabs.uk/ai-billing
   INFISICAL_SERVICES: 5b5038c7-46d5-496f-bfa6-6184cb41e143
 
 jobs:
@@ -57,12 +56,16 @@ jobs:
               | jq -er '.secret.secretValue'
           }
           bot_pat=$(get OKLABS_BOT_PAT /forgejo); dh_pass=$(get DOCKHAND_ADMIN_PASSWORD /dockhand)
-          echo "::add-mask::$bot_pat"; echo "::add-mask::$dh_pass"
+          dockhand=$(get AI_BILLS_DOCKHAND_URL /ai-bills); app_url=$(get AI_BILLS_APP_URL /ai-bills); ntfy=$(get AI_BILLS_NTFY_URL /ai-bills)
+          for v in "$bot_pat" "$dh_pass" "$dockhand" "$app_url" "$ntfy"; do echo "::add-mask::$v"; done
           {
             echo "BOT_USER=$(get OKLABS_BOT_USERNAME /forgejo)"
             echo "BOT_PAT=$bot_pat"
             echo "DH_USER=$(get DOCKHAND_ADMIN_USER /dockhand)"
             echo "DH_PASS=$dh_pass"
+            echo "DOCKHAND=$dockhand"
+            echo "APP_URL=$app_url"
+            echo "NTFY=$ntfy"
             echo "TAG=${GITHUB_SHA:0:12}"
           } >> "$GITHUB_ENV"
 
@@ -81,7 +84,7 @@ jobs:
           curl -fsS -b "$RUNNER_TEMP/dockhand.jar" -H "Origin: $DOCKHAND" "$DOCKHAND/api/stacks/$STACK/compose?env=1" | jq -j '.content' > "$RUNNER_TEMP/deployed-compose.yaml"
           curl -fsS "$STACK_SOURCE" > "$RUNNER_TEMP/source-compose.yaml"
           if ! diff -u "$RUNNER_TEMP/source-compose.yaml" "$RUNNER_TEMP/deployed-compose.yaml"; then
-            echo "FATAL: /opt/stacks/$STACK/compose.yaml differs from infra-stacks devbox/$STACK/compose.yaml" >&2
+            echo "FATAL: the deployed stack file differs from infra-stacks devbox/$STACK/compose.yaml" >&2
             exit 1
           fi
           grep -q "image: $IMAGE:latest" "$RUNNER_TEMP/source-compose.yaml" || { echo "FATAL: the stack file does not run $IMAGE:latest" >&2; exit 1; }
@@ -107,10 +110,13 @@ jobs:
           # The endpoint streams NDJSON and reports failures in the body; a 200 alone proves nothing.
           out=$(curl -fsS --max-time 900 -b "$RUNNER_TEMP/dockhand.jar" -H 'Content-Type: application/json' -H "Origin: $DOCKHAND" \
                   -X POST "$DOCKHAND/api/images/pull?env=1" -d "$body")
-          printf '%s\n' "$out" | tail -3
-          if printf '%s' "$out" | grep -qi '"error"'; then
-            echo "FATAL: Dockhand failed to pull $IMAGE" >&2; exit 1
+          # Judge each JSON line on its own: a non-empty `error`/`errorDetail` field is a
+          # failure; lines without one (progress, digests) and non-JSON noise are not.
+          failures=$(printf '%s\n' "$out" | jq -R 'fromjson? | select(type=="object") | select(((.error // "") != "") or ((.errorDetail // "") != ""))' | head -c 2000)
+          if [ -n "$failures" ]; then
+            echo "FATAL: Dockhand failed to pull $IMAGE: $failures" >&2; exit 1
           fi
+          printf '%s\n' "$out" | jq -R 'fromjson? | .status // empty' | tail -3
 
       - name: Roll the stack
         run: |
