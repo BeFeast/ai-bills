@@ -1,0 +1,160 @@
+# Build the ai-bills (Zecori) image on the builder and roll the DevBox stack onto it.
+#
+# Runs on `heavy` (baldr, host executor): it is the only runner with a Docker
+# daemon, and every step here is OK Labs code. DevBox only pulls and runs;
+# building on the semi-prod host is what took LXC 111 down in August.
+#
+# Stack lifecycle goes through Dockhand, never `docker compose` over SSH: the
+# stack is adopted in environment 1 ("DevBox"), and two owners of one compose
+# project is how state drifts. Dockhand requires an authenticated session and a
+# JSON Origin for every call since 2026-09-07, so the job logs in first.
+#
+# The compose file that describes the live stack lives in BeFeast/infra-stacks
+# (devbox/ai-bills/compose.yaml) and is the source of truth; this job refuses
+# to roll onto a hand-edited copy. Config, .env, data and codex profiles stay
+# on the host and are never touched here. The collector on its own host is not
+# part of this pipeline.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ai-bills-deploy
+  cancel-in-progress: false
+
+# Internal endpoints (stack manager, app host, alert topic) are operator config and
+# come from the secret manager at run time, never from this public file.
+env:
+  REGISTRY: git.oklabs.uk
+  IMAGE: git.oklabs.uk/befeast/ai-bills
+  STACK: ai-bills
+  STACK_SOURCE: https://git.oklabs.uk/BeFeast/infra-stacks/raw/branch/main/devbox/ai-bills/compose.yaml
+  INFISICAL_SERVICES: 5b5038c7-46d5-496f-bfa6-6184cb41e143
+
+jobs:
+  deploy:
+    runs-on: heavy
+    timeout-minutes: 60
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Read registry and Dockhand credentials from Infisical
+        run: |
+          set -euo pipefail
+          set -a; . "$HOME/.config/infisical/machine.env"; set +a
+          token=$(infisical login --method=universal-auth \
+            --client-id="$INFISICAL_CLIENT_ID" --client-secret="$INFISICAL_CLIENT_SECRET" \
+            --plain --silent | tr -d '\r\n')
+          # A failed login still prints TUI escape codes and exits 0; a real token is one clean line.
+          printf '%s' "$token" | grep -qE '^[A-Za-z0-9._-]+$'
+          get() {
+            curl -fsS -H "Authorization: Bearer $token" \
+              "$INFISICAL_API_URL/v3/secrets/raw/$1?workspaceId=$INFISICAL_SERVICES&environment=prod&secretPath=$2" \
+              | jq -er '.secret.secretValue'
+          }
+          bot_pat=$(get OKLABS_BOT_PAT /forgejo); dh_pass=$(get DOCKHAND_ADMIN_PASSWORD /dockhand)
+          dockhand=$(get AI_BILLS_DOCKHAND_URL /ai-bills); app_url=$(get AI_BILLS_APP_URL /ai-bills); ntfy=$(get AI_BILLS_NTFY_URL /ai-bills)
+          for v in "$bot_pat" "$dh_pass" "$dockhand" "$app_url" "$ntfy"; do echo "::add-mask::$v"; done
+          {
+            echo "BOT_USER=$(get OKLABS_BOT_USERNAME /forgejo)"
+            echo "BOT_PAT=$bot_pat"
+            echo "DH_USER=$(get DOCKHAND_ADMIN_USER /dockhand)"
+            echo "DH_PASS=$dh_pass"
+            echo "DOCKHAND=$dockhand"
+            echo "APP_URL=$app_url"
+            echo "NTFY=$ntfy"
+            echo "TAG=${GITHUB_SHA:0:12}"
+          } >> "$GITHUB_ENV"
+
+      - name: Open a Dockhand session
+        run: |
+          set -euo pipefail
+          curl -fsS -c "$RUNNER_TEMP/dockhand.jar" -H 'Content-Type: application/json' -H "Origin: $DOCKHAND" \
+            -X POST "$DOCKHAND/api/auth/login" \
+            -d "$(jq -nc --arg u "$DH_USER" --arg p "$DH_PASS" '{username:$u,password:$p}')" >/dev/null
+          echo "session opened"
+
+      - name: Refuse to deploy against a drifted stack file
+        run: |
+          set -euo pipefail
+          # jq -j, not -r: -r appends its own newline and every diff fails on that byte.
+          curl -fsS -b "$RUNNER_TEMP/dockhand.jar" -H "Origin: $DOCKHAND" "$DOCKHAND/api/stacks/$STACK/compose?env=1" | jq -j '.content' > "$RUNNER_TEMP/deployed-compose.yaml"
+          curl -fsS "$STACK_SOURCE" > "$RUNNER_TEMP/source-compose.yaml"
+          if ! diff -u "$RUNNER_TEMP/source-compose.yaml" "$RUNNER_TEMP/deployed-compose.yaml"; then
+            echo "FATAL: the deployed stack file differs from infra-stacks devbox/$STACK/compose.yaml" >&2
+            exit 1
+          fi
+          grep -q "image: $IMAGE:latest" "$RUNNER_TEMP/source-compose.yaml" || { echo "FATAL: the stack file does not run $IMAGE:latest" >&2; exit 1; }
+          echo "stack file matches the repository"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
+
+      - name: Push to the OK Forge registry
+        run: |
+          set -euo pipefail
+          printf '%s' "$BOT_PAT" | docker login "$REGISTRY" -u "$BOT_USER" --password-stdin
+          docker push "$IMAGE:$TAG"
+          docker push "$IMAGE:latest"
+          docker logout "$REGISTRY"
+
+      - name: Pull the new image on DevBox
+        run: |
+          set -euo pipefail
+          body=$(jq -nc --arg i "$IMAGE:latest" '{image:$i, scanAfterPull:false}')
+          # The endpoint streams NDJSON and reports failures in the body; a 200 alone proves nothing.
+          out=$(curl -fsS --max-time 900 -b "$RUNNER_TEMP/dockhand.jar" -H 'Content-Type: application/json' -H "Origin: $DOCKHAND" \
+                  -X POST "$DOCKHAND/api/images/pull?env=1" -d "$body")
+          # Judge each JSON line on its own: a non-empty `error`/`errorDetail` field is a
+          # failure; lines without one (progress, digests) and non-JSON noise are not.
+          failures=$(printf '%s\n' "$out" | jq -R 'fromjson? | select(type=="object") | select(((.error // "") != "") or ((.errorDetail // "") != ""))' | head -c 2000)
+          if [ -n "$failures" ]; then
+            echo "FATAL: Dockhand failed to pull $IMAGE: $failures" >&2; exit 1
+          fi
+          printf '%s\n' "$out" | jq -R 'fromjson? | .status // empty' | tail -3
+
+      - name: Roll the stack
+        run: |
+          set -uo pipefail
+          # down + start, never restart: down removes the containers, so start
+          # unconditionally recreates them from the :latest just pulled, which is
+          # what makes the health check meaningful. Volumes survive (no -v).
+          # Dockhand answers only if the operation finishes within ~10 s; past that
+          # it drops the connection (curl 52) while the operation completes anyway.
+          for op in down start; do
+            if out=$(curl -sS --max-time 300 -b "$RUNNER_TEMP/dockhand.jar" -H 'Content-Type: application/json' -H "Origin: $DOCKHAND" \
+                       -X POST "$DOCKHAND/api/stacks/$STACK/$op?env=1" -d '{}' 2>&1); then rc=0; else rc=$?; fi
+            case "$rc" in
+              0) printf '%s\n' "$out" | jq -e '.success == true' >/dev/null || { echo "Dockhand refused to $op the stack: $out" >&2; exit 1; }; echo "stack $op: ok" ;;
+              52) echo "stack $op: Dockhand dropped the response; the operation completes anyway" ;;
+              *) echo "could not reach Dockhand (curl $rc): $out" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Verify the running instance
+        run: |
+          set -euo pipefail
+          # The containers were recreated from the image pulled above, so a healthy
+          # answer here comes from the new image. Health does not prove snapshot or
+          # quota freshness; those are evidence the app reports separately.
+          for i in $(seq 1 30); do
+            if curl -fsS -m 5 "$APP_URL/api/health" >/dev/null && curl -fsS -m 10 "$APP_URL/" | grep -q '<title>Zecori'; then
+              echo "OK: $STACK is serving $IMAGE:$TAG"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FATAL: the stack did not answer within 150s after redeploy" >&2
+          exit 1
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          curl -s -H 'Title: ai-bills deploy failed' -H 'Priority: high' \
+            -d "build or rollout failed for ${GITHUB_REPOSITORY}@${GITHUB_SHA:0:12} -- ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions" \
+            "$NTFY" || true

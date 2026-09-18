@@ -1,5 +1,18 @@
 # Deployment contract
 
+## Continuous deployment (since 2026-09-19)
+
+Every push to `main` runs `.forgejo/workflows/deploy.yml` on the org's `heavy` runner:
+build the image from the repository root, push `git.oklabs.uk/befeast/ai-bills:<sha12>`
+and `:latest` to the OK Forge registry, pull it on the app host through Dockhand,
+`down` + `start` the stack, and verify `/api/health` plus the served page. The stack's
+compose file is owned by `BeFeast/infra-stacks` (`devbox/ai-bills/compose.yaml`); the
+job refuses to roll onto a copy that drifted from it. Rollback is a tag swap in that
+compose file (`:latest` → `:<sha12>` of the previous good build) followed by Dockhand
+`down` + `start`; previous tags stay in the registry. Config, `.env`, data and Codex
+profiles never travel through this pipeline, and the collector on its own host is
+deployed separately.
+
 The existing deployment lifecycle remains owned by the operator's stack manager.
 Do not infer deployment authority from a source commit or repository publication.
 The example Compose file is an operator template, not the installed configuration.
