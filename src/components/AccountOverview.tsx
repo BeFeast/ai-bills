@@ -1,12 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Metric } from './legacy-ui';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { fmtDate, fmtMoney } from './format';
+import { Button, Cell, Input, Notice, Pill, Select, StatTile, Table, TileGrid, type Column } from './ui';
 
 type CoverageSource = import('@/lib/accounting').Freshness;
 type Inventory = import('@/lib/accounts').AccountRegistry;
+type RegistryAccount = import('@/lib/accounts').RegistryAccount;
 type FinancialRecord = import('@/lib/accounting').FinancialInput;
+type StoredRecord = import('@/lib/accounting').FinancialRecord;
 type Accounting = import('@/lib/accounting').AccountingOverview;
 
 export async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -17,11 +19,22 @@ export async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function CoverageList({ sources, tz, labels = {} }: { sources: CoverageSource[]; tz: string; labels?: Record<string, string> }) {
-  return <div className="coverage-list">{sources.length ? sources.map((source) => <div className="coverage-row" key={source.id}>
-    <div><strong>{labels[source.id] || source.id.replaceAll('-', ' ')}</strong><span className={`pill ${source.status === 'fresh' ? 'ok' : source.status === 'error' ? 'danger' : 'warn'}`}>{source.status}</span></div>
-    <span className="muted">{source.observedAt ? fmtDate(source.observedAt, tz) : 'Never observed'}{source.message ? ` · ${source.message}` : ''}</span>
-  </div>) : <p className="muted">No source receipts available. Completeness is unknown.</p>}</div>;
+  return <div className="stack" style={{ gap: 0 }}>{sources.length ? sources.map((source) => <div className="coverage-row" key={source.id}>
+    <strong>{labels[source.id] || source.id.replaceAll('-', ' ')}</strong>
+    <Pill tone={source.status === 'fresh' ? 'ok' : source.status === 'error' ? 'bad' : 'warn'}>{source.status}</Pill>
+    <span className="mono-faint" style={{ marginLeft: 'auto' }}>{source.observedAt ? fmtDate(source.observedAt, tz) : 'Never observed'}{source.message ? ` · ${source.message}` : ''}</span>
+  </div>) : <p className="t-small">No source receipts available. Completeness is unknown.</p>}</div>;
 }
+
+const inventoryColumns: Column<'account' | 'origin' | 'routing' | 'quota' | 'coverage'>[] = [
+  { key: 'account', label: 'Account' }, { key: 'origin', label: 'Origin / billing' }, { key: 'routing', label: 'Routing' }, { key: 'quota', label: 'Quota remaining' }, { key: 'coverage', label: 'Coverage' },
+];
+const recordColumns: Column<'date' | 'who' | 'kind' | 'amount' | 'source'>[] = [
+  { key: 'date', label: 'Date', mono: true }, { key: 'who', label: 'Provider / account' }, { key: 'kind', label: 'Type' }, { key: 'amount', label: 'Amount', mono: true, align: 'right' }, { key: 'source', label: 'Source / note' },
+];
+const kindOptions = [
+  { value: 'payment', label: 'Actual payment / refund' }, { value: 'accrual', label: 'Provider accrued consumption' }, { value: 'balance', label: 'Prepaid balance' }, { value: 'subscription', label: 'Subscription schedule' }, { value: 'api-equivalent', label: 'API-equivalent estimate' },
+];
 
 export function AccountOverview({ tz }: { tz: string }) {
   const [month, setMonth] = useState('');
@@ -70,33 +83,63 @@ export function AccountOverview({ tz }: { tz: string }) {
     finally { setBusy(false); }
   }
 
-  return <section className="billing" aria-label="Monthly accounting and accounts">
-    <div className="bill-head"><div><p className="eyebrow">Your AI accounts</p><h2>Month overview</h2><p className="muted">Payments and accrued consumption are separate views of money. Estimates are hypothetical.</p></div>
-      <label className="field">Month<input aria-label="Accounting month" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label></div>
-    {error ? <p className="status danger" role="status">{error} Previous observations remain visible.</p> : null}
-    <div className="bill-grid mini monthly-metrics">
-      <Metric tone="billing" label="Payments this month" value={fmtMoney(accounting?.paymentsUsd ?? null)} note="Recorded payments; not added to consumption" />
-      <Metric tone="billing" label="Provider accrued consumption" value={fmtMoney(accounting?.accruedUsd ?? null)} note="Provider charges reported for this month" />
-      <Metric label="API-equivalent estimate" value={fmtMoney(accounting?.apiEquivalentUsd ?? null)} note="Hypothetical list-price value, not cash spent" />
-      <Metric tone="live" label="Account coverage" value={inventory ? `${inventory.accounts.length} tracked` : 'Unknown'} note={inventory ? `${inventory.accounts.filter(a => a.quota.status === 'fresh').length} current quotas · financial coverage partial` : 'Coverage unknown'} />
+  function inventoryCell(account: RegistryAccount, column: Column<typeof inventoryColumns[number]['key']>): ReactNode {
+    switch (column.key) {
+      case 'account': return <Cell main={account.label || account.id} sub={account.provider} />;
+      case 'origin': return <Cell main={account.origin} sub={account.billingMode} />;
+      case 'routing': return account.routingEnrolled === null ? 'Unknown' : account.routingEnrolled ? 'Enrolled' : 'Accounting only';
+      case 'quota': return <Cell main={<span className="tabular">{account.quota.remaining === null ? 'Unknown' : `${account.quota.remaining.toLocaleString(undefined, { maximumFractionDigits: 1 })}${account.quota.unit === 'percent' ? '%' : ''}`}</span>} sub={`${account.quota.status}${account.quota.resetAt ? ` · resets ${fmtDate(account.quota.resetAt, tz)}` : ''}`} />;
+      case 'coverage': return <div className="cell" style={{ alignItems: 'flex-start', gap: 4 }}><Pill tone={account.coverage.status === 'available' ? 'ok' : 'warn'}>{account.coverage.status}</Pill><span className="cell__sub">{account.coverage.reason}</span></div>;
+    }
+  }
+  function recordCell(record: StoredRecord, column: Column<typeof recordColumns[number]['key']>): ReactNode {
+    switch (column.key) {
+      case 'date': return record.date;
+      case 'who': return <Cell main={record.provider} sub={inventory?.accounts.find((a) => a.id === record.accountId)?.label || record.accountId} />;
+      case 'kind': return record.kind;
+      case 'amount': return `${record.currency} ${record.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
+      case 'source': return <Cell main={record.sourceId} sub={record.note} />;
+    }
+  }
+
+  return <section className="stack stack--loose" aria-label="Monthly accounting and accounts" style={{ gap: 24 }}>
+    <div className="section-head">
+      <div className="section-head__text"><span className="t-micro">Your AI accounts</span><h2 className="t-h1">Month overview</h2><span className="t-small">Payments and accrued consumption are separate views of money. Estimates are hypothetical.</span></div>
+      <Input label="Month" aria-label="Accounting month" type="month" value={month} onChange={(event) => setMonth(event.target.value)} fieldStyle={{ width: 180 }} />
     </div>
-    <details className="accordion"><summary>Source freshness and coverage <span className="accordion-hint">Missing is not zero</span></summary><div className="accordion-content"><CoverageList labels={Object.fromEntries((inventory?.accounts || []).map(account => [`quota:${account.id}`, `${account.label} quota`]))} sources={[...(inventory?.sources || []), ...(accounting?.coverage || []).filter((s) => !inventory?.sources.some((i) => i.id === s.id))]} tz={tz} /></div></details>
-    <div className="table-wrap"><table><caption className="sr-only">Account inventory, routing enrollment and quota evidence</caption><thead><tr><th>Account</th><th>Origin / billing</th><th>Routing</th><th>Quota remaining</th><th>Coverage</th></tr></thead><tbody>
-      {inventory?.accounts.map((account) => <tr key={account.id}><td><strong>{account.label || account.id}</strong><div className="muted">{account.provider}</div></td><td>{account.origin}<div className="muted">{account.billingMode}</div></td><td>{account.routingEnrolled === null ? 'Unknown' : account.routingEnrolled ? 'Enrolled' : 'Accounting only'}</td><td>{account.quota.remaining === null ? 'Unknown' : `${account.quota.remaining.toLocaleString(undefined, { maximumFractionDigits: 1 })}${account.quota.unit === 'percent' ? '%' : ''}`}<div className="muted">{account.quota.status}{account.quota.resetAt ? ` · resets ${fmtDate(account.quota.resetAt, tz)}` : ''}</div></td><td><span className={`pill ${account.coverage.status === 'available' ? 'ok' : 'warn'}`}>{account.coverage.status}</span><div className="muted">{account.coverage.reason}</div></td></tr>)}
-      {!inventory?.accounts.length ? <tr><td colSpan={5} className="muted">No accounts observed yet. Check source coverage above.</td></tr> : null}
-    </tbody></table></div>
-    <details className="accordion"><summary>Add a manual financial record <span className="accordion-hint">Payments, consumption, balances or subscription schedule</span></summary><div className="accordion-content">
-      <form className="record-form" onSubmit={saveRecord} onChange={() => { pendingRecord.current = null; }}>
-        <label className="field">Account<select required value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)}><option value="">Choose account</option>{inventory?.accounts.map((a) => <option key={a.id} value={a.id}>{a.label} · {a.provider}</option>)}</select></label>
-        <label className="field">Record type<select value={kind} onChange={(e) => setKind(e.target.value as import('@/lib/accounting').FinancialKind)}><option value="payment">Actual payment / refund</option><option value="accrual">Provider accrued consumption</option><option value="balance">Prepaid balance</option><option value="subscription">Subscription schedule</option><option value="api-equivalent">API-equivalent estimate</option></select></label>
-        <label className="field">Amount<input name="amount" type="number" step="0.000001" required placeholder="0.00" /></label>
-        <label className="field">Currency<input name="currency" required defaultValue="USD" pattern="[A-Z]{3}" maxLength={3} /></label>
-        <label className="field">Effective date<input name="date" type="date" required /></label>
-        <label className="field record-note">Note<input name="note" placeholder="Invoice reference, credit or explanation" maxLength={1000} /></label>
-        <p className="muted record-note">Use a negative payment for a refund. A prepaid top-up is a payment; its consumption is an accrual. They are never summed into one expense.</p>
-        <button type="submit" disabled={busy || !inventory?.accounts.length}>{busy ? 'Saving…' : 'Save record'}</button>
-      </form>{notice ? <p role="status" className="status">{notice}</p> : null}
-    </div></details>
-    <details className="accordion"><summary>Financial records <span className="accordion-hint">{accounting?.records.length ?? 0} in selected month</span></summary><div className="table-wrap"><table><thead><tr><th>Date</th><th>Provider / account</th><th>Type</th><th>Amount</th><th>Source / note</th></tr></thead><tbody>{accounting?.records.map((record) => <tr key={record.id || `${record.sourceId}:${record.sourceRecordId}`}><td>{record.date}</td><td>{record.provider}<div className="muted">{inventory?.accounts.find((a) => a.id === record.accountId)?.label || record.accountId}</div></td><td>{record.kind}</td><td>{record.currency} {record.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td><td>{record.sourceId}<div className="muted">{record.note}</div></td></tr>)}{!accounting?.records.length ? <tr><td colSpan={5} className="muted">No records in this period. Totals may be unknown.</td></tr> : null}</tbody></table></div></details>
+    {error ? <Notice tone="bad" role="status">{error} Previous observations remain visible.</Notice> : null}
+    <TileGrid>
+      <StatTile label="Payments this month" value={fmtMoney(accounting?.paymentsUsd ?? null)} note="Recorded payments; not added to consumption" />
+      <StatTile label="Provider accrued consumption" value={fmtMoney(accounting?.accruedUsd ?? null)} note="Provider charges reported for this month" />
+      <StatTile label="API-equivalent estimate" value={fmtMoney(accounting?.apiEquivalentUsd ?? null)} note="Hypothetical list-price value, not cash spent" />
+      <StatTile label="Account coverage" value={inventory ? `${inventory.accounts.length} tracked` : 'Unknown'} note={inventory ? `${inventory.accounts.filter(a => a.quota.status === 'fresh').length} current quotas · financial coverage partial` : 'Coverage unknown'} />
+    </TileGrid>
+    <details className="bf-card details-card">
+      <summary><span>Source freshness and coverage</span><span className="details-hint">missing is not zero</span></summary>
+      <CoverageList labels={Object.fromEntries((inventory?.accounts || []).map(account => [`quota:${account.id}`, `${account.label} quota`]))} sources={[...(inventory?.sources || []), ...(accounting?.coverage || []).filter((s) => !inventory?.sources.some((i) => i.id === s.id))]} tz={tz} />
+    </details>
+    <Table caption="Account inventory, routing enrollment and quota evidence" columns={inventoryColumns} rows={inventory?.accounts ?? []} rowKey={(account) => account.id} renderCell={inventoryCell} empty="No accounts observed yet. Check source coverage above." />
+    <details className="bf-card details-card">
+      <summary><span>Add a manual financial record</span><span className="details-hint">payments, consumption, balances or subscription schedule</span></summary>
+      <form className="stack stack--loose" onSubmit={saveRecord} onChange={() => { pendingRecord.current = null; }}>
+        <div className="record-grid">
+          <Select label="Account" required value={selectedAccount} onChange={(e) => setSelectedAccount(e.target.value)} options={[{ value: '', label: 'Choose account' }, ...(inventory?.accounts ?? []).map((a) => ({ value: a.id, label: `${a.label} · ${a.provider}` }))]} />
+          <Select label="Record type" value={kind} onChange={(e) => setKind(e.target.value as import('@/lib/accounting').FinancialKind)} options={kindOptions} />
+          <Input label="Amount" name="amount" type="number" step="0.000001" required placeholder="0.00" />
+          <Input label="Currency" name="currency" required defaultValue="USD" pattern="[A-Z]{3}" maxLength={3} />
+          <Input label="Effective date" name="date" type="date" required />
+        </div>
+        <Input label="Note" name="note" placeholder="Invoice reference, credit or explanation" maxLength={1000} />
+        <p className="t-small">Use a negative payment for a refund. A prepaid top-up is a payment; its consumption is an accrual. They are never summed into one expense.</p>
+        <div className="toolbar" style={{ gap: 12 }}>
+          <Button type="submit" disabled={busy || !inventory?.accounts.length}>{busy ? 'Saving…' : 'Save record'}</Button>
+          {notice ? <span role="status" className="t-small" style={{ color: 'var(--ok)' }}>{notice}</span> : null}
+        </div>
+      </form>
+    </details>
+    <details className="bf-card details-card" open>
+      <summary><span>Financial records</span><span className="details-hint">{accounting?.records.length ?? 0} in selected month</span></summary>
+      <Table columns={recordColumns} rows={accounting?.records ?? []} rowKey={(record) => record.id || `${record.sourceId}:${record.sourceRecordId}`} renderCell={recordCell} empty="No records in this period. Totals may be unknown." />
+    </details>
   </section>;
 }
