@@ -1,0 +1,29 @@
+# Continuous checks for every pull request and for main. Runs on the org runner's
+# `docker` label (node:22-bookworm, which also ships python3). Deployment is not
+# part of this workflow: live changes still go through an approved package.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  checks:
+    runs-on: docker
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Install Node dependencies (lockfile contract)
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npx vitest run
+      - name: Production build
+        run: npm run build
+      - name: Collector tests
+        run: |
+          python3 --version
+          pip3 install --quiet --break-system-packages "pyyaml>=6.0.2,<7"
+          python3 tests/accounting-collectors.test.py
+          python3 tests/test_claude_quota_collector.py
+          python3 tests/test_codex_quota_collector.py
+          python3 tests/test_openrouter_collector.py

@@ -1,5 +1,6 @@
 {
   "name": "ai-bills",
+  "license": "MIT",
   "version": "2.0.0",
   "private": true,
   "description": "AI usage and billing dashboard \u2014 Next.js client-server app",
