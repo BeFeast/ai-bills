@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import type { OverviewUsageGroup, ProductOverview, ProductSubscription } from '@/lib/overview';
 import type { ProviderUsage } from '@/lib/usage';
 import { kimiCodingUsage, kimiUsagePercent, cursorLegacyPercent, codexWindowResetIso, cursorCycleEnd, type ClaudeUsagePayload, type CodexUsagePayload, type KimiUsagePayload, type CursorUsagePayload } from '@/lib/usage';
@@ -8,7 +8,7 @@ import { fmtMoney, fmtTokens, fmtDate } from './format';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
 import type { RegistryAccount } from '@/lib/accounts';
-import { Button, ButtonLink, Card, Cell, Notice, Panel, Progress, StatTile, Table, TileGrid, type Column } from './ui';
+import { Button, ButtonLink, Card, Cell, Dialog, Input, Notice, Panel, Progress, Select, StatTile, Table, TileGrid, type Column } from './ui';
 
 type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details';
 type SubscriptionDraft = { id: string; label: string; amount: string; currency: string; period: 'month' | 'year' | 'unknown'; renewsAt: string; endsAt: string; status: string };
@@ -51,14 +51,9 @@ const subscriptionColumns: Column<'sub' | 'plan' | 'cost' | 'renew' | 'access'>[
 ];
 
 export function ProductOverviewPanel({ data, accounts, registry = [], view, onView, onUpdated, error }: { data: ProductOverview | null; accounts: ProviderUsage[]; registry?: RegistryAccount[]; view: View; onView: (view: View) => void; onUpdated?: () => void | Promise<void>; error?: string }) {
-  const dialog = useRef<HTMLDialogElement>(null);
   const [draft, setDraft] = useState<SubscriptionDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
-  useEffect(() => {
-    if (draft && !dialog.current?.open) dialog.current?.showModal();
-    else if (!draft && dialog.current?.open) dialog.current.close();
-  }, [draft]);
   async function saveSubscription(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft) return;
@@ -213,21 +208,19 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
       </div>
     </Card> : null}
 
-    <dialog ref={dialog} className="subscription-editor" aria-labelledby="subscription-editor-title" onCancel={event => { if (saving) event.preventDefault(); else setDraft(null); }} onClose={() => setDraft(null)}>
+    <Dialog open={!!draft} title={draft ? `Edit ${draft.label}` : ''} titleId="subscription-editor-title" description="Record the price and dates shown in your billing settings. This does not change the provider subscription." onClose={() => setDraft(null)} busy={saving}>
       {draft ? <form onSubmit={saveSubscription}>
-        <h2 id="subscription-editor-title">Edit {draft.label}</h2>
-        <p>Record the price and dates shown in your billing settings. This does not change the provider subscription.</p>
-        <div className="subscription-editor-fields">
-          <label className="field">Price<input type="number" min="0" step="0.01" value={draft.amount} placeholder="Unknown" onChange={event => setDraft({ ...draft, amount: event.target.value })} /></label>
-          <label className="field">Currency<input required pattern="[A-Z]{3}" maxLength={3} value={draft.currency} onChange={event => setDraft({ ...draft, currency: event.target.value.toUpperCase() })} /></label>
-          <label className="field">Billing period<select value={draft.period} onChange={event => setDraft({ ...draft, period: event.target.value as SubscriptionDraft['period'] })}><option value="month">Monthly</option><option value="year">Yearly</option><option value="unknown">Unknown</option></select></label>
-          <label className="field">Status<select value={draft.status} onChange={event => setDraft({ ...draft, status: event.target.value })}><option value="active">Active</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option><option value="unknown">Unknown</option></select></label>
-          <label className="field">Renewal date<input type="date" value={draft.renewsAt} onChange={event => setDraft({ ...draft, renewsAt: event.target.value })} /></label>
-          <label className="field">End date<input type="date" value={draft.endsAt} onChange={event => setDraft({ ...draft, endsAt: event.target.value })} /></label>
+        <div className="dialog-grid">
+          <Input label="Price" type="number" min="0" step="0.01" value={draft.amount} placeholder="Unknown" onChange={event => setDraft({ ...draft, amount: event.target.value })} />
+          <Input label="Currency" required pattern="[A-Z]{3}" maxLength={3} value={draft.currency} onChange={event => setDraft({ ...draft, currency: event.target.value.toUpperCase() })} />
+          <Select label="Billing period" value={draft.period} onChange={event => setDraft({ ...draft, period: event.target.value as SubscriptionDraft['period'] })} options={[{ value: 'month', label: 'Monthly' }, { value: 'year', label: 'Yearly' }, { value: 'unknown', label: 'Unknown' }]} />
+          <Select label="Status" value={draft.status} onChange={event => setDraft({ ...draft, status: event.target.value })} options={[{ value: 'active', label: 'Active' }, { value: 'cancelled', label: 'Cancelled' }, { value: 'expired', label: 'Expired' }, { value: 'unknown', label: 'Unknown' }]} />
+          <Input label="Renewal date" type="date" value={draft.renewsAt} onChange={event => setDraft({ ...draft, renewsAt: event.target.value })} />
+          <Input label="End date" type="date" value={draft.endsAt} onChange={event => setDraft({ ...draft, endsAt: event.target.value })} />
         </div>
-        {saveError ? <p role="alert" className="inline-error">{saveError}</p> : null}
-        <div className="subscription-editor-actions"><button type="button" className="small-button" disabled={saving} onClick={() => setDraft(null)}>Cancel</button><button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save subscription'}</button></div>
+        {saveError ? <p role="alert" className="bf-hint bf-hint--error" style={{ marginTop: 10 }}>{saveError}</p> : null}
+        <div className="bf-dialog__footer"><Button variant="secondary" disabled={saving} onClick={() => setDraft(null)}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save subscription'}</Button></div>
       </form> : null}
-    </dialog>
+    </Dialog>
   </>;
 }
