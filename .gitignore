@@ -61,3 +61,7 @@ payments.yml
 
 # Brand assets shipped with the UI
 !public/befeast-avatar.png
+
+# Design-token stylesheets are public CSS, not credentials
+!src/app/tokens/
+!src/app/tokens/*.css

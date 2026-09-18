@@ -1,0 +1,88 @@
+/* BeFeast color system — light-first; [data-theme="dark"] is the secondary scheme (deep navy, cyan-led). Brand from the BeFeast identity: navy #163065 tile, white + cyan #39bef9 mark. */
+:root{
+  color-scheme:light;
+  /* base ramp — cool neutrals */
+  --bg-page:#f5f7fb;
+  --bg-app:#f5f7fb;
+  --surface-1:#ffffff;
+  --surface-2:#eef2f8;
+  --surface-3:#e3e9f2;
+  --border-1:#dfe5ee;
+  --border-hi:#c7d1de;
+  --border-faint:rgba(12,20,36,0.05);
+  --text:#0c1424;
+  --text-dim:#2a3547;
+  --text-mute:#4b586c;
+  --text-faint:#7f8a9c;
+  /* brand */
+  --brand-navy:#163065;
+  --brand-cyan:#39bef9;
+  --brand-a:#163065;
+  --brand-b:#39bef9;
+  --brand-gradient:linear-gradient(135deg,#163065,#2563eb 55%,#39bef9);/* @kind color */
+  --accent:#39bef9;
+  --accent-blue:#2563eb;
+  --accent-sky:#39bef9;
+  --accent-violet:#8b5cf6;
+  /* interactive */
+  --primary:#163065;
+  --primary-hover:#1d3f82;
+  --primary-press:#0f2349;
+  --primary-fg:#ffffff;
+  --primary-soft:rgba(22,48,101,0.09);
+  --hover-bg:rgba(22,48,101,0.06);
+  --focus-ring:0 0 0 3px rgba(57,190,249,0.30);
+  /* semantic */
+  --ok:#059669;--ok-bg:rgba(5,150,105,0.10);
+  --warn:#c2410c;--warn-bg:rgba(194,65,12,0.10);
+  --bad:#b91c1c;--bad-bg:rgba(185,28,28,0.08);--bad-bg-strong:rgba(185,28,28,0.13);
+  --info:#0284c7;--info-bg:rgba(57,190,249,0.14);
+  --queued:#8b5cf6;--queued-bg:rgba(139,92,246,0.10);
+  /* surfaces in use */
+  --page-gradient:linear-gradient(180deg,#ffffff 0,var(--bg-page) 240px);
+  --input-bg:#ffffff;
+  --code-bg:#f7f9fc;
+  --code-text:#172033;
+  /* semantic aliases */
+  --surface-card:var(--surface-1);
+  --surface-inset:var(--surface-2);
+  --text-body:var(--text-dim);
+  --text-heading:var(--text);
+  --text-link:#0284c7;
+}
+[data-theme="dark"]{
+  color-scheme:dark;
+  --bg-page:#070f22;
+  --bg-app:#070f22;
+  --surface-1:#0c1a38;
+  --surface-2:#122549;
+  --surface-3:#183160;
+  --border-1:rgba(96,144,212,0.20);
+  --border-hi:rgba(96,144,212,0.40);
+  --border-faint:rgba(120,160,220,0.05);
+  --text:#e9f0fc;
+  --text-dim:#c7d5ee;
+  --text-mute:#98aecf;
+  --text-faint:#5d7799;
+  --brand-a:#39bef9;
+  --brand-b:#7dd8ff;
+  --brand-gradient:linear-gradient(135deg,#2563eb,#39bef9 60%,#7dd8ff);/* @kind color */
+  --accent:#39bef9;
+  --primary:#39bef9;
+  --primary-hover:#5ecbff;
+  --primary-press:#1aa9ec;
+  --primary-fg:#061428;
+  --primary-soft:rgba(57,190,249,0.16);
+  --hover-bg:rgba(57,190,249,0.08);
+  --focus-ring:0 0 0 3px rgba(57,190,249,0.30);
+  --ok:#4ade80;--ok-bg:rgba(74,222,128,0.12);
+  --warn:#fbbf24;--warn-bg:rgba(251,191,36,0.12);
+  --bad:#fb7185;--bad-bg:rgba(251,113,133,0.10);--bad-bg-strong:rgba(251,113,133,0.16);
+  --info:#7dd8ff;--info-bg:rgba(57,190,249,0.14);
+  --queued:#a78bfa;--queued-bg:rgba(167,139,250,0.12);
+  --page-gradient:linear-gradient(180deg,#0a1630 0,var(--bg-page) 240px);
+  --input-bg:#0c1a38;
+  --code-bg:#050b18;
+  --code-text:#dbe7f3;
+  --text-link:#7dd8ff;
+}
