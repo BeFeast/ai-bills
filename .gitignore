@@ -58,3 +58,6 @@ codex-profiles/
 payments.yml
 
 /node_modules
+
+# Brand assets shipped with the UI
+!public/befeast-avatar.png

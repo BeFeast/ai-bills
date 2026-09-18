@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Metric } from './ui';
+import { Metric } from './legacy-ui';
 import { fmtDate, fmtMoney } from './format';
 
 type CoverageSource = import('@/lib/accounting').Freshness;

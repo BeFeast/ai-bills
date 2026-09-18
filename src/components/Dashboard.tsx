@@ -7,19 +7,33 @@ import { DEFAULT_TZ, fmtDate } from './format';
 import { ProductOverviewPanel } from './ProductOverviewPanel';
 import type { ProductOverview } from '@/lib/overview';
 import { UsageCard } from './UsageCard';
-import { ProviderIcon } from './ProviderIcon';
-import { AccountBrowserAccess } from './AccountBrowserAccess';
 import { BillingSection } from './BillingSection';
 import { AccountOverview } from './AccountOverview';
 import { RoutingSection } from './RoutingSection';
 import type { AccountRegistry } from '@/lib/accounts';
+import { AppShell, useTheme } from './shell/AppShell';
+import type { SidebarItem } from './shell/Sidebar';
+import { ButtonLink, Notice, navIcons, type PillTone } from './ui';
+import { version } from '../../package.json';
 
 const AUTO_REFRESH_MS = 60_000;
 
 type StatusTone = '' | 'ok' | 'warn' | 'danger';
+type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details';
+
+const VIEWS: Record<View, { label: string; subtitle: string }> = {
+  overview: { label: 'Overview', subtitle: 'Your AI spending, in one place' },
+  subscriptions: { label: 'Subscriptions', subtitle: 'What you pay, when it renews, and where to manage it' },
+  accounts: { label: 'Accounts & sign-in', subtitle: 'Connect an account, renew access or check its remaining allowance' },
+  usage: { label: 'Usage', subtitle: 'Where your usage goes this month' },
+  routing: { label: 'Models & routing', subtitle: 'Request routing policy and daily allowance' },
+  details: { label: 'Accounting details', subtitle: 'Month overview, records and billing snapshot' },
+};
+
+const statusTone: Record<StatusTone, PillTone> = { '': 'idle', ok: 'ok', warn: 'warn', danger: 'bad' };
 
 export function Dashboard() {
-  const [view, setView] = useState<'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details'>('overview');
+  const [view, setView] = useState<View>('overview');
   const [overview, setOverview] = useState<ProductOverview | null>(null);
   const [overviewError, setOverviewError] = useState('');
   const [registry, setRegistry] = useState<AccountRegistry | null>(null);
@@ -29,6 +43,7 @@ export function Dashboard() {
   const [status, setStatus] = useState<{ text: string; tone: StatusTone }>({ text: 'Loading live usage…', tone: '' });
   const [refreshing, setRefreshing] = useState(false);
   const [now, setNow] = useState(0);
+  const [theme, toggleTheme] = useTheme();
 
   const nextRefreshAt = useRef(0);
   const refreshingRef = useRef(false);
@@ -116,49 +131,58 @@ export function Dashboard() {
   }, [refresh]);
 
   const secondsLeft = nextRefreshAt.current && now ? Math.max(0, Math.ceil((nextRefreshAt.current - now) / 1000)) : 60;
+  const activeSubscriptions = overview?.subscriptions.filter((s) => s.status !== 'cancelled' && s.status !== 'expired').length;
+  const items = (Object.keys(VIEWS) as View[])
+    .filter((id) => id !== 'routing' || overview?.features?.routing === true)
+    .map<SidebarItem<View>>((id) => ({
+      id,
+      label: VIEWS[id].label,
+      icon: navIcons[id],
+      count: id === 'subscriptions' ? activeSubscriptions : id === 'accounts' ? usage?.accounts.length : undefined,
+    }));
+  const attention = status.tone === 'warn' || status.tone === 'danger';
+
   return (
-    <main className="shell product-shell">
-      <header className="hero compact-hero">
-        <div>
-          <h1>AI bills</h1>
-        </div>
-        <div className="actions">
-          {overview?.links?.proxyManagementUrl ? <a className="small-button" href={overview.links.proxyManagementUrl} target="_blank" rel="noreferrer">CLIProxyAPI ↗</a> : null}
-          <button type="button" onClick={() => refresh(true)} disabled={refreshing}>
-            Refresh
-          </button>
-          <div className="countdown">Refresh in {secondsLeft}s</div>
-        </div>
-      </header>
+    <AppShell
+      brand={{ mark: <img className="bf-sb__mark" src="/befeast-avatar.png" width={32} height={32} alt="" />, name: 'AI bills', sub: 'befeast · subscriptions & usage' }}
+      items={items}
+      view={view}
+      onView={setView}
+      sidebarFooter={`ai-bills v${version} · ${tz}`}
+      title={VIEWS[view].label}
+      subtitle={VIEWS[view].subtitle}
+      status={{ text: status.text, tone: statusTone[status.tone] }}
+      countdown={`Auto-refresh in ${secondsLeft}s`}
+      onRefresh={() => void refresh(true)}
+      refreshing={refreshing}
+      theme={theme}
+      onToggleTheme={toggleTheme}
+      footerLeft="Plan prices are separate from payments. API equivalent estimates the value of measured usage."
+      footerRight={usage ? `Last refresh: ${fmtDate(usage.generatedAt, tz)}` : 'Never updated'}
+    >
+      {overview && overviewError ? <Notice tone="warn" role="status">{overviewError}. Showing the last loaded overview.</Notice> : null}
+      {registryError ? <Notice tone="warn" role="status">{registryError}</Notice> : null}
+      {overview?.links?.proxyManagementUrl && view === 'accounts' ? <div className="toolbar"><ButtonLink size="sm" href={overview.links.proxyManagementUrl} target="_blank" rel="noreferrer">CLIProxyAPI ↗</ButtonLink></div> : null}
 
-      <nav className="product-nav" aria-label="Dashboard sections">
-        {([['overview', 'Overview'], ['subscriptions', 'Subscriptions'], ['accounts', 'Accounts & sign-in'], ['usage', 'Usage'], ['routing', 'Models & routing'], ['details', 'Accounting details']] as const).filter(([id]) => id !== 'routing' || overview?.features?.routing === true).map(([id, label]) => <button key={id} type="button" aria-current={view === id ? 'page' : undefined} onClick={() => setView(id)}>{label}</button>)}
-      </nav>
-
-      {overview && overviewError ? <p className="data-note" role="status">{overviewError}. Showing the last loaded overview.</p> : null}
-      {registryError ? <p className="data-note" role="status">{registryError}</p> : null}
-      <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} />
+      {view !== 'accounts' ? <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} /> : null}
 
       {view === 'accounts' ? <>
-        <section className="product-panel">
-          <div className="section-heading"><div><h2>Accounts & sign-in</h2><p>Connect an account, renew access or check its remaining allowance.</p></div></div>
-          <div className="provider-access">{overview?.subscriptions.filter(s => s.loginUrl || s.accountKeys.length).map(s => <article className="provider-access-card" key={s.id}><div className="provider-identity"><ProviderIcon provider={s.provider} /><div><strong>{s.label}</strong><small>{s.provider}</small></div></div><AccountBrowserAccess subscription={s} /></article>)}</div>
-        </section>
-        {(status.tone === 'warn' || status.tone === 'danger') ? <p className="data-note" role="status">Some quota connections need attention. Use the controls below to reconnect.</p> : null}
-        <div className="grid" aria-label="Provider usage cards">{usage?.accounts.map(result => <UsageCard key={result.account.key} result={result} now={now} tz={tz} onAuthorized={() => refresh(true)} />)}</div>
+        {attention ? <Notice tone="warn" role="status">Some quota connections need attention. Use the controls below to reconnect.</Notice> : null}
+        {usage?.accounts.map((result) => <UsageCard key={result.account.key} result={result} now={now} tz={tz} onAuthorized={() => refresh(true)} />)}
+        {usage && !usage.accounts.length ? <p className="t-small">No provider accounts are configured for automatic quota collection.</p> : null}
+        {!usage ? <p className="t-small">Loading account quotas…</p> : null}
+        <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} />
       </> : null}
       {view === 'routing' ? <RoutingSection tz={tz} /> : null}
       {view === 'details' ? <>
         <AccountOverview tz={tz} />
         <BillingSection data={billing ?? undefined} tz={tz} />
-        <details className="diagnostics"><summary>Diagnostics</summary><pre>{diagnosticsJson(usage, billing)}</pre></details>
+        <details className="bf-card details-card">
+          <summary>Diagnostics</summary>
+          <pre className="diag-pre">{diagnosticsJson(usage, billing)}</pre>
+        </details>
       </> : null}
-
-      <footer>
-        <span>Plan prices are separate from payments. API equivalent estimates the value of measured usage.</span>
-        <span>{usage ? `Last refresh: ${fmtDate(usage.generatedAt, tz)}` : 'Never updated'}</span>
-      </footer>
-    </main>
+    </AppShell>
   );
 }
 

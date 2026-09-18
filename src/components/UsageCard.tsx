@@ -36,7 +36,7 @@ import {
   type ProviderUsage,
 } from '@/lib/usage';
 import { fmtDate, fmtNumber, normalizePct, pickPct, resetLabel } from './format';
-import { AvailabilityPill, LiveBadge, Tip, UsageBlock, type Severity } from './ui';
+import { AvailabilityPill, LiveBadge, Tip, UsageBlock, type Severity } from './legacy-ui';
 import { CodexAuthBox, useCodexAuth } from './CodexAuth';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';

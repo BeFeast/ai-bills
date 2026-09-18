@@ -3,7 +3,7 @@
 import { Fragment, type ReactNode } from 'react';
 import type { BillingLedger, BillingSnapshot } from '@/lib/billing';
 import { fmtDate, fmtMoney, fmtNumber, fmtTokens } from './format';
-import { Metric, Sparkline, StatusPill } from './ui';
+import { Metric, Sparkline, StatusPill } from './legacy-ui';
 
 function LedgerTables({ ledger }: { ledger: BillingLedger }) {
   const rows = (groups: BillingLedger['byClient']) =>

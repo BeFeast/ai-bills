@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { policyChanges, remainingAllowance, reorderCandidate, routingRequest, type RoutingPolicy, type RoutingState, type Validation } from '@/lib/routing-client';
 import { fmtDate, fmtMoney } from './format';
-import { Metric } from './ui';
+import { Metric } from './legacy-ui';
 import type { AccountRegistry } from '@/lib/accounts';
 
 const microMoney = (amount: number | null | undefined) => fmtMoney(amount == null ? null : amount / 1e6);
