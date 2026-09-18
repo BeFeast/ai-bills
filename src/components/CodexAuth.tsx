@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CodexDeviceFlowPublicState } from '@/lib/codex-auth';
 import { countdown, fmtDate } from './format';
+import { Button } from './ui';
 
 type AuthState = CodexDeviceFlowPublicState;
 
@@ -85,7 +86,7 @@ export function CodexAuthBox({ state, now, tz }: { state: AuthState | null; now:
       <section className={`codex-device ${state.state}`}>
         <div>
           <strong>Codex authorization: {state.state}</strong>
-          {state.message ? <p className="muted">{state.message}</p> : null}
+          {state.message ? <p className="t-small">{state.message}</p> : null}
         </div>
         {state.verificationUrl ? (
           <div className="codex-device-row">
@@ -93,22 +94,18 @@ export function CodexAuthBox({ state, now, tz }: { state: AuthState | null; now:
             <a href={state.verificationUrl} target="_blank" rel="noopener noreferrer">
               {state.verificationUrl}
             </a>
-            <button type="button" className="small-button ghost" onClick={() => copy(state.verificationUrl!)}>
-              Copy link
-            </button>
+            <Button variant="ghost" size="sm" onClick={() => copy(state.verificationUrl!)}>Copy link</Button>
           </div>
         ) : null}
         {state.userCode ? (
           <div className="codex-device-row">
             <span>Code</span>
             <code>{state.userCode}</code>
-            <button type="button" className="small-button ghost" onClick={() => copy(state.userCode!)}>
-              Copy code
-            </button>
+            <Button variant="ghost" size="sm" onClick={() => copy(state.userCode!)}>Copy code</Button>
           </div>
         ) : null}
         {state.expiresAt ? (
-          <div className="muted">
+          <div className="t-small">
             Expires {fmtDate(state.expiresAt, tz)} · {countdown(state.expiresAt, now)}
           </div>
         ) : null}

@@ -1,13 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { policyChanges, remainingAllowance, reorderCandidate, routingRequest, type RoutingPolicy, type RoutingState, type Validation } from '@/lib/routing-client';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { policyChanges, remainingAllowance, reorderCandidate, routingRequest, type RoutingPolicy, type RoutingRequest, type RoutingState, type Validation } from '@/lib/routing-client';
 import { fmtDate, fmtMoney } from './format';
-import { Metric } from './ui';
 import type { AccountRegistry } from '@/lib/accounts';
+import { Button, Cell, Checkbox, Input, Notice, Pill, Select, StatTile, Table, Tabs, TileGrid, type Column } from './ui';
 
 const microMoney = (amount: number | null | undefined) => fmtMoney(amount == null ? null : amount / 1e6);
 type Tab = 'requests' | 'models' | 'roles' | 'clients' | 'accounts' | 'suggestions';
+const requestColumns: Column<'time' | 'route' | 'outcome' | 'liability'>[] = [
+  { key: 'time', label: 'Time / client' }, { key: 'route', label: 'Requested → actual' }, { key: 'outcome', label: 'Account / outcome' }, { key: 'liability', label: 'Budget liability', align: 'right' },
+];
+const statusOptions = [{ value: 'approved', label: 'Approved' }, { value: 'hidden', label: 'Hidden for new sessions' }, { value: 'denied', label: 'Denied for all subsequent requests' }];
 
 export function RoutingSection({ tz }: { tz: string }) {
   const [state, setState] = useState<RoutingState | null>(null);
@@ -90,33 +94,133 @@ export function RoutingSection({ tz }: { tz: string }) {
     finally { setBusy(false); }
   }
 
-  return <section className="billing" aria-label="Routing controls">
-    <div className="bill-head"><div><p className="eyebrow">Request routing</p><h2>Models, roles and daily allowance</h2><p className="muted">{state ? `Active policy v${state.policy.version} · ${state.policy.timezone}` : 'Connecting to the routing service…'}</p></div><span className="meta">Request updates every 3s · provider quotas refresh separately</span></div>
-    {error ? <p className="status warn" role="status">{error}{lastObserved ? ` Last observation: ${fmtDate(lastObserved, tz)}.` : ''}</p> : null}
+  const available = state ? remainingAllowance(state.budget) : null;
+  const pending = state?.suggestions.filter((s) => !s.status || s.status === 'pending').length ?? 0;
+  const tabs: { value: Tab; label: string; count?: number }[] = [
+    { value: 'requests', label: 'Requests' }, { value: 'models', label: 'Models' }, { value: 'roles', label: 'Roles' }, { value: 'clients', label: 'Clients' }, { value: 'accounts', label: 'Accounts' }, { value: 'suggestions', label: 'Weekly suggestions', count: pending },
+  ];
+  const share = (amount: number | null | undefined) => `${Math.min(100, (amount ?? 0) / Math.max(1, state?.budget.limit_microusd ?? 1) * 100)}%`;
+
+  function requestCell(request: RoutingRequest, column: Column<typeof requestColumns[number]['key']>): ReactNode {
+    switch (column.key) {
+      case 'time': return <Cell main={fmtDate(request.created_at, tz)} sub={`${request.client_id} · ${request.id}${request.session_id ? ` · ${request.session_id}` : ''}${request.admitted_date ? ` · budget date ${request.admitted_date}` : ''}`} />;
+      case 'route': return <div className="cell"><span className="mono">{request.role || request.requested_model}</span><strong className="mono cell__main">→ {request.model || 'No upstream selected'}</strong>{request.fallback_reason ? <span className="cell__sub" style={{ color: 'var(--warn)' }}>Fallback: {request.fallback_reason}</span> : null}</div>;
+      case 'outcome': return <div className="cell" style={{ alignItems: 'flex-start', gap: 4 }}><span>{state?.policy.accounts.find((a) => a.id === request.account_id)?.label || request.account_id || '—'}</span><Pill tone={['settled', 'completed', 'success'].includes(request.status) ? 'ok' : request.status === 'rejected' ? 'bad' : 'warn'}>{request.status}</Pill></div>;
+      case 'liability': return <div className="request-liability mono"><span>{microMoney(request.cost_microusd)} settled</span><span className="cell__sub">{microMoney(request.reserved_microusd)} reserved</span></div>;
+    }
+  }
+
+  return <section className="stack stack--loose" aria-label="Routing controls" style={{ gap: 24 }}>
+    <div className="section-head">
+      <div className="section-head__text"><span className="t-micro">Request routing</span><h2 className="t-h1">Models, roles and daily allowance</h2><span className="t-small">{state ? `Active policy v${state.policy.version} · ${state.policy.timezone}` : 'Connecting to the routing service…'}</span></div>
+      <span className="mono-faint">Request updates every 3s · provider quotas refresh separately</span>
+    </div>
+    {error ? <Notice tone="warn" role="status">{error}{lastObserved ? ` Last observation: ${fmtDate(lastObserved, tz)}.` : ''}</Notice> : null}
     {state ? <>
-      {!state.capabilities.native_managed_attempt ? <p className="status warn">Exact upstream attempt enforcement is not available. Paid routes must remain blocked until the request service verifies admission support.</p> : null}
-      <div className="bill-grid mini">
-        <Metric label="Additional API allowance" value={microMoney(state.budget.limit_microusd)} note={`${state.budget.date} · ${state.policy.timezone}`} />
-        <Metric label="Settled admission cost" value={microMoney(state.budget.spent_microusd)} note="Proxy attempts; separate from monthly payments" />
-        <Metric label="Reserved / unresolved" value={microMoney(state.budget.reserved_microusd)} note="Possible charges remain reserved after failures" />
-        <Metric tone={remainingAllowance(state.budget) == null ? undefined : "live"} label="Available allowance" value={microMoney(remainingAllowance(state.budget))} note="Shared across clients, accounts and retries" />
+      {!state.capabilities.native_managed_attempt ? <Notice tone="warn">Exact upstream attempt enforcement is not available. Paid routes must remain blocked until the request service verifies admission support.</Notice> : null}
+      <TileGrid>
+        <StatTile label="Additional API allowance" value={microMoney(state.budget.limit_microusd)} note={`${state.budget.date} · ${state.policy.timezone}`} />
+        <StatTile label="Settled admission cost" value={microMoney(state.budget.spent_microusd)} note="Proxy attempts; separate from monthly payments" />
+        <StatTile label="Reserved / unresolved" value={microMoney(state.budget.reserved_microusd)} note="Possible charges remain reserved after failures" />
+        <StatTile label="Available allowance" value={microMoney(available)} note="Shared across clients, accounts and retries" />
+      </TileGrid>
+      {available == null ? <Notice tone="warn" role="status">Budget unavailable. Paid requests are blocked; included routes continue with the saved policy.</Notice> : <div className="budget">
+        <div className="budget__bar" role="img" aria-label={`${microMoney(state.budget.spent_microusd)} settled and ${microMoney(state.budget.reserved_microusd)} reserved of ${microMoney(state.budget.limit_microusd)}`}><div className="budget__settled" style={{ width: share(state.budget.spent_microusd) }} /><div className="budget__reserved" style={{ width: share(state.budget.reserved_microusd) }} /></div>
+        <span className="mono-faint">{microMoney(state.budget.spent_microusd)} settled · {microMoney(state.budget.reserved_microusd)} reserved · {microMoney(available)} available of {microMoney(state.budget.limit_microusd)}</span>
+      </div>}
+      <div className="tabs-scroll"><Tabs items={tabs} value={tab} onChange={setTab} idPrefix="routing" aria-label="Routing views" /></div>
+      <div role="tabpanel" id={`routing-panel-${tab}`} aria-labelledby={`routing-tab-${tab}`} className="stack">
+      {tab === 'requests' ? <div className="stack stack--loose">
+        <Input label="Filter requests" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Client, role, model, account or request ID" fieldStyle={{ maxWidth: 420 }} />
+        <Table columns={requestColumns} rows={state.requests.filter((r) => [r.id, r.client_id, r.role, r.model, r.requested_model, r.account_id].join(' ').toLowerCase().includes(query.toLowerCase()))} rowKey={(r) => r.id} renderCell={requestCell} empty="No managed requests observed. Existing traffic outside this service is not included in the allowance." />
+      </div> : null}
+      {tab === 'models' && draft ? <>
+        <p className="t-small">Hide removes a model from new sessions. Deny blocks subsequent requests, including existing sessions. In-flight attempts retain their liability.</p>
+        {draft.models.map((model, index) => <div key={model.id} className="bf-card policy-card">
+          <div className="policy-card__title"><strong>{model.label}</strong><code className="code-chip">{model.id}</code><Pill tone={model.status === 'approved' ? 'ok' : model.status === 'hidden' ? 'idle' : 'bad'}>{model.status}</Pill></div>
+          <div className="form-grid">
+            <Input label="Display name" disabled={busy} value={model.label} onChange={(e) => edit((p) => { p.models[index].label = e.target.value; })} />
+            <Select label="Availability" disabled={busy} value={model.status} options={statusOptions} onChange={(e) => edit((p) => { p.models[index].status = e.target.value as typeof model.status; })} />
+          </div>
+          <span className="t-small">{model.capabilities.join(' · ')} · input {model.input_limit_tokens?.toLocaleString() ?? 'Unknown'} / output {model.output_limit_tokens?.toLocaleString() ?? 'Unknown'} tokens</span>
+          <details>
+            <summary className="t-small" style={{ fontWeight: 600 }}>Account routes and pricing evidence</summary>
+            <div className="route-list">
+              {model.routes.map((route, i) => <div className="route-row" key={i}>
+                <span><strong>{draft.accounts.find((a) => a.id === route.account_id)?.label || route.account_id}</strong> · {route.upstream_model} · {route.billing}{route.price_version ? ` · pricing ${route.price_version}` : ''}</span>
+                {route.price_evidence ? <span className="cell__sub">{route.price_evidence}</span> : null}
+                {route.prices ? <span className="mono-faint">{Object.entries(route.prices).map(([kind, amount]) => `${kind}: ${microMoney(amount)} / 1M tokens`).join(' · ')}</span> : null}
+              </div>)}
+              <span className="mono-faint">Prices: {Object.entries(model.prices ?? {}).map(([key, value]) => `${key}: ${value == null ? 'unknown' : `${microMoney(value)} / 1M tokens`}`).join(' · ') || 'unknown'}</span>
+            </div>
+          </details>
+        </div>)}
+        {!draft.models.length ? <p className="t-small">No approved model inventory yet. Candidates enter through the private policy or a reviewed suggestion.</p> : null}
+      </> : null}
+      {tab === 'roles' && draft ? <div className="card-grid">{draft.roles.map((role, index) => <div key={role.id} className="bf-card policy-card" style={{ gap: 10 }}>
+        <h3 className="t-h3 mono">{role.id}</h3>
+        <span className="t-small">Candidate order within eligible routes. Included quota is tried before additional paid API.</span>
+        {role.candidates.map((id, position) => <div className="candidate" key={id}>
+          <span className="candidate__pos">{String(position + 1).padStart(2, '0')}</span>
+          <span className="candidate__label">{draft.models.find((m) => m.id === id)?.label || id}</span>
+          <Button variant="ghost" size="sm" disabled={busy || position === 0} aria-label={`Move ${id} up in ${role.id}`} onClick={() => edit((p) => { p.roles[index].candidates = reorderCandidate(role.candidates, position, -1); })}>↑</Button>
+          <Button variant="ghost" size="sm" disabled={busy || position === role.candidates.length - 1} aria-label={`Move ${id} down in ${role.id}`} onClick={() => edit((p) => { p.roles[index].candidates = reorderCandidate(role.candidates, position, 1); })}>↓</Button>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => edit((p) => { p.roles[index].candidates = role.candidates.filter((m) => m !== id); })}>Remove</Button>
+        </div>)}
+        <Select label="Add candidate" disabled={busy} value="" onChange={(e) => { if (e.target.value) edit((p) => { p.roles[index].candidates.push(e.target.value); }); }} options={[{ value: '', label: 'Choose an approved model' }, ...draft.models.filter((m) => m.status === 'approved' && !role.candidates.includes(m.id)).map((m) => ({ value: m.id, label: m.label }))]} />
+      </div>)}</div> : null}
+      {tab === 'clients' && draft ? <>
+        <p className="t-small">These subsets apply to both model listings and request dispatch. Client identity comes from its authenticated connection.</p>
+        <div className="card-grid">{draft.clients.map((client, index) => <div key={client.id} className="bf-card policy-card" style={{ gap: 14 }}>
+          <h3 className="t-h3 mono">{client.id}</h3>
+          {(['roles', 'models'] as const).map((kind) => <div className="check-group" key={kind}><span className="t-micro">{kind}</span><div className="check-group__items">{draft[kind].map((item) => <Checkbox key={item.id} disabled={busy} checked={client[kind].includes(item.id)} label={'label' in item ? item.label : item.id} onChange={(e) => edit((p) => { p.clients[index][kind] = e.target.checked ? [...client[kind], item.id] : client[kind].filter((id) => id !== item.id); })} />)}</div></div>)}
+        </div>)}</div>
+      </> : null}
+      {tab === 'accounts' && draft ? <>
+        <p className="t-small">Discovered accounts enter accounting automatically and remain unenrolled. Enable a configured account route explicitly, then validate and apply the policy. Credentials and upstream bindings remain on the server.</p>
+        {draft.accounts.map((account, index) => {
+          const discovered = registry?.accounts.find((item) => item.id === account.id);
+          const routes = draft.models.flatMap((model) => model.routes.filter((route) => route.account_id === account.id).map((route) => ({ model: model.label, billing: route.billing })));
+          return <div key={account.id} className="bf-card policy-card" style={{ gap: 8 }}>
+            <div className="policy-card__title" style={{ gap: 14 }}>
+              <h3 className="t-h3">{account.label}</h3>
+              <Checkbox label="Enroll in routing" checked={account.enabled} disabled={busy || (!routes.length && !account.enabled)} onChange={(event) => edit((policy) => { policy.accounts[index].enabled = event.target.checked; })} />
+              <span className="mono-faint" style={{ marginLeft: 'auto' }}>{state.policy.accounts.find((item) => item.id === account.id)?.enabled ? 'Active: enrolled' : 'Active: accounting only'}</span>
+            </div>
+            <span style={{ fontSize: 13 }}>{discovered ? `${discovered.provider} · ${discovered.origin} · billing ${discovered.billingMode}` : 'Configured routing account'}</span>
+            <span className="t-small">{routes.length ? `Configured routes: ${routes.map((route) => `${route.model} (${route.billing})`).join(' · ')}` : 'No managed upstream binding. This account stays accounting-only until a private binding is configured.'}</span>
+            {discovered ? <span className="t-small">Quota: {discovered.quota.status} · {discovered.coverage.reason}</span> : null}
+          </div>;
+        })}
+      </> : null}
+      {tab === 'suggestions' ? <>
+        <p className="t-small">Suggestions never activate themselves. Accept adds a proposal to the draft for validation and explicit Apply.</p>
+        {state.suggestions.map((suggestion) => <div key={suggestion.id} className="bf-card policy-card" style={{ gap: 8 }}>
+          <h3 className="t-h3">{suggestion.title || suggestion.id}</h3>
+          <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>{suggestion.reason || 'No comparison evidence supplied.'}</span>
+          <span className="mono-faint">{suggestion.status || 'pending'}{suggestion.created_at ? ` · ${fmtDate(suggestion.created_at, tz)}` : ''}</span>
+          <div className="toolbar" style={{ marginTop: 4 }}>
+            <Button variant="secondary" size="sm" disabled={busy || changes.length > 0 || (suggestion.status !== undefined && suggestion.status !== 'pending')} onClick={() => void decideSuggestion(suggestion.id, 'accept')}>Accept into draft</Button>
+            <Button variant="ghost" size="sm" disabled={busy || (suggestion.status !== undefined && suggestion.status !== 'pending')} onClick={() => void decideSuggestion(suggestion.id, 'reject')}>Reject</Button>
+          </div>
+          {changes.length ? <span className="t-small">Apply or discard your current draft before accepting another suggestion.</span> : null}
+        </div>)}
+        {!state.suggestions.length ? <p className="t-small">No suggestions available. The active catalog stays unchanged.</p> : null}
+      </> : null}
       </div>
-      {remainingAllowance(state.budget) == null ? <p className="status warn" role="status">Budget unavailable. Paid requests are blocked; included routes continue with the saved policy.</p> : <div className="routing-budget-bar" role="img" aria-label={`${microMoney(state.budget.spent_microusd)} settled and ${microMoney(state.budget.reserved_microusd)} reserved of ${microMoney(state.budget.limit_microusd)}`}><span className="settled" style={{ width: `${Math.min(100, (state.budget.spent_microusd ?? 0) / Math.max(1, state.budget.limit_microusd) * 100)}%` }} /><span className="reserved" style={{ width: `${Math.min(100, (state.budget.reserved_microusd ?? 0) / Math.max(1, state.budget.limit_microusd) * 100)}%` }} /></div>}
-      <div className="routing-tabs" role="tablist" aria-label="Routing views">{(['requests', 'models', 'roles', 'clients', 'accounts', 'suggestions'] as Tab[]).map((item) => <button className="small-button" id={`routing-tab-${item}`} type="button" role="tab" aria-selected={tab === item} aria-controls={`routing-panel-${item}`} key={item} onClick={() => setTab(item)}>{item === 'suggestions' ? `Weekly suggestions (${state.suggestions.filter((s) => !s.status || s.status === 'pending').length})` : item[0].toUpperCase() + item.slice(1)}</button>)}</div>
-      <div role="tabpanel" id={`routing-panel-${tab}`} aria-labelledby={`routing-tab-${tab}`}>
-      {tab === 'requests' ? <><label className="field">Filter requests<input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Client, role, model, account or request ID" /></label><div className="table-wrap"><table><thead><tr><th>Time / client</th><th>Requested → actual</th><th>Account / outcome</th><th>Budget liability</th></tr></thead><tbody>{state.requests.filter((r) => [r.id, r.client_id, r.role, r.model, r.requested_model, r.account_id].join(' ').toLowerCase().includes(query.toLowerCase())).map((request) => <tr className="routing-request" key={request.id}><td>{fmtDate(request.created_at, tz)}<div>{request.client_id}</div><details><summary className="muted">Request details</summary><div className="meta">{request.id}<br />Session: {request.session_id || 'Not supplied'}<br />Budget date: {request.admitted_date}</div></details></td><td>{request.role || request.requested_model}<div><strong>→ {request.model || 'No upstream selected'}</strong></div>{request.fallback_reason ? <div className="status warn">Fallback: {request.fallback_reason}</div> : null}</td><td>{state.policy.accounts.find((a) => a.id === request.account_id)?.label || request.account_id || '—'}<div><span className={`pill ${['settled', 'completed', 'success'].includes(request.status) ? 'ok' : 'warn'}`}>{request.status}</span></div></td><td>{microMoney(request.cost_microusd)} settled<div className="muted">{microMoney(request.reserved_microusd)} reserved</div></td></tr>)}{!state.requests.length ? <tr><td colSpan={4} className="muted">No managed requests observed. Existing traffic outside this service is not included in the allowance.</td></tr> : null}</tbody></table></div></> : null}
-      {tab === 'models' && draft ? <div className="policy-rows"><p className="muted">Hide removes a model from new sessions. Deny blocks subsequent requests, including existing sessions. In-flight attempts retain their liability.</p>{draft.models.map((model, index) => <article className="policy-row" key={model.id}><div className="control-toolbar"><strong>{model.label}</strong><code className="muted">{model.id}</code></div><div className="record-form"><label className="field">Display name<input disabled={busy} value={model.label} onChange={(e) => edit((p) => { p.models[index].label = e.target.value; })} /></label><label className="field">Availability<select disabled={busy} value={model.status} onChange={(e) => edit((p) => { p.models[index].status = e.target.value as typeof model.status; })}><option value="approved">Approved</option><option value="hidden">Hidden for new sessions</option><option value="denied">Denied for all subsequent requests</option></select></label></div><p className="muted">{model.capabilities.join(' · ')} · input {model.input_limit_tokens?.toLocaleString() ?? 'Unknown'} / output {model.output_limit_tokens?.toLocaleString() ?? 'Unknown'} tokens</p><details><summary>Account routes and pricing evidence</summary><ul>{model.routes.map((route, i) => <li key={i}>{draft.accounts.find((a) => a.id === route.account_id)?.label || route.account_id} · {route.upstream_model} · {route.billing}{route.price_version ? ` · pricing ${route.price_version}` : ''}{route.price_evidence ? <div className="muted">{route.price_evidence}</div> : null}{route.prices ? <div className="muted">{Object.entries(route.prices).map(([kind, amount]) => `${kind}: ${microMoney(amount)} / 1M tokens`).join(' · ')}</div> : null}</li>)}</ul><p className="muted">Prices: {Object.entries(model.prices ?? {}).map(([key, value]) => `${key}: ${value == null ? 'unknown' : `${microMoney(value)} / 1M tokens`}`).join(' · ')}</p></details></article>)}{!draft.models.length ? <p className="muted">No approved model inventory yet. Candidates enter through the private policy or a reviewed suggestion.</p> : null}</div> : null}
-      {tab === 'roles' && draft ? <div className="policy-rows">{draft.roles.map((role, index) => <article className="policy-row" key={role.id}><h3>{role.id}</h3><p className="muted">Candidate order within eligible routes. Included quota is tried before additional paid API.</p>{role.candidates.map((id, position) => <div className="control-toolbar" key={id}><span>{position + 1}. {draft.models.find((m) => m.id === id)?.label || id}</span><button disabled={busy || position === 0} type="button" className="small-button" aria-label={`Move ${id} up in ${role.id}`} onClick={() => edit((p) => { p.roles[index].candidates = reorderCandidate(role.candidates, position, -1); })}>↑</button><button disabled={busy || position === role.candidates.length - 1} type="button" className="small-button" aria-label={`Move ${id} down in ${role.id}`} onClick={() => edit((p) => { p.roles[index].candidates = reorderCandidate(role.candidates, position, 1); })}>↓</button><button disabled={busy} type="button" className="small-button" onClick={() => edit((p) => { p.roles[index].candidates = role.candidates.filter((m) => m !== id); })}>Remove</button></div>)}<label className="field">Add candidate<select disabled={busy} value="" onChange={(e) => { if (e.target.value) edit((p) => { p.roles[index].candidates.push(e.target.value); }); }}><option value="">Choose an approved model</option>{draft.models.filter((m) => m.status === 'approved' && !role.candidates.includes(m.id)).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label></article>)}</div> : null}
-      {tab === 'clients' && draft ? <div className="policy-rows"><p className="muted">These subsets apply to both model listings and request dispatch. Client identity comes from its authenticated connection.</p>{draft.clients.map((client, index) => <article className="policy-row" key={client.id}><h3>{client.id}</h3>{(['roles', 'models'] as const).map((kind) => <div key={kind}><p className="eyebrow">{kind}</p><div className="model-options">{draft[kind].map((item) => <label className="check-label" key={item.id}><input type="checkbox" disabled={busy} checked={client[kind].includes(item.id)} onChange={(e) => edit((p) => { p.clients[index][kind] = e.target.checked ? [...client[kind], item.id] : client[kind].filter((id) => id !== item.id); })} />{'label' in item ? item.label : item.id}</label>)}</div></div>)}</article>)}</div> : null}
-      {tab === 'accounts' && draft ? <div className="policy-rows"><p className="muted">Discovered accounts enter accounting automatically and remain unenrolled. Enable a configured account route explicitly, then validate and apply the policy. Credentials and upstream bindings remain on the server.</p>{draft.accounts.map((account, index) => {
-        const discovered = registry?.accounts.find((item) => item.id === account.id);
-        const routes = draft.models.flatMap((model) => model.routes.filter((route) => route.account_id === account.id).map((route) => ({ model: model.label, billing: route.billing })));
-        return <article className="policy-row" key={account.id}><div className="control-toolbar"><h3>{account.label}</h3><label className="check-label"><input type="checkbox" checked={account.enabled} disabled={busy || (!routes.length && !account.enabled)} onChange={(event) => edit((policy) => { policy.accounts[index].enabled = event.target.checked; })} />Enroll in routing</label><span className="muted">{state.policy.accounts.find((item) => item.id === account.id)?.enabled ? 'Active: enrolled' : 'Active: accounting only'}</span></div><p>{discovered ? `${discovered.provider} · ${discovered.origin} · billing ${discovered.billingMode}` : 'Configured routing account'}</p>{routes.length ? <p className="muted">Configured routes: {routes.map((route) => `${route.model} (${route.billing})`).join(' · ')}</p> : <p className="muted">No managed upstream binding. This account stays accounting-only until a private binding is configured.</p>}{discovered ? <p className="muted">Quota: {discovered.quota.status} · {discovered.coverage.reason}</p> : null}</article>;
-      })}</div> : null}
-      {tab === 'suggestions' ? <div className="policy-rows"><p className="muted">Suggestions never activate themselves. Accept adds a proposal to the draft for validation and explicit Apply.</p>{state.suggestions.map((suggestion) => <article className="policy-row" key={suggestion.id}><h3>{suggestion.title || suggestion.id}</h3><p>{suggestion.reason || 'No comparison evidence supplied.'}</p><p className="muted">{suggestion.status || 'pending'}{suggestion.created_at ? ` · ${fmtDate(suggestion.created_at, tz)}` : ''}</p><div className="control-toolbar"><button className="small-button" type="button" disabled={busy || changes.length > 0 || (suggestion.status !== undefined && suggestion.status !== 'pending')} onClick={() => void decideSuggestion(suggestion.id, 'accept')}>Accept into draft</button><button className="small-button" type="button" disabled={busy || (suggestion.status !== undefined && suggestion.status !== 'pending')} onClick={() => void decideSuggestion(suggestion.id, 'reject')}>Reject</button></div>{changes.length ? <p className="muted">Apply or discard your current draft before accepting another suggestion.</p> : null}</article>)}{!state.suggestions.length ? <p className="muted">No suggestions available. The active catalog stays unchanged.</p> : null}</div> : null}
-      </div>
-      {changes.length || conflict || validation ? <div className="policy-rows"><h3>Review draft changes</h3>{conflict ? <p className="status warn">Active policy changed to v{state.policy.version}; this draft started from v{draft?.version}. Reload the active policy and reapply your intended edits.</p> : null}<div className="policy-preview">{changes.length ? changes.map((line) => `• ${line}`).join('\n') : 'No policy changes.'}</div>{validation ? <div className={`status ${validation.valid ? 'ok' : 'danger'}`} role="status">{validation.valid ? 'Draft validation passed. Apply explicitly to change routing.' : <><strong>Validation failed</strong><ul>{validation.errors.map((issue, i) => <li key={i}>{typeof issue === 'string' ? issue : JSON.stringify(issue)}</li>)}</ul></>}</div> : null}<div className="control-toolbar"><button type="button" disabled={busy || conflict || !changes.length} onClick={() => void validate()}>Validate draft</button><button type="button" disabled={busy || !canApply} onClick={() => void apply()}>Apply policy</button><button className="small-button" type="button" disabled={busy} onClick={() => { setDraft(structuredClone(state.policy)); setValidation(null); setValidatedDraft(''); setNotice('Draft discarded. Active policy loaded.'); }}>Discard draft / reload active</button><span className="muted">Applies only after the service confirms the active version</span></div></div> : null}
+      {changes.length || conflict || validation ? <div className="bf-card bf-card--selected policy-card review">
+        <h3 className="t-h3">Review draft changes</h3>
+        {conflict ? <Notice tone="warn">Active policy changed to v{state.policy.version}; this draft started from v{draft?.version}. Reload the active policy and reapply your intended edits.</Notice> : null}
+        <pre className="code-box">{changes.length ? changes.map((line) => `• ${line}`).join('\n') : 'No policy changes.'}</pre>
+        {validation ? <Notice tone={validation.valid ? 'ok' : 'warn'} role="status">{validation.valid ? 'Draft validation passed. Apply explicitly to change routing.' : <><strong>Validation failed</strong><ul>{validation.errors.map((issue, i) => <li key={i}>{typeof issue === 'string' ? issue : JSON.stringify(issue)}</li>)}</ul></>}</Notice> : null}
+        <div className="toolbar">
+          <Button size="sm" disabled={busy || conflict || !changes.length} onClick={() => void validate()}>Validate draft</Button>
+          <Button size="sm" disabled={busy || !canApply} onClick={() => void apply()}>Apply policy</Button>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setDraft(structuredClone(state.policy)); setValidation(null); setValidatedDraft(''); setNotice('Draft discarded. Active policy loaded.'); }}>Discard draft / reload active</Button>
+          <span className="t-small">Applies only after the service confirms the active version</span>
+        </div>
+      </div> : null}
     </> : null}
-    {notice ? <p className="status" role="status">{notice}</p> : null}
+    {notice ? <Notice tone="info" role="status">{notice}</Notice> : null}
   </section>;
 }

@@ -23,7 +23,6 @@ import {
   kimiUsagePercent,
   kimiWindow,
   scopeLabel,
-  severityClass,
   type ClaudeLimitEntry,
   type ClaudeLimitWindow,
   type ClaudeUsagePayload,
@@ -35,17 +34,13 @@ import {
   type KimiUsagePayload,
   type ProviderUsage,
 } from '@/lib/usage';
-import { fmtDate, fmtNumber, normalizePct, pickPct, resetLabel } from './format';
-import { AvailabilityPill, LiveBadge, Tip, UsageBlock, type Severity } from './ui';
+import { countdown, fmtDate, fmtNumber, fmtPct, normalizePct, pickPct, resetLabel } from './format';
 import { CodexAuthBox, useCodexAuth } from './CodexAuth';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
+import { Button, ButtonLink, Notice, Pill, type PillTone } from './ui';
 
 type CardProps = { result: ProviderUsage; now: number; tz: string; onAuthorized: () => void };
-
-function cardClass(result: ProviderUsage, state: string): string {
-  return `card ${state} provider-${result.account.provider}`;
-}
 
 export type UsageEvidence = { state: 'fresh' | 'stale' | 'error' | 'unknown'; message: string };
 
@@ -65,153 +60,153 @@ export function usageEvidence(result: ProviderUsage, now: number, maxAgeSeconds 
   return { state: 'fresh', message: 'Recent provider observation' };
 }
 
-function UnknownUsageCard({ result, now, tz, onAuthorized, evidence }: CardProps & { evidence: UsageEvidence }) {
-  return <article className={cardClass(result, evidence.state === 'error' ? 'danger' : 'warn')}>
-    <div className="card-head"><ProviderIcon provider={result.account.provider} /><div className="card-title"><p className="eyebrow">{result.account.provider}</p><h2>{result.account.email || 'Email not recorded'}</h2><AvailabilityPill tone="warn" label="Availability unknown" detail={evidence.message} /></div><span className={`pill ${evidence.state === 'error' ? 'danger' : 'warn'}`}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</span></div>
-    <p className="status warn">{evidence.message}</p>
-    <div className="kv"><span>Quota remaining</span><strong>Unknown</strong><span>Last observation</span><strong>{fmtDate(result.fetchedAt, tz)}</strong><span>HTTP status</span><strong>{result.status ?? 'Unknown'}</strong></div>
-    <div className="account-connection"><AccountBrowserAccess account={result.account} /></div>
-    {result.account.provider === 'codex' ? <CodexConnect result={result} now={now} tz={tz} onAuthorized={onAuthorized} /> : null}
-  </article>;
-}
+const providerNames: Record<string, string> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', cursor: 'Cursor' };
+const providerName = (provider: string) => providerNames[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
+const availabilityTone = (tone: string): PillTone => (tone === 'danger' ? 'bad' : tone === 'warn' ? 'warn' : tone === 'ok' ? 'ok' : 'idle');
 
-export function UsageCard(props: CardProps) {
-  const evidence = usageEvidence(props.result, props.now);
-  if (evidence.state !== 'fresh') return <UnknownUsageCard {...props} evidence={evidence} />;
-  switch (props.result.account.provider) {
-    case 'kimi':
-      return <KimiCard {...props} />;
-    case 'codex':
-      return <CodexCard {...props} />;
-    case 'cursor':
-      return <CursorCard {...props} />;
-    default:
-      return <ClaudeCard {...props} />;
-  }
-}
+type Availability = { tone: string; label: string; detail: string };
+type KvRows = [string, ReactNode][];
 
-/** Two-part eyebrow. The new config has no cdpName; the account key stands in. */
-function CardHead({ result, eyebrow, title, availability, actions }: {
+/** One account: header (identity, availability, browser access, reconnect), limit cards, accordions and the mono meta footer. */
+function AccountGroup({ result, title, availability, tools, belowHeader, footer, children }: {
   result: ProviderUsage;
-  eyebrow: string;
   title: ReactNode;
-  availability: { tone: string; label: string; detail: string };
-  actions?: ReactNode;
+  availability?: Availability;
+  tools?: ReactNode;
+  belowHeader?: ReactNode;
+  footer: ReactNode;
+  children?: ReactNode;
 }) {
-  return <>
-    <div className="card-head">
-      <ProviderIcon provider={result.account.provider} />
-      <div className="card-title">
-        <p className="eyebrow">{eyebrow}</p>
-        <div className="account-line">
-          <h2>{title}</h2>
-        </div>
-        <AvailabilityPill tone={availability.tone} label={availability.label} detail={availability.detail} />
-      </div>
-      {actions ?? <LiveBadge ok={result.ok} />}
-    </div>
-    <div className="account-connection"><AccountBrowserAccess account={result.account} /></div>
-  </>;
-}
-
-function Meta({ children }: { children: ReactNode }) {
-  return <div className="meta">{children}</div>;
-}
-
-function ErrorLine({ result, fallback }: { result: ProviderUsage; fallback: string }) {
-  if (result.ok) return null;
-  return <p className="error">{result.error || fallback}</p>;
-}
-
-// ---------------------------------------------------------------- Claude
-
-function ClaudeBadges({ limit, state }: { limit?: ClaudeLimitEntry; state: Severity }) {
-  const status =
-    typeof limit?.is_active === 'boolean' ? (
-      limit.is_active ? (
-        <Tip cls="limiting" label="Currently limiting" note="This limit is currently constraining Claude usage for this account/scope." />
-      ) : (
-        <Tip
-          cls="reported"
-          label="Reported, not currently limiting"
-          note="Claude still reports this scoped limit. is_active=false means it is not the current limiter; it does not mean the model is absent or disabled."
-        />
-      )
-    ) : null;
   return (
-    <div className="badges badges-inline">
-      {status}
-      <Tip
-        cls={state}
-        label={`Severity: ${limit?.severity || state}`}
-        note="API severity for this limit. Critical/danger means usage is near or at the cap; warn means elevated; ok means normal."
-      />
-    </div>
+    <section className="acct" aria-label={`${result.account.label} · ${result.account.email || 'Email not recorded'}`}>
+      <div className="acct__head">
+        <ProviderIcon provider={result.account.provider} size={24} />
+        <h2 className="t-h3 acct__title">{title}</h2>
+        <span className="mono-faint">{result.account.provider}</span>
+        {availability ? <Pill tone={availabilityTone(availability.tone)} title={availability.detail}>{availability.label}</Pill> : null}
+        <div className="acct__tools">
+          <AccountBrowserAccess account={result.account} layout="row" />
+          {tools}
+        </div>
+      </div>
+      {belowHeader}
+      {!result.ok ? <Notice tone="bad" role="alert">{result.error || 'Unknown error'}</Notice> : null}
+      {children}
+      <span className="acct__foot">{footer}</span>
+    </section>
   );
 }
 
-function ClaudeUsageBlock({ label, pct, reset, windowData, limit, now, tz }: {
+function KvStrip({ rows, flat }: { rows: KvRows; flat?: boolean }) {
+  if (!rows.length) return null;
+  return <div className={`kv-strip${flat ? ' kv-strip--flat' : ''}`}>{rows.map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}</strong></div>)}</div>;
+}
+
+/** T3-style limit row: remaining percent, hatched bar filled to what is left, reset chip, then the block's KV rows. */
+function LimitCard({ label, provider, pct, reset, badge, rows, tone, now, tz }: {
   label: string;
+  provider: string;
   pct: number | null;
-  reset?: string | null;
-  windowData?: ClaudeLimitWindow | null;
-  limit?: ClaudeLimitEntry;
+  reset: string | null | undefined;
+  badge?: { tone: PillTone; label: string; note: string };
+  rows: KvRows;
+  tone?: 'warn' | 'bad';
   now: number;
   tz: string;
 }) {
-  const state = severityClass(pct, limit?.severity);
+  const remaining = pct === null ? null : Math.max(0, Math.min(100, 100 - pct));
+  const leftText = remaining === null ? 'n/a' : `${Number(remaining.toFixed(1))}%`;
+  const short = reset ? countdown(reset, now).replace(/ left$/, '') : 'n/a';
   return (
-    <UsageBlock state={state} label={label} pct={pct} right={<ClaudeBadges limit={limit} state={state} />}>
-      <span>Reset</span>
-      <strong>{resetLabel(reset, now, tz)}</strong>
-      {typeof windowData?.remaining_dollars === 'number' ? (
-        <>
-          <span>Remaining</span>
-          <strong>${windowData.remaining_dollars.toFixed(2)}</strong>
-        </>
-      ) : null}
-      {typeof windowData?.used_dollars === 'number' && typeof windowData?.limit_dollars === 'number' ? (
-        <>
-          <span>Dollars</span>
-          <strong>
-            ${windowData.used_dollars.toFixed(2)} / ${windowData.limit_dollars.toFixed(2)}
-          </strong>
-        </>
-      ) : null}
-    </UsageBlock>
+    <div className={`bf-card limit${tone ? ` limit--${tone}` : ''}`}>
+      <div className="limit__left">
+        <div className="limit__title">
+          <h3 className="t-h3">{label}</h3>
+          {badge ? <Pill tone={badge.tone} title={badge.note}>{badge.label}</Pill> : null}
+        </div>
+        <div className="limit__value"><span className="limit__num tabular">{leftText}</span><span className="t-small">left</span></div>
+        <span className="limit__reset">{resetLabel(reset, now, tz)}</span>
+      </div>
+      <div className="limit__bar" role="img" aria-label={`${label}: ${leftText} left`}>
+        <div className="limit__fill" style={{ width: `${remaining ?? 0}%` }} />
+        <span className="limit__label">{provider}<span className="tabular">{leftText}</span></span>
+        {short !== 'n/a' ? <span className="limit__chip">↻ {short}</span> : null}
+      </div>
+      <KvStrip rows={rows} />
+    </div>
   );
 }
 
-function SpendAccordion({ spend }: { spend: unknown }) {
-  const entries =
-    spend && typeof spend === 'object'
-      ? Object.entries(spend as Record<string, unknown>).filter(([, v]) => v !== null && v !== undefined).slice(0, 10)
-      : [];
+function limitTone(pct: number | null, severity?: string | null, blocked?: boolean): 'warn' | 'bad' | undefined {
+  const sev = (severity ?? '').toLowerCase();
+  if (blocked || (pct !== null && pct >= 100) || /danger|critical|error/.test(sev)) return 'bad';
+  if ((pct !== null && pct >= 75) || sev.includes('warn')) return 'warn';
+  return undefined;
+}
+
+function Accordion({ title, rows, empty }: { title: string; rows: KvRows; empty?: string }) {
   return (
-    <details className="subsection accordion spend-accordion">
-      <summary>
-        <span>Spend / credits</span>
-        <span className="accordion-hint">collapsed by default</span>
-      </summary>
-      {entries.length ? (
-        <div className="kv">
-          {entries.map(([k, v]) => (
-            <Fragment key={k}>
-              <span>{k}</span>
-              <strong>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</strong>
-            </Fragment>
-          ))}
-        </div>
-      ) : (
-        <p className="muted" style={{ padding: '12px 13px' }}>
-          No spend object returned.
-        </p>
-      )}
+    <details className="details-panel">
+      <summary><span>{title}</span><span className="details-hint">collapsed by default</span></summary>
+      {rows.length ? <div className="kv">{rows.map(([key, value]) => <Fragment key={key}><span>{key}</span><strong>{value}</strong></Fragment>)}</div> : <p className="t-small">{empty}</p>}
     </details>
   );
 }
 
-function ClaudeCard({ result, now, tz }: CardProps) {
+function KvCard({ title, rows }: { title: string; rows: KvRows }) {
+  return <div className="bf-card acct-kv-card"><h3 className="t-h3">{title}</h3><KvStrip rows={rows} flat /></div>;
+}
+
+function Meta({ result, tz, prefix }: { result: ProviderUsage; tz: string; prefix?: string }) {
+  return <>{prefix}HTTP {result.status ?? 'n/a'} · fetched {fmtDate(result.fetchedAt, tz)}</>;
+}
+
+function UnknownCard({ result, tz, evidence }: { result: ProviderUsage; tz: string; evidence: UsageEvidence }) {
+  return (
+    <div className="bf-card limit limit--unknown">
+      <div className="limit__title">
+        <h3 className="t-h3">Availability unknown</h3>
+        <Pill tone={evidence.state === 'error' ? 'bad' : 'warn'}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</Pill>
+      </div>
+      <span className="t-small">{evidence.message}</span>
+      <KvStrip flat rows={[['Quota remaining', 'Unknown'], ['Last observation', fmtDate(result.fetchedAt, tz)], ['HTTP status', result.status ?? 'Unknown']]} />
+    </div>
+  );
+}
+
+export function UsageCard(props: CardProps) {
+  const evidence = usageEvidence(props.result, props.now);
+  switch (props.result.account.provider) {
+    case 'kimi':
+      return <KimiCard {...props} evidence={evidence} />;
+    case 'codex':
+      return <CodexCard {...props} evidence={evidence} />;
+    case 'cursor':
+      return <CursorCard {...props} evidence={evidence} />;
+    default:
+      return <ClaudeCard {...props} evidence={evidence} />;
+  }
+}
+
+type ProviderCardProps = CardProps & { evidence: UsageEvidence };
+
+// ---------------------------------------------------------------- Claude
+
+function claudeRows(limit: ClaudeLimitEntry | undefined, windowData: ClaudeLimitWindow | null | undefined, pct: number | null, reset: string | null | undefined, now: number, tz: string): KvRows {
+  const rows: KvRows = [['Reset', resetLabel(reset, now, tz)]];
+  if (typeof windowData?.remaining_dollars === 'number') rows.push(['Remaining', `$${windowData.remaining_dollars.toFixed(2)}`]);
+  if (typeof windowData?.used_dollars === 'number' && typeof windowData?.limit_dollars === 'number') rows.push(['Dollars', `$${windowData.used_dollars.toFixed(2)} / $${windowData.limit_dollars.toFixed(2)}`]);
+  rows.push(['Used', fmtPct(pct)]);
+  if (limit?.severity) rows.push(['Severity', limit.severity]);
+  return rows;
+}
+
+function claudeBadge(limit?: ClaudeLimitEntry) {
+  if (limit?.is_active !== true) return undefined;
+  return { tone: 'warn' as const, label: 'Currently limiting', note: 'This limit is currently constraining Claude usage for this account/scope.' };
+}
+
+function ClaudeCard({ result, now, tz, evidence }: ProviderCardProps) {
   const d = (result.data as ClaudeUsagePayload | undefined) || {};
   const sessionLimit = claudeLimitByKind(d, 'session') ?? activeSession(d);
   const weeklyLimit = claudeLimitByKind(d, 'weekly_all') ?? activeWeeklyAll(d);
@@ -219,442 +214,204 @@ function ClaudeCard({ result, now, tz }: CardProps) {
   const sessionPct = pickPct(d.five_hour?.utilization, sessionLimit?.percent);
   const weeklyPct = pickPct(d.seven_day?.utilization, weeklyLimit?.percent);
   const scoped = (d.limits || []).filter((l) => l?.kind === 'weekly_scoped');
-  const availability = deriveModelAvailability(d);
-  const cardState = result.ok
-    ? severityClass(Math.max(sessionPct ?? 0, weeklyPct ?? 0), sessionLimit?.severity || weeklyLimit?.severity)
-    : 'danger';
-
+  const fresh = evidence.state === 'fresh';
+  const spend = d.spend && typeof d.spend === 'object' ? Object.entries(d.spend as Record<string, unknown>).filter(([, v]) => v !== null && v !== undefined).slice(0, 10).map(([k, v]): [string, ReactNode] => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)]) : [];
+  const name = providerName(result.account.provider);
   return (
-    <article className={cardClass(result, cardState)}>
-      <CardHead
-        result={result}
-        eyebrow={result.account.provider}
-        title={result.account.email || 'Email not recorded'}
-        availability={availability}
-      />
-      <ErrorLine result={result} fallback="Unknown error" />
-      <ClaudeUsageBlock
-        label="Current session"
-        pct={sessionPct}
-        reset={d.five_hour?.resets_at || sessionLimit?.resets_at}
-        windowData={d.five_hour}
-        limit={sessionLimit}
-        now={now}
-        tz={tz}
-      />
-      <ClaudeUsageBlock
-        label="Weekly all models"
-        pct={weeklyPct}
-        reset={d.seven_day?.resets_at || weeklyLimit?.resets_at}
-        windowData={d.seven_day}
-        limit={weeklyLimit}
-        now={now}
-        tz={tz}
-      />
-      <section className="subsection">
-        <h3>Scoped model limits</h3>
-        {scoped.length ? (
-          scoped.map((limit, i) => (
-            <ClaudeUsageBlock
-              key={i}
-              label={scopeLabel(limit)}
-              pct={normalizePct(limit.percent)}
-              reset={limit.resets_at}
-              windowData={null}
-              limit={limit}
-              now={now}
-              tz={tz}
-            />
-          ))
-        ) : (
-          <p className="muted">No scoped model limit returned.</p>
-        )}
-      </section>
-      <SpendAccordion spend={d.spend} />
-      <Meta>
-        HTTP {result.status ?? 'n/a'} · fetched {fmtDate(result.fetchedAt, tz)}
-      </Meta>
-    </article>
+    <AccountGroup result={result} title={`${result.account.label} · ${result.account.email || 'Email not recorded'}`} availability={fresh ? deriveModelAvailability(d) : undefined} footer={<Meta result={result} tz={tz} />}>
+      {!fresh ? <UnknownCard result={result} tz={tz} evidence={evidence} /> : <>
+        <LimitCard label="Current session" provider={name} pct={sessionPct} reset={d.five_hour?.resets_at || sessionLimit?.resets_at} badge={claudeBadge(sessionLimit)} tone={limitTone(sessionPct, sessionLimit?.severity)} rows={claudeRows(sessionLimit, d.five_hour, sessionPct, d.five_hour?.resets_at || sessionLimit?.resets_at, now, tz)} now={now} tz={tz} />
+        <LimitCard label="Weekly all models" provider={name} pct={weeklyPct} reset={d.seven_day?.resets_at || weeklyLimit?.resets_at} badge={claudeBadge(weeklyLimit)} tone={limitTone(weeklyPct, weeklyLimit?.severity)} rows={claudeRows(weeklyLimit, d.seven_day, weeklyPct, d.seven_day?.resets_at || weeklyLimit?.resets_at, now, tz)} now={now} tz={tz} />
+        {scoped.length ? scoped.map((limit, i) => {
+          const pct = normalizePct(limit.percent);
+          return <LimitCard key={i} label={scopeLabel(limit)} provider={name} pct={pct} reset={limit.resets_at} badge={claudeBadge(limit)} tone={limitTone(pct, limit.severity)} rows={claudeRows(limit, null, pct, limit.resets_at, now, tz)} now={now} tz={tz} />;
+        }) : <p className="acct__empty">No scoped model limit returned.</p>}
+        <Accordion title="Spend / credits" rows={spend} empty="No spend object returned." />
+      </>}
+    </AccountGroup>
   );
 }
 
 // ---------------------------------------------------------------- Kimi
 
-function KimiUsageBlock({ label, detail, pct, reset, note, now, tz }: {
-  label: string;
-  detail: KimiQuotaDetail | null;
-  pct: number | null;
-  reset?: string | null;
-  note: string;
-  now: number;
-  tz: string;
-}) {
-  const state = severityClass(pct);
-  return (
-    <UsageBlock
-      state={state}
-      label={label}
-      pct={pct}
-      right={<Tip cls={state} label={pct !== null && pct >= 90 ? 'Near limit' : 'Quota state'} note={note} />}
-    >
-      <span>Used / limit</span>
-      <strong>
-        {fmtNumber(detail?.used)} / {fmtNumber(detail?.limit)}
-      </strong>
-      <span>Remaining</span>
-      <strong>{fmtNumber(detail?.remaining)}</strong>
-      <span>Reset</span>
-      <strong>{resetLabel(reset, now, tz)}</strong>
-    </UsageBlock>
-  );
+function kimiRows(detail: KimiQuotaDetail | null, pct: number | null, reset: string | null | undefined, note: string, now: number, tz: string): KvRows {
+  return [
+    ['Used / limit', `${fmtNumber(detail?.used)} / ${fmtNumber(detail?.limit)}`],
+    ['Remaining', fmtNumber(detail?.remaining)],
+    ['Reset', resetLabel(reset, now, tz)],
+    ['Used', fmtPct(pct)],
+    ['Window', note],
+  ];
 }
 
-function KimiCard({ result, now, tz }: CardProps) {
+function KimiCard({ result, now, tz, evidence }: ProviderCardProps) {
   const data = result.data as KimiUsagePayload | undefined;
   const coding = kimiCodingUsage(data);
   const overall = coding?.detail ?? null;
   const window300 = kimiWindow(data, 300, 'TIME_UNIT_MINUTE');
-  const availability = deriveKimiAvailability(data);
   const overallPct = kimiUsagePercent(overall);
   const windowPct = kimiUsagePercent(window300?.detail ?? null);
-  const cardState = result.ok ? severityClass(Math.max(overallPct ?? 0, windowPct ?? 0)) : 'danger';
-
+  const fresh = evidence.state === 'fresh';
+  const name = providerName(result.account.provider);
+  const nearLimit = (pct: number | null) => (pct !== null && pct >= 90 ? { tone: 'warn' as const, label: 'Near limit', note: 'Kimi reports this quota near its cap.' } : undefined);
   return (
-    <article className={cardClass(result, cardState)}>
-      <CardHead
-        result={result}
-        eyebrow={result.account.provider}
-        title={`Kimi Code · ${result.account.email}`}
-        availability={availability}
-      />
-      <ErrorLine result={result} fallback="Unknown error" />
-      <KimiUsageBlock
-        label="Overall coding quota"
-        detail={overall}
-        pct={overallPct}
-        reset={overall?.resetTime}
-        note={`Scope: ${coding?.scope || 'n/a'}`}
-        now={now}
-        tz={tz}
-      />
-      <KimiUsageBlock
-        label="300-minute window"
-        detail={window300?.detail ?? null}
-        pct={windowPct}
-        reset={window300?.detail.resetTime}
-        note="Rolling TIME_UNIT_MINUTE window"
-        now={now}
-        tz={tz}
-      />
-      <section className="subsection">
-        <h3>Quota summary</h3>
-        <div className="kv compact">
-          <span>Global remaining</span>
-          <strong>
-            {fmtNumber(overall?.remaining)} / {fmtNumber(overall?.limit)}
-          </strong>
-          <span>Window remaining</span>
-          <strong>
-            {fmtNumber(window300?.detail.remaining)} / {fmtNumber(window300?.detail.limit)}
-          </strong>
-        </div>
-      </section>
-      <Meta>
-        HTTP {result.status ?? 'n/a'} · fetched {fmtDate(result.fetchedAt, tz)}
-      </Meta>
-    </article>
+    <AccountGroup result={result} title={`Kimi Code · ${result.account.email}`} availability={fresh ? deriveKimiAvailability(data) : undefined} footer={<Meta result={result} tz={tz} />}>
+      {!fresh ? <UnknownCard result={result} tz={tz} evidence={evidence} /> : <>
+        <LimitCard label="Overall coding quota" provider={name} pct={overallPct} reset={overall?.resetTime} badge={nearLimit(overallPct)} tone={limitTone(overallPct)} rows={kimiRows(overall, overallPct, overall?.resetTime, `Scope: ${coding?.scope || 'n/a'}`, now, tz)} now={now} tz={tz} />
+        <LimitCard label="300-minute window" provider={name} pct={windowPct} reset={window300?.detail.resetTime} badge={nearLimit(windowPct)} tone={limitTone(windowPct)} rows={kimiRows(window300?.detail ?? null, windowPct, window300?.detail.resetTime, 'Rolling TIME_UNIT_MINUTE window', now, tz)} now={now} tz={tz} />
+        <KvCard title="Quota summary" rows={[['Global remaining', `${fmtNumber(overall?.remaining)} / ${fmtNumber(overall?.limit)}`], ['Window remaining', `${fmtNumber(window300?.detail.remaining)} / ${fmtNumber(window300?.detail.limit)}`]]} />
+      </>}
+    </AccountGroup>
   );
 }
 
 // ---------------------------------------------------------------- Codex
 
-function CodexUsageBlock({ label, pct, resetIso, rl, now, tz }: {
-  label: string;
-  pct: number | null;
-  resetIso: string | null;
-  rl?: { allowed?: boolean; limit_reached?: boolean } | null;
-  now: number;
-  tz: string;
-}) {
-  const state = severityClass(pct);
-  const blocked = rl?.limit_reached === true || rl?.allowed === false;
-  return (
-    <UsageBlock
-      state={state}
-      label={label}
-      pct={pct}
-      right={
-        blocked ? (
-          <Tip cls="danger" label="Limit reached" note="Rate limit has been reached for this window." />
-        ) : (
-          <Tip cls={state} label={pct === null ? 'Usage unknown' : `${pct}% used`} note="Current utilization of the primary rate-limit window." />
-        )
-      }
-    >
-      <span>Reset</span>
-      <strong>{resetLabel(resetIso, now, tz)}</strong>
-      <span>Status</span>
-      <strong>{blocked ? 'Blocked' : rl?.allowed === true ? 'Allowed' : 'Unknown'}</strong>
-    </UsageBlock>
-  );
+function codexBlocked(rl?: { allowed?: boolean; limit_reached?: boolean } | null): boolean {
+  return rl?.limit_reached === true || rl?.allowed === false;
 }
 
-function CodexAdditionalLimit({ limit, now, tz }: { limit: CodexAdditionalRateLimit; now: number; tz: string }) {
+function CodexAdditionalLimit({ limit, provider, now, tz }: { limit: CodexAdditionalRateLimit; provider: string; now: number; tz: string }) {
   const primary = limit.rate_limit?.primary_window;
   const pct = primary?.used_percent ?? null;
   const resetIso = primary?.reset_at ? new Date(primary.reset_at * 1000).toISOString() : null;
-  const state = severityClass(pct);
-  const blocked = limit.rate_limit?.limit_reached === true || limit.rate_limit?.allowed === false;
+  const blocked = codexBlocked(limit.rate_limit);
   return (
-    <UsageBlock
-      state={state}
-      label={limit.limit_name}
-      pct={pct}
-      right={
-        blocked ? (
-          <Tip cls="danger" label="Limit reached" note={`${limit.metered_feature} rate limit reached.`} />
-        ) : (
-          <Tip cls={state} label={pct === null ? 'Usage unknown' : `${pct}% used`} note={`Metered feature: ${limit.metered_feature}`} />
-        )
-      }
-    >
-      <span>Feature</span>
-      <strong>{limit.metered_feature}</strong>
-      <span>Reset</span>
-      <strong>{resetLabel(resetIso, now, tz)}</strong>
-    </UsageBlock>
+    <LimitCard label={limit.limit_name} provider={provider} pct={pct} reset={resetIso} tone={limitTone(pct, null, blocked)} badge={blocked ? { tone: 'bad', label: 'Limit reached', note: `${limit.metered_feature} rate limit reached.` } : undefined} rows={[['Feature', limit.metered_feature], ['Reset', resetLabel(resetIso, now, tz)], ['Used', fmtPct(pct)]]} now={now} tz={tz} />
   );
 }
 
-function CodexCreditsAccordion({ data }: { data?: CodexUsagePayload }) {
-  if (!data) return null;
+function codexCreditRows(data?: CodexUsagePayload): KvRows {
+  if (!data) return [];
   const credits = data.credits;
   const spend = data.spend_control;
   const resetCredits = data.rate_limit_reset_credits;
+  const yesNo = (value: boolean | undefined) => (value === true ? 'Yes' : value === false ? 'No' : 'Unknown');
+  return [
+    ['Credits balance', credits?.balance ?? 'Unknown'],
+    ['Has credits', yesNo(credits?.has_credits)],
+    ['Unlimited', yesNo(credits?.unlimited)],
+    ['Overage limit reached', yesNo(credits?.overage_limit_reached)],
+    ['Spend control reached', yesNo(spend?.reached)],
+    ['Individual limit', spend?.individual_limit ?? 'Unknown'],
+    ['Reset credits available', `${resetCredits?.available_count ?? 'Unknown'} (applicable: ${resetCredits?.applicable_available_count ?? 'Unknown'})`],
+  ];
+}
+
+function CodexCard(props: ProviderCardProps) {
+  if (props.result.account.authOwner !== 'cliproxy') return <LocalCodexCard {...props} />;
+  const url = props.result.account.authManagementUrl;
   return (
-    <details className="subsection accordion spend-accordion">
-      <summary>
-        <span>Credits &amp; spend control</span>
-        <span className="accordion-hint">collapsed by default</span>
-      </summary>
-      <div className="kv">
-        <span>Credits balance</span>
-        <strong>{credits?.balance ?? 'Unknown'}</strong>
-        <span>Has credits</span>
-        <strong>{credits?.has_credits === true ? 'Yes' : credits?.has_credits === false ? 'No' : 'Unknown'}</strong>
-        <span>Unlimited</span>
-        <strong>{credits?.unlimited === true ? 'Yes' : credits?.unlimited === false ? 'No' : 'Unknown'}</strong>
-        <span>Overage limit reached</span>
-        <strong>{credits?.overage_limit_reached === true ? 'Yes' : credits?.overage_limit_reached === false ? 'No' : 'Unknown'}</strong>
-        <span>Spend control reached</span>
-        <strong>{spend?.reached === true ? 'Yes' : spend?.reached === false ? 'No' : 'Unknown'}</strong>
-        <span>Individual limit</span>
-        <strong>{spend?.individual_limit ?? 'Unknown'}</strong>
-        <span>Reset credits available</span>
-        <strong>
-          {resetCredits?.available_count ?? 'Unknown'} (applicable: {resetCredits?.applicable_available_count ?? 'Unknown'})
-        </strong>
-      </div>
-    </details>
+    <CodexCardBody
+      {...props}
+      tools={url ? <ButtonLink variant="ghost" size="sm" href={url} target="_blank" rel="noopener noreferrer">Reconnect in CLIProxyAPI</ButtonLink> : null}
+      belowHeader={<div className="acct__reconnect codex-auth">
+        {url ? null : <p className="t-small">Reconnect through CLIProxyAPI management.</p>}
+        <p className="t-small">CLIProxyAPI owns this account connection. Select Codex OAuth and sign in to the same provider account.</p>
+      </div>}
+    />
   );
 }
 
-function LocalCodexConnect({ result, now, tz, onAuthorized }: CardProps) {
-  const { state, start, starting } = useCodexAuth(result.account.key, onAuthorized);
-  return <><button type="button" className="small-button" onClick={start} disabled={starting}>{result.ok ? 'Reconnect' : 'Connect account'}</button><CodexAuthBox state={state} now={now} tz={tz} /></>;
+function LocalCodexCard(props: ProviderCardProps) {
+  const { state, start, starting } = useCodexAuth(props.result.account.key, props.onAuthorized);
+  return (
+    <CodexCardBody
+      {...props}
+      tools={<Button variant="ghost" size="sm" onClick={start} disabled={starting}>{props.result.ok ? 'Reconnect' : 'Connect account'}</Button>}
+      belowHeader={state ? <CodexAuthBox state={state} now={props.now} tz={props.tz} /> : null}
+    />
+  );
 }
 
-function CodexConnect(props: CardProps) {
-  if (props.result.account.authOwner !== 'cliproxy') return <LocalCodexConnect {...props} />;
-  const url = props.result.account.authManagementUrl;
-  return <div className="codex-auth">
-    {url ? <a className="small-button" href={url} target="_blank" rel="noopener noreferrer">Reconnect in CLIProxyAPI</a> : <span className="muted">Reconnect through CLIProxyAPI management.</span>}
-    <p className="muted">CLIProxyAPI owns this account connection. Select Codex OAuth and sign in to the same provider account.</p>
-  </div>;
-}
-
-function CodexCard({ result, now, tz, onAuthorized }: CardProps) {
+function CodexCardBody({ result, now, tz, evidence, tools, belowHeader }: ProviderCardProps & { tools: ReactNode; belowHeader: ReactNode }) {
   const data = result.data as CodexUsagePayload | undefined;
-  const availability = deriveCodexAvailability(data, result.status);
   const primary = codexPrimaryWindow(data);
   const pct = primary?.used_percent ?? null;
   const resetIso = codexWindowResetIso(primary);
-  const windowLabel = codexWindowDurationLabel(primary);
-  const cardState = result.ok ? severityClass(pct) : 'danger';
-  const additionalLimits = data?.additional_rate_limits ?? [];
-
+  const blocked = codexBlocked(data?.rate_limit);
+  const fresh = evidence.state === 'fresh';
+  const name = providerName(result.account.provider);
   return (
-    <article className={cardClass(result, cardState)}>
-      <CardHead
-        result={result}
-        eyebrow="Codex"
-        title={data?.email || result.account.email || 'Email not recorded'}
-        availability={availability}
-      />
-      <div className="account-connection"><CodexConnect result={result} now={now} tz={tz} onAuthorized={onAuthorized} /></div>
-      <ErrorLine result={result} fallback="WHAM request failed" />
-      <CodexUsageBlock label={windowLabel} pct={pct} resetIso={resetIso} rl={data?.rate_limit} now={now} tz={tz} />
-      {additionalLimits.map((limit, i) => (
-        <CodexAdditionalLimit key={i} limit={limit} now={now} tz={tz} />
-      ))}
-      <CodexCreditsAccordion data={data} />
-      <Meta>
-        Plan: {data?.plan_type || 'n/a'} · HTTP {result.status ?? 'n/a'} · fetched {fmtDate(result.fetchedAt, tz)}
-      </Meta>
-    </article>
+    <AccountGroup result={result} title={`${result.account.label} · ${data?.email || result.account.email || 'Email not recorded'}`} availability={fresh ? deriveCodexAvailability(data, result.status) : undefined} tools={tools} belowHeader={belowHeader} footer={<Meta result={result} tz={tz} prefix={`Plan: ${data?.plan_type || 'n/a'} · `} />}>
+      {!fresh ? <UnknownCard result={result} tz={tz} evidence={evidence} /> : <>
+        <LimitCard label={codexWindowDurationLabel(primary)} provider={name} pct={pct} reset={resetIso} tone={limitTone(pct, null, blocked)} badge={blocked ? { tone: 'bad', label: 'Limit reached', note: 'Rate limit has been reached for this window.' } : undefined} rows={[['Reset', resetLabel(resetIso, now, tz)], ['Status', blocked ? 'Blocked' : data?.rate_limit?.allowed === true ? 'Allowed' : 'Unknown'], ['Used', fmtPct(pct)]]} now={now} tz={tz} />
+        {(data?.additional_rate_limits ?? []).map((limit, i) => <CodexAdditionalLimit key={i} limit={limit} provider={name} now={now} tz={tz} />)}
+        <Accordion title="Credits & spend control" rows={codexCreditRows(data)} empty="No credit data returned." />
+      </>}
+    </AccountGroup>
   );
 }
 
 // ---------------------------------------------------------------- Cursor
 
-function CursorUsageBlock({ label, pct, resetIso, rows, now, tz }: {
-  label: string;
-  pct: number | null;
-  resetIso: string | null;
-  rows: [string, string][];
-  now: number;
-  tz: string;
-}) {
-  const state = severityClass(pct);
-  return (
-    <UsageBlock
-      state={state}
-      label={label}
-      pct={pct}
-      right={<Tip cls={state} label={pct != null ? `${pct.toFixed(1)}% used` : 'No data'} note="Current utilization of the Cursor usage budget." />}
-    >
-      <span>Reset</span>
-      <strong>{resetLabel(resetIso, now, tz)}</strong>
-      {rows.map(([k, v]) => (
-        <Fragment key={k}>
-          <span>{k}</span>
-          <strong>{v}</strong>
-        </Fragment>
-      ))}
-    </UsageBlock>
-  );
-}
-
-function CursorSpendingSection({ spending }: { spending?: CursorSpending | null }) {
-  if (!spending) return null;
+function cursorSpendingRows(spending?: CursorSpending | null): KvRows {
+  if (!spending) return [];
   const cents = (v?: number | null) => (typeof v === 'number' ? `$${(v / 100).toFixed(2)}` : 'n/a');
-  const totalDollars = cents(spending.totalCents);
-  const budgetDollars = typeof spending.budgetLimitCents === 'number' ? `$${(spending.budgetLimitCents / 100).toFixed(2)}` : 'No limit';
   const enabled = spending.onDemandEnabled;
-  const state: Severity = (spending.totalCents ?? 0) > 0 ? 'ok' : 'muted';
-  return (
-    <section className={`usage ${state}`}>
-      <div className="usage-top">
-        <h3>Spending</h3>
-        <div className="usage-right usage-inline">
-          <Tip cls={state} label={`Total: ${totalDollars}`} note="Total spend this billing period (included + on-demand)." />
-        </div>
-      </div>
-      <div className="kv compact">
-        <span>Total spend</span>
-        <strong>{totalDollars}</strong>
-        <span>Included</span>
-        <strong>{cents(spending.includedCents)}</strong>
-        <span>On-demand</span>
-        <strong>{cents(spending.onDemandCents)}</strong>
-        <span>On-demand enabled</span>
-        <strong>{enabled === true ? 'Yes' : enabled === false ? 'No' : 'n/a'}</strong>
-        <span>Budget limit</span>
-        <strong>{budgetDollars}</strong>
-      </div>
-    </section>
-  );
+  return [
+    ['Total spend', cents(spending.totalCents)],
+    ['Included', cents(spending.includedCents)],
+    ['On-demand', cents(spending.onDemandCents)],
+    ['On-demand enabled', enabled === true ? 'Yes' : enabled === false ? 'No' : 'n/a'],
+    ['Budget limit', typeof spending.budgetLimitCents === 'number' ? `$${(spending.budgetLimitCents / 100).toFixed(2)}` : 'No limit'],
+  ];
 }
 
-function CursorCard({ result, now, tz }: CardProps) {
+function CursorCard({ result, now, tz, evidence }: ProviderCardProps) {
   const data = result.data as CursorUsagePayload | undefined;
-  const availability = deriveCursorAvailability(data);
   const billing = data?.billingModel ?? detectCursorBillingModel(data);
-  const tier = detectCursorTier(data?.stripe);
-  const tierLabel = cursorTierLabel(tier);
-  const pct = cursorUsagePercent(data);
+  const tierLabel = cursorTierLabel(detectCursorTier(data?.stripe));
   const resetIso = cursorCycleEnd(data);
-  const cardState = result.ok ? severityClass(pct) : 'danger';
   const status = (data?.stripe?.subscriptionStatus ?? '').toLowerCase();
-  const yearly = data?.stripe?.isYearlyPlan;
+  const fresh = evidence.state === 'fresh';
+  const name = providerName(result.account.provider);
 
   let usageSection: ReactNode;
   if (billing === 'usd_credit' && data?.currentPeriod?.planUsage) {
     const pu = data.currentPeriod.planUsage;
     const creditPct = cursorCreditPercent(data);
     const limitDollars = typeof pu.limit === 'number' ? (pu.limit / 100).toFixed(2) : 'n/a';
-    const usedDollars =
-      typeof pu.used === 'number'
-        ? (pu.used / 100).toFixed(2)
-        : typeof pu.limit === 'number' && typeof pu.remaining === 'number'
-          ? ((pu.limit - pu.remaining) / 100).toFixed(2)
-          : 'n/a';
+    const usedDollars = typeof pu.used === 'number' ? (pu.used / 100).toFixed(2) : typeof pu.limit === 'number' && typeof pu.remaining === 'number' ? ((pu.limit - pu.remaining) / 100).toFixed(2) : 'n/a';
     const remainDollars = typeof pu.remaining === 'number' ? (pu.remaining / 100).toFixed(2) : 'n/a';
-    const rows: [string, string][] = [
+    const rows: KvRows = [
+      ['Reset', resetLabel(resetIso, now, tz)],
       ['Used / limit', `$${usedDollars} / $${limitDollars}`],
       ['Remaining', `$${remainDollars}`],
-      ...(pu.autoPercentUsed != null ? ([['Auto usage', `${pu.autoPercentUsed.toFixed(1)}%`]] as [string, string][]) : []),
-      ...(pu.apiPercentUsed != null ? ([['API usage', `${pu.apiPercentUsed.toFixed(1)}%`]] as [string, string][]) : []),
+      ...(pu.autoPercentUsed != null ? ([['Auto usage', `${pu.autoPercentUsed.toFixed(1)}%`]] as KvRows) : []),
+      ...(pu.apiPercentUsed != null ? ([['API usage', `${pu.apiPercentUsed.toFixed(1)}%`]] as KvRows) : []),
+      ['Used', fmtPct(creditPct)],
     ];
-    usageSection = <CursorUsageBlock label="Monthly credit usage" pct={creditPct} resetIso={resetIso} rows={rows} now={now} tz={tz} />;
+    usageSection = <LimitCard label="Monthly credit usage" provider={name} pct={creditPct} reset={resetIso} tone={limitTone(creditPct)} rows={rows} now={now} tz={tz} />;
   } else if (billing === 'request_count' && data?.legacyUsage?.['gpt-4']) {
     const model = data.legacyUsage['gpt-4'];
     const legacyPct = cursorLegacyPercent(data);
-    const rows: [string, string][] = [
+    const rows: KvRows = [
+      ['Reset', resetLabel(resetIso, now, tz)],
       ['Requests used', `${model?.numRequests ?? 'n/a'} / ${model?.maxRequestUsage ?? 'n/a'}`],
-      [
-        'Remaining',
-        model?.numRequests != null && model?.maxRequestUsage != null ? `${Math.max(0, model.maxRequestUsage - model.numRequests)}` : 'n/a',
-      ],
+      ['Remaining', model?.numRequests != null && model?.maxRequestUsage != null ? `${Math.max(0, model.maxRequestUsage - model.numRequests)}` : 'n/a'],
+      ['Used', fmtPct(legacyPct)],
     ];
-    usageSection = <CursorUsageBlock label="Monthly request usage" pct={legacyPct} resetIso={resetIso} rows={rows} now={now} tz={tz} />;
+    usageSection = <LimitCard label="Monthly request usage" provider={name} pct={legacyPct} reset={resetIso} tone={limitTone(legacyPct)} rows={rows} now={now} tz={tz} />;
   } else {
-    usageSection = <p className="muted">No usage data available. Billing model: {billing}.</p>;
+    usageSection = <p className="acct__empty">No usage data available. Billing model: {billing}.</p>;
   }
 
+  const subscriptionRows: KvRows = [
+    ['Plan', `${tierLabel}${data?.stripe?.isYearlyPlan ? ' (yearly)' : ''}`],
+    ['Status', status || 'n/a'],
+    ['Team member', data?.stripe?.isTeamMember ? 'Yes' : 'No'],
+    ...(data?.stripe?.pendingCancellationDate ? ([['Cancels', data.stripe.pendingCancellationDate]] as KvRows) : []),
+    ...(typeof data?.stripe?.customerBalance === 'number' && data.stripe.customerBalance < 0 ? ([['Prepaid balance', `$${(Math.abs(data.stripe.customerBalance) / 100).toFixed(2)}`]] as KvRows) : []),
+  ];
+
   return (
-    <article className={cardClass(result, cardState)}>
-      <CardHead
-        result={result}
-        eyebrow={result.account.provider}
-        title={result.account.email || 'Email not recorded'}
-        availability={availability}
-      />
-      <ErrorLine result={result} fallback="Unknown error" />
-      {usageSection}
-      <CursorSpendingSection spending={data?.spending} />
-      <details className="subsection accordion spend-accordion">
-        <summary>
-          <span>Subscription details</span>
-          <span className="accordion-hint">collapsed by default</span>
-        </summary>
-        <div className="kv">
-          <span>Plan</span>
-          <strong>
-            {tierLabel}
-            {yearly ? ' (yearly)' : ''}
-          </strong>
-          <span>Status</span>
-          <strong>{status || 'n/a'}</strong>
-          <span>Team member</span>
-          <strong>{data?.stripe?.isTeamMember ? 'Yes' : 'No'}</strong>
-          {data?.stripe?.pendingCancellationDate ? (
-            <>
-              <span>Cancels</span>
-              <strong>{data.stripe.pendingCancellationDate}</strong>
-            </>
-          ) : null}
-          {typeof data?.stripe?.customerBalance === 'number' && data.stripe.customerBalance < 0 ? (
-            <>
-              <span>Prepaid balance</span>
-              <strong>${(Math.abs(data.stripe.customerBalance) / 100).toFixed(2)}</strong>
-            </>
-          ) : null}
-        </div>
-      </details>
-      <Meta>
-        Billing: {billing} · HTTP {result.status ?? 'n/a'} · fetched {fmtDate(result.fetchedAt, tz)}
-      </Meta>
-    </article>
+    <AccountGroup result={result} title={`${result.account.label} · ${result.account.email || 'Email not recorded'}`} availability={fresh ? deriveCursorAvailability(data) : undefined} footer={<Meta result={result} tz={tz} prefix={`Billing: ${billing} · `} />}>
+      {!fresh ? <UnknownCard result={result} tz={tz} evidence={evidence} /> : <>
+        {usageSection}
+        {data?.spending ? <KvCard title="Spending" rows={cursorSpendingRows(data.spending)} /> : null}
+        <Accordion title="Subscription details" rows={subscriptionRows} />
+      </>}
+    </AccountGroup>
   );
 }
