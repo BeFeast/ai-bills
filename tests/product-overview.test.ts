@@ -84,6 +84,9 @@ describe('product overview', () => {
     expect(buildProductOverview(config, { usage_ledger: { today: rolling } }, '2026-09').usage.last24h).toBeUndefined();
     const month = buildProductOverview(config, { usage_ledger: { month: { date: '2026-09', by_account: [{ name: 'sk-maestro-abcdefghijklmnopqrstuvwxyz0123456789', tokens: 5, requests: 1 }] } } }, '2026-09');
     expect(month.usage.byAccount?.[0].name).toBe('sk-maest…6789');
+    const models = buildProductOverview(config, { usage_ledger: { month: { date: '2026-09', by_model: [{ name: 'meta-llama/llama-3.1-405b-instruct', tokens: 5, requests: 1 }], by_client: [{ name: 'sk-looking-client-id-that-is-long-enough', tokens: 1, requests: 1 }] } } }, '2026-09');
+    expect(models.usage.byModel[0].name).toBe('meta-llama/llama-3.1-405b-instruct');
+    expect(models.usage.byClient[0].name).toBe('sk-looking-client-id-that-is-long-enough');
   });
   it('never treats quota reset timestamps as subscription renewal dates', () => {
     const result = buildProductOverview(config, { providers: [{ provider: 'OpenAI', plan: 'Pro', status: 'active', billing: 'subscription', cost_usd_month: '200' }], codex_usage: { account: { data: { rate_limit: { reset_at: 1789379829 } } } } }, '2026-09');
