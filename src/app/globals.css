@@ -162,21 +162,44 @@ button.stat-tile:focus-visible { box-shadow: var(--focus-ring); }
 .rank-row__pos { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); margin-right: 6px; }
 .rank-row__tokens { white-space: nowrap; font-variant-numeric: tabular-nums; }
 
-.quota { display: flex; flex-direction: column; gap: 8px; }
-.quota__nav { display: flex; flex-direction: column; gap: 8px; width: 100%; background: none; border: 0; padding: 0; text-align: left; color: inherit; cursor: pointer; border-radius: 8px; }
-.quota__nav:hover .t-small { color: var(--text); }
-.quota__head { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.quota__id { min-width: 0; display: flex; flex-direction: column; }
-.quota__email { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.quota__value { font-size: 18px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-.quota__access { padding-top: 8px; border-top: 1px solid var(--border-1); }
-
 .other-account { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-mute); }
 .other-account__value { font-size: 14px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .other-account .identity { margin-bottom: 2px; }
 .declared { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0 32px; }
 .declared li { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 8px 0; border-top: 1px solid var(--border-1); }
 .declared li .cell { flex: 1; }
+
+/* overview hero: one card per account used in the last 24h; limiting window left, other windows right */
+.hero-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.hero-card { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; min-width: 0; }
+.hero-card__head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.hero-card__id { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.hero-card__label { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-card__email { font: 500 11px var(--font-mono); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-card__body { display: flex; gap: 16px 20px; align-items: flex-start; flex-wrap: wrap; }
+.hero-card__main { flex: 0 0 168px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.hero-card__window { font-size: 12px; font-weight: 600; color: var(--text-mute); }
+.hero-card__value { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.hero-card__num { font: 600 30px/1.1 var(--font-sans); letter-spacing: -0.02em; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.hero-card--warn .hero-card__num { color: var(--warn); }
+.hero-card--bad .hero-card__num { color: var(--bad); }
+.hero-chip { display: inline-flex; align-self: flex-start; font: 500 11px var(--font-mono); padding: 3px 8px; border-radius: 999px; background: var(--surface-1); border: 1px solid var(--border-1); color: var(--text-mute); white-space: nowrap; }
+.hero-windows { flex: 1 1 200px; min-width: 0; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.hero-window { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; align-items: center; font-size: 12px; }
+.hero-window__label { color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-window__value { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hero-window--warn .hero-window__value { color: var(--warn); }
+.hero-window--bad .hero-window__value { color: var(--bad); }
+.hero-window .bf-progress { grid-column: 1 / -1; height: 6px; }
+.hero-window__reset { grid-column: 1 / -1; font: 500 10px var(--font-mono); color: var(--text-faint); }
+.hero-card__foot { display: flex; justify-content: space-between; align-items: flex-end; gap: 10px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--border-1); }
+.hero-card__foot .t-small { flex: 1 1 160px; }
+.hero-card--muted { background: var(--surface-2); box-shadow: none; }
+.hero-outcomes { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--text-mute); }
+.hero-outcomes strong { font-size: 22px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.hero-outcomes__warn strong { color: var(--warn); }
+.hero-empty { font-size: 13px; color: var(--text-mute); }
+@media (max-width: 720px) { .hero-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* ---------------------------------------------------------------- subscriptions */
 .subs-table td { vertical-align: middle; }
