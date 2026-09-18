@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { accountWindows, buildLimitsHero } from '../src/lib/limits-hero';
 import type { RegistryAccount } from '../src/lib/accounts';
 import type { OverviewRecentUsage } from '../src/lib/overview';
-import type { ProviderUsage } from '../src/lib/usage';
+import { PENDING_OBSERVATION, type ProviderUsage } from '../src/lib/usage';
 
 const now = Date.parse('2026-09-18T20:20:00Z');
 const fetchedAt = new Date(now - 30_000).toISOString();
@@ -74,6 +74,25 @@ describe('limits hero', () => {
     expect(unknownRecency.recencyKnown).toBe(false);
     expect(unknownRecency.cards.map((card) => card.id)).toEqual(['claude-work', 'cursor']);
     expect(unknownRecency.refreshedAt).toBe(fetchedAt);
+  });
+  it('never reduces quota providers to outcome cards and treats a cold start as loading', () => {
+    const claudeOauth = registry('claude-oauth', 'claude', 'Claude · Work', 'work@example.invalid');
+    const codexKey = registry('codex-key', 'codex', 'codex API 1', undefined, { origin: 'configured' });
+    const grok = registry('grok', 'xai', 'x.ai · Grok', 'work@example.invalid');
+    // Usage has not answered yet: nothing is known, so the hero loads instead of guessing from the registry.
+    const empty = buildLimitsHero({ usage: [], registry: [claudeOauth, codexKey, grok], last24h, now });
+    expect(empty.loading).toBe(true);
+    expect(empty.cards.map((card) => card.id)).toEqual(['grok']);
+    // Placeholders before the first observation are pending, not failing sources.
+    const pending: ProviderUsage = { account: { key: 'claude-work', provider: 'claude', label: 'Claude · Work', email: 'work@example.invalid' }, ok: false, fetchedAt: fetchedAt, sourceUrl: '', error: PENDING_OBSERVATION };
+    const warming = buildLimitsHero({ usage: [pending], registry: [claudeOauth, codexKey, grok], last24h, now });
+    expect(warming.loading).toBe(false);
+    expect(warming.pending).toBe(1);
+    // A provider without a quota source still shows its outcomes while quota accounts warm up.
+    expect(warming.cards.map((card) => card.id)).toEqual(['grok']);
+    const mixed = buildLimitsHero({ usage: [pending, claude('claude-personal', 'personal@example.invalid', 23, 17, 33)], registry: [claudeOauth, codexKey], last24h, now });
+    expect(mixed.loading).toBe(false);
+    expect(mixed.cards.map((card) => [card.kind, card.id])).toEqual([['quota', 'claude-personal']]);
   });
   it('enumerates Codex windows with the blocked flag', () => {
     const blocked = codex('codex-work', 'work@example.invalid', 60);

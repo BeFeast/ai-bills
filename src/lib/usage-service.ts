@@ -2,7 +2,7 @@ import { fetchUsageThroughCdp } from './cdp';
 import { rememberUsageObservations } from './usage-observations';
 import { loadConfig } from './config';
 import { publicUsageAccount } from './account-auth';
-import { apiShapeSummary, combinedOverview, type ProviderUsage } from './usage';
+import { apiShapeSummary, combinedOverview, type ProviderUsage, PENDING_OBSERVATION } from './usage';
 
 type UsageCache = { results: ProviderUsage[]; generatedAt: string };
 
@@ -16,7 +16,7 @@ export async function refreshUsage(): Promise<UsageCache> {
     const previous = new Map(cache?.results.map(result => [result.account.key, result]) ?? []);
     const results: ProviderUsage[] = config.accounts.map(account => previous.get(account.key) ?? ({
       account: publicUsageAccount(account, config.server.codex_proxy_management_url),
-      ok: false, fetchedAt: '', sourceUrl: '', error: 'Waiting for the first quota observation',
+      ok: false, fetchedAt: '', sourceUrl: '', error: PENDING_OBSERVATION,
     }));
     cache = { results, generatedAt: new Date().toISOString() };
     const update = async (account: typeof config.accounts[number], index: number) => {

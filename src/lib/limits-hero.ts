@@ -1,6 +1,6 @@
 import type { RegistryAccount } from './accounts';
 import type { OverviewRecentUsage, OverviewUpstreamActivity } from './overview';
-import { claudeWindows, codexPrimaryWindow, codexWindowDurationLabel, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, kimiUsagePercent, quotaTone,
+import { claudeWindows, isPendingObservation, codexPrimaryWindow, codexWindowDurationLabel, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, kimiUsagePercent, quotaTone,
   type ClaudeUsagePayload, type CodexRateWindow, type CodexUsagePayload, type CursorUsagePayload, type KimiQuotaDetail, type KimiUsagePayload, type ProviderUsage, type QuotaTone } from './usage';
 import { usageEvidence, type UsageEvidence } from './usage-evidence';
 
@@ -13,9 +13,11 @@ export type LimitsHeroCard =
   | { kind: 'quota'; id: string; account: HeroIdentity; windows: HeroWindow[]; limiting: HeroWindow; tone: QuotaTone; activity: HeroActivity | null; observedAt: string }
   | { kind: 'error'; id: string; account: HeroIdentity; state: Exclude<UsageEvidence['state'], 'fresh'>; message: string; status: number | null; activity: HeroActivity | null; observedAt: string }
   | { kind: 'outcomes'; id: string; provider: string; label: string; email: string | null; websiteUrl: string | null; balanceUsd: number | null; credentialStatus: string | null; activity: HeroActivity; tone: QuotaTone };
-export type LimitsHero = { refreshedAt: string | null; windowHours: number; recencyKnown: boolean; cards: LimitsHeroCard[] };
+export type LimitsHero = { refreshedAt: string | null; windowHours: number; recencyKnown: boolean; loading: boolean; pending: number; cards: LimitsHeroCard[] };
 
 export const LOW_REMAINING_PERCENT = 25;
+/** Providers the app observes through a quota source; their registry rows are never reduced to request outcomes. */
+const QUOTA_PROVIDERS = new Set(['claude', 'codex', 'kimi', 'cursor']);
 const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
 /** Ledger providers for upstream keys are logged as `openai-compatible-<name>`; the registry knows them by `<name>`. */
 const upstreamProvider = (value: string) => normalize(value.replace(/^openai-compatible-/i, ''));
@@ -109,7 +111,8 @@ export function buildLimitsHero({ usage, registry, last24h, now }: { usage: Prov
   const quota: Extract<LimitsHeroCard, { kind: 'quota' }>[] = []; const errors: Extract<LimitsHeroCard, { kind: 'error' }>[] = []; const outcomes: Extract<LimitsHeroCard, { kind: 'outcomes' }>[] = [];
   const providerCounts = new Map<string, number>();
   for (const result of usage) providerCounts.set(result.account.provider, (providerCounts.get(result.account.provider) ?? 0) + 1);
-  for (const result of usage) {
+  const observed = usage.filter((result) => !isPendingObservation(result));
+  for (const result of observed) {
     const activity = usageActivity(result, upstreams, providerCounts.get(result.account.provider) ?? 0);
     const used = !recencyKnown || (activity?.requests ?? 0) > 0;
     const evidence = usageEvidence(result, now);
@@ -124,7 +127,7 @@ export function buildLimitsHero({ usage, registry, last24h, now }: { usage: Prov
     if (!used && !low && !limiting.exhausted) continue;
     quota.push({ kind: 'quota', id: result.account.key, account: identity(result), windows, limiting, tone: limiting.tone, activity, observedAt: result.fetchedAt });
   }
-  const covered = new Set(usage.map((result) => normalize(result.account.provider)));
+  const covered = new Set([...QUOTA_PROVIDERS, ...usage.map((result) => normalize(result.account.provider))]);
   for (const row of registry) {
     const provider = normalize(row.provider);
     if (covered.has(provider) || (!row.proxyCredential && !row.funds)) continue;
@@ -139,5 +142,5 @@ export function buildLimitsHero({ usage, registry, last24h, now }: { usage: Prov
   errors.sort((a, b) => requests(b) - requests(a) || a.account.label.localeCompare(b.account.label));
   outcomes.sort((a, b) => b.activity.rateLimited - a.activity.rateLimited || b.activity.requests - a.activity.requests || a.label.localeCompare(b.label));
   const latestObservation = usage.map((result) => result.fetchedAt).filter((value) => Number.isFinite(Date.parse(value))).sort().pop() ?? null;
-  return { refreshedAt: last24h?.observedAt ?? latestObservation, windowHours: last24h?.windowHours ?? 24, recencyKnown, cards: [...quota, ...errors, ...outcomes] };
+  return { refreshedAt: last24h?.observedAt ?? latestObservation, windowHours: last24h?.windowHours ?? 24, recencyKnown, loading: usage.length === 0, pending: usage.length - observed.length, cards: [...quota, ...errors, ...outcomes] };
 }

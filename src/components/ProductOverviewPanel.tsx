@@ -93,7 +93,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
 
   const hero = view === 'overview' ? buildLimitsHero({ usage: accounts, registry, last24h: data.usage.last24h, now }) : null;
   return <>
-    {hero ? <LimitsHero hero={hero} now={now} subscriptions={subscriptions} loading={!accounts.length} onView={onView} /> : null}
+    {hero ? <LimitsHero hero={hero} now={now} subscriptions={subscriptions} onView={onView} /> : null}
 
     {view === 'details' ? <TileGrid>
       <StatTile label="Active subscriptions" value={<>{data.summary.activeSubscriptionCount}{data.summary.subscriptionCountComplete === false ? '+' : ''}</>} note={data.summary.subscriptionCountComplete ? 'Plans and accounts' : 'Some plan statuses need checking'} onClick={() => onView('subscriptions')} />
