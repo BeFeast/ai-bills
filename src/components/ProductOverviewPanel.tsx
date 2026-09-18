@@ -8,7 +8,7 @@ import { fmtMoney, fmtTokens, fmtDate } from './format';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
 import type { RegistryAccount } from '@/lib/accounts';
-import { Button, ButtonLink, Card, Cell, Dialog, Input, Notice, Panel, Progress, Select, StatTile, Table, TileGrid, type Column } from './ui';
+import { Button, ButtonLink, Card, Cell, Dialog, Input, Notice, Panel, Pill, Progress, Select, StatTile, Table, TileGrid, type Column } from './ui';
 
 type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details';
 type SubscriptionDraft = { id: string; label: string; amount: string; currency: string; period: 'month' | 'year' | 'unknown'; renewsAt: string; endsAt: string; status: string };
@@ -44,6 +44,18 @@ function quotaUsed(account: ProviderUsage): number | null {
     return cursorLegacyPercent(data);
   }
   return null;
+}
+
+/** Client ids are free-form; map the known CLIs onto a provider mark, a display name and a share-bar colour. */
+function clientIdentity(name: string): { display: string; provider: string; color: string } {
+  const id = name.toLowerCase();
+  if (id.includes('codex')) return { display: 'Codex', provider: 'codex', color: 'var(--brand-a)' };
+  if (id.includes('claude')) return { display: 'Claude Code', provider: 'claude', color: 'var(--warn)' };
+  if (id.includes('opencode')) return { display: 'OpenCode', provider: 'opencode', color: 'var(--text-faint)' };
+  if (id.includes('cursor')) return { display: 'Cursor', provider: 'cursor', color: 'var(--text-faint)' };
+  if (id.includes('kimi')) return { display: 'Kimi', provider: 'kimi', color: 'var(--text-faint)' };
+  if (id.includes('gemini')) return { display: 'Gemini', provider: 'gemini', color: 'var(--text-faint)' };
+  return { display: name, provider: name, color: 'var(--text-faint)' };
 }
 
 const subscriptionColumns: Column<'sub' | 'plan' | 'cost' | 'renew' | 'access'>[] = [
@@ -123,6 +135,36 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
       <Table className="subs-table" columns={subscriptionColumns} rows={shownSubscriptions} rowKey={s => s.id} renderCell={subscriptionCell} empty="No subscriptions recorded yet." />
       {view === 'overview' && subscriptions.length > 4 ? <p style={{ marginTop: 12 }}><button type="button" className="text-link" onClick={() => onView('subscriptions')}>Show all {subscriptions.length} plan entries →</button></p> : null}
     </Card> : null}
+
+    {view === 'usage' ? (() => {
+      const clients = [...data.usage.byClient].sort((a, b) => (b.pricedApiEquivalentUsd ?? b.apiEquivalentUsd ?? 0) - (a.pricedApiEquivalentUsd ?? a.apiEquivalentUsd ?? 0));
+      const priced = clients.reduce((total, c) => total + (c.apiEquivalentUsd ?? c.pricedApiEquivalentUsd ?? 0), 0);
+      const unpricedTokens = Object.values(data.usage.unpriced).reduce((total, tokens) => total + tokens, 0);
+      const total = data.usage.tokens === null ? (confirmedSubset && api !== null ? `≥ ${fmtMoney(api)}` : 'Usage unavailable') : api === null ? 'Pricing incomplete' : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`;
+      return <Card title="Spending" subtitle={`${month} · API-equivalent at list prices · derived from by-client usage`} actions={<Pill tone="info">new layout</Pill>}>
+        <div className="spend">
+          <div className="stack stack--tight" style={{ gap: 4 }}>
+            <span className="spend__total tabular">{total}</span>
+            <span className="t-small">{usageSubtitle}{unpricedTokens ? ` · excludes ${fmtTokens(unpricedTokens)} unpriced tokens` : ''}</span>
+          </div>
+          {priced > 0 ? <div className="spend__bar" role="img" aria-label="Share of API-equivalent cost by client">{clients.map(c => { const amount = c.apiEquivalentUsd ?? c.pricedApiEquivalentUsd; if (amount === null || amount <= 0) return null; return <div key={c.name} className="spend__seg" style={{ width: `${amount / priced * 100}%`, background: clientIdentity(c.name).color, minWidth: 2 }} />; })}</div> : null}
+          <div className="panel-grid panel-grid--wide">{clients.map(c => {
+            const identity = clientIdentity(c.name); const amount = c.apiEquivalentUsd ?? c.pricedApiEquivalentUsd;
+            return <Panel className="spend-row" key={c.name}>
+              <div className="spend-row__top">
+                <span className="spend-row__dot" style={{ background: identity.color }} aria-hidden="true" />
+                <ProviderIcon provider={identity.provider} size={20} />
+                <span className="spend-row__name">{identity.display}</span>
+                <span className="mono-faint">{c.requests.toLocaleString()} requests</span>
+                <strong className="spend-row__amount">{amount === null ? 'Unpriced' : `${c.apiEquivalentUsd === null ? '≥ ' : ''}${fmtMoney(amount)}`}</strong>
+              </div>
+              <span className="t-small">{amount === null ? 'excluded from subtotal' : `${priced > 0 ? (amount / priced * 100).toFixed(1) : '0.0'}% of cost`} · {fmtTokens(c.tokens)} tokens · {c.name}</span>
+            </Panel>;
+          })}</div>
+          {!clients.length ? <p className="t-small">No monthly usage data available yet.</p> : null}
+        </div>
+      </Card>;
+    })() : null}
 
     {view === 'overview' || view === 'usage' ? <Card title="Who uses the most?" subtitle={`${month} · ${usageSubtitle}`} actions={view === 'overview' ? <Button variant="secondary" size="sm" onClick={() => onView('usage')}>Usage details →</Button> : null}>
       <div className="stack stack--loose">
