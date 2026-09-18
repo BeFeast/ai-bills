@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import type { HeroActivity, HeroWindow, LimitsHero as LimitsHeroData, LimitsHeroCard } from '@/lib/limits-hero';
 import type { ProductSubscription } from '@/lib/overview';
 import { countdown, fmtDate, fmtMoney } from './format';
@@ -48,7 +49,7 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
   }
   const subscription = subscriptions.find((plan) => plan.accountKeys.includes(card.account.key));
   const access = subscription ? <AccountBrowserAccess subscription={subscription} showEntranceLink={false} /> : <AccountBrowserAccess account={card.account} showEntranceLink={false} />;
-  const head = (badge: React.ReactNode) => <div className="hero-card__head"><ProviderIcon provider={card.account.provider} size={24} /><div className="hero-card__id"><span className="hero-card__label">{card.account.label}</span><span className="hero-card__email">{card.account.email || 'Email not recorded'}</span></div>{badge}</div>;
+  const head = (badge: ReactNode) => <div className="hero-card__head"><ProviderIcon provider={card.account.provider} size={24} /><div className="hero-card__id"><span className="hero-card__label">{card.account.label}</span><span className="hero-card__email">{card.account.email || 'Email not recorded'}</span></div>{badge}</div>;
   if (card.kind === 'error') {
     return <article className={`bf-card hero-card hero-card--${card.state === 'error' ? 'bad' : 'warn'}`} aria-label={`${card.account.label} · ${stateLabel[card.state]}`}>
       {head(<Pill tone={card.state === 'error' ? 'bad' : 'warn'}>{stateLabel[card.state]}</Pill>)}
