@@ -23,7 +23,8 @@ ingestion, provider balances and account quota views remain available. See the
 [product overview data contract](docs/product-overview.md) for evidence and coverage rules.
 
 Canonical repository: [BeFeast/ai-bills](https://git.oklabs.uk/BeFeast/ai-bills).
-Management Home: `Dev/Areas/ai-bills`.
+Management Home: `Dev/Areas/ai-bills`. License: [MIT](LICENSE). Every pull request runs
+typecheck, unit tests, the production build and the collector tests through `.forgejo/workflows/ci.yml`.
 
 This is a sanitized source import of the existing application. The original private
 repository and its complete history remain preserved privately. Archived browser-extension
