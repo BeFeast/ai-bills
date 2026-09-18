@@ -64,6 +64,27 @@ describe('product overview', () => {
     expect(result.usage.byClient[0].name).toBe('big');
     expect(result.usage.unpriced).toEqual({ unknown: 500 });
   });
+  it('exposes the rolling 24h window only when the collector labels it as such, and masks keys', () => {
+    const rolling = { period: 'rolling_24h', window_hours: 24, period_start: '2026-09-17T20:00:00+00:00', period_end: '2026-09-18T20:00:00+00:00', requests: null, failed: 3, rate_limited: 2,
+      by_upstream: [
+        { name: 'owner@example.com', provider: 'claude', tokens: 900, requests: 40, failed: 2, rate_limited: 2, last_request_at: '2026-09-18T19:59:00+00:00' },
+        { name: 'sk-or-v1-0123456789abcdef0123456789abcdef', provider: 'openai-compatible-openrouter', tokens: 10, requests: 1, failed: 0, rate_limited: 0, last_request_at: null },
+        { name: '', provider: 'codex', tokens: 1, requests: 1 },
+      ],
+      by_account: [{ name: 'owner@example.com', tokens: 900, requests: 40, failed: 2, rate_limited: 2, last_request_at: '2026-09-18T19:59:00+00:00' }] };
+    const result = buildProductOverview(config, { usage_ledger: { generated: '2026-09-18T20:00:05Z', last_24h: rolling } }, '2026-09');
+    expect(result.usage.last24h).toMatchObject({ windowHours: 24, observedAt: '2026-09-18T20:00:05Z', requests: null, failed: 3, rateLimited: 2 });
+    expect(result.usage.last24h?.byUpstream.map((row) => [row.provider, row.name, row.requests, row.rateLimited, row.lastRequestAt])).toEqual([
+      ['claude', 'owner@example.com', 40, 2, '2026-09-18T19:59:00+00:00'], ['openai-compatible-openrouter', 'sk-or-v1…cdef', 1, 0, undefined],
+    ]);
+    expect(result.usage.last24h?.byAccount[0].lastRequestAt).toBe('2026-09-18T19:59:00+00:00');
+    expect(result.usage.tokens).toBeNull();
+    // A calendar day is not a rolling window.
+    expect(buildProductOverview(config, { usage_ledger: { last_24h: { ...rolling, period: 'day' } } }, '2026-09').usage.last24h).toBeUndefined();
+    expect(buildProductOverview(config, { usage_ledger: { today: rolling } }, '2026-09').usage.last24h).toBeUndefined();
+    const month = buildProductOverview(config, { usage_ledger: { month: { date: '2026-09', by_account: [{ name: 'sk-maestro-abcdefghijklmnopqrstuvwxyz0123456789', tokens: 5, requests: 1 }] } } }, '2026-09');
+    expect(month.usage.byAccount?.[0].name).toBe('sk-maest…6789');
+  });
   it('never treats quota reset timestamps as subscription renewal dates', () => {
     const result = buildProductOverview(config, { providers: [{ provider: 'OpenAI', plan: 'Pro', status: 'active', billing: 'subscription', cost_usd_month: '200' }], codex_usage: { account: { data: { rate_limit: { reset_at: 1789379829 } } } } }, '2026-09');
     expect(result.subscriptions[0].renewsAt).toBeNull();

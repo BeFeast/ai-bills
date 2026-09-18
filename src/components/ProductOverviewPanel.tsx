@@ -3,7 +3,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import type { OverviewUsageGroup, ProductOverview, ProductSubscription } from '@/lib/overview';
 import type { ProviderUsage } from '@/lib/usage';
-import { kimiCodingUsage, kimiUsagePercent, cursorLegacyPercent, codexWindowResetIso, cursorCycleEnd, type ClaudeUsagePayload, type CodexUsagePayload, type KimiUsagePayload, type CursorUsagePayload } from '@/lib/usage';
+import { claudeLimitingWindow, kimiCodingUsage, kimiUsagePercent, cursorLegacyPercent, codexWindowResetIso, cursorCycleEnd, type ClaudeUsagePayload, type CodexUsagePayload, type KimiUsagePayload, type CursorUsagePayload } from '@/lib/usage';
 import { fmtMoney, fmtTokens, fmtDate } from './format';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
@@ -20,8 +20,7 @@ function highestKnown(values: Array<number | null | undefined>) {
 }
 function quotaUsed(account: ProviderUsage): number | null {
   if (account.account.provider === 'claude') {
-    const data = account.data as ClaudeUsagePayload | undefined;
-    return highestKnown([data?.five_hour?.utilization, data?.seven_day?.utilization, ...(data?.limits ?? []).filter(limit => limit.kind === 'session' || limit.kind === 'weekly_all').map(limit => limit.percent)]);
+    return claudeLimitingWindow(account.data as ClaudeUsagePayload | undefined)?.usedPercent ?? null;
   }
   if (account.account.provider === 'codex') {
     const data = account.data as CodexUsagePayload | undefined;
@@ -193,7 +192,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
           const detail = !a.ok ? a.status === 401 || a.status === 403 ? 'Sign-in needs attention' : a.error?.includes('first quota') ? 'First observation pending' : 'Source unavailable · other accounts continue updating' : !fresh ? 'Observation stale · availability unknown' : remaining === 0 ? 'Allowance exhausted · see reset windows' : remaining === null ? 'Quota not reported by this source' : 'Most restricted observed window';
           const subscription = subscriptions.find(plan => plan.accountKeys.includes(a.account.key));
           const payload = a.data;
-          const reset = a.account.provider === 'claude' ? (payload as ClaudeUsagePayload)?.seven_day?.resets_at || (payload as ClaudeUsagePayload)?.five_hour?.resets_at
+          const reset = a.account.provider === 'claude' ? claudeLimitingWindow(payload as ClaudeUsagePayload)?.resetsAt
             : a.account.provider === 'codex' ? codexWindowResetIso((payload as CodexUsagePayload)?.rate_limit?.primary_window ?? null)
             : a.account.provider === 'cursor' ? cursorCycleEnd(payload as CursorUsagePayload)
             : kimiCodingUsage(payload as KimiUsagePayload)?.detail?.resetTime;

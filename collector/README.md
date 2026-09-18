@@ -62,6 +62,16 @@ Both carry per-client/model rankings, full API-equivalent (null if any price is
 missing), and `priced_api_equivalent_usd` as the known subtotal. Ledger files are
 never rewritten. Rankings sort by total tokens; API-equivalent is not a debit.
 
+`last_24h` is a third projection with `period: "rolling_24h"`: every row whose
+timestamp falls in the 24 hours before the report ran, independent of the report
+timezone, so it never empties at midnight. It is recency evidence for the
+dashboard, not a substitute for the calendar day or month. Every projection also
+reports `rate_limited` (rows the provider answered with HTTP 429; a subset of
+`failed`) and a `by_upstream` breakdown keyed by provider and account with
+`last_request_at`, because one identity can serve several providers and
+upstream-key providers are only identifiable by provider. `by_account` keeps
+merging one identity across providers and now carries `last_request_at` too.
+
 Provider frontmatter can declare individual `subscriptions` with plan, amount,
 currency, month/year period, renewal/end dates, account keys, manage/login links
 and evidence. The collector only projects allowed metadata fields. Optionally set

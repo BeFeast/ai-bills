@@ -5,7 +5,7 @@ import { loadConfig, type AppConfig } from './config';
 import { freshness, opaqueId, type Freshness, type AccountBinding } from './accounting';
 import { openRouterFunds, type OpenRouterFunds } from './openrouter';
 import { peekUsageObservations } from './usage-observations';
-import { codexPrimaryWindow, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, type ProviderUsage, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload } from './usage';
+import { claudeLimitingWindow, codexPrimaryWindow, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, type ProviderUsage, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload } from './usage';
 
 /** The proxy's own view of a credential it holds: state and today's request counters, never tokens. */
 export type ProxyCredential = { kind: 'oauth' | 'upstream-key'; status: string; successToday: number; failedToday: number; email?: string; observedAt: string | null };
@@ -196,10 +196,9 @@ export function applyQuotaObservations(accounts: RegistryAccount[], observations
     if (receipt.status !== 'fresh') { row.quota.status = receipt.status === 'stale' ? 'stale' : 'unknown'; continue; }
     let remaining: number | null = null; let resetAt: string | null = null; let unit: 'percent' | 'requests' = 'percent';
     if (observation.account.provider === 'claude') {
-      const data = observation.data as ClaudeUsagePayload | undefined;
-      const windows = [data?.five_hour, data?.seven_day].filter((window) => typeof window?.utilization === 'number');
-      windows.sort((a, b) => (b?.utilization ?? 0) - (a?.utilization ?? 0));
-      if (windows[0]) { remaining = Math.max(0, 100 - windows[0].utilization!); resetAt = windows[0].resets_at || null; }
+      // The active limit (often a scoped model week) constrains the account even when another window is fuller.
+      const window = claudeLimitingWindow(observation.data as ClaudeUsagePayload | undefined);
+      if (window) { remaining = Math.max(0, 100 - window.usedPercent); resetAt = window.resetsAt; }
     } else if (observation.account.provider === 'codex') {
       const data = observation.data as CodexUsagePayload | undefined;
       const windows = [codexPrimaryWindow(data), data?.rate_limit?.secondary_window].filter((window) => typeof window?.used_percent === 'number');

@@ -21,7 +21,11 @@ prove the invoice amount or next renewal date.
 
 Monthly usage requires the collector's actual `usage_ledger.month` projection
 matching the current local month. Today's totals and a short trend cannot stand
-in for month rankings. When some models lack prices, `apiEquivalentUsd` is null
+in for month rankings. `usage.last24h` is present only when the collector ships
+a `usage_ledger.last_24h` projection labelled `rolling_24h`; it lists proxy
+upstreams (provider plus account) with requests, failures, HTTP 429 counts and
+the last request time, and it is the only recency evidence the overview uses.
+Raw API keys appearing as account names are masked to a fingerprint. When some models lack prices, `apiEquivalentUsd` is null
 and `pricedApiEquivalentUsd` preserves the priced subtotal; token rankings still
 cover all captured usage. These are estimates of API list-price equivalent, not
 payments or proof of complete provider history.

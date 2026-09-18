@@ -289,6 +289,53 @@ export function scopeLabel(limit?: ClaudeLimitEntry | null): string {
   return scope || limit?.group || 'Scoped model';
 }
 
+export type ClaudeWindow = {
+  kind: 'session' | 'weekly_all' | 'weekly_scoped';
+  label: string;
+  usedPercent: number;
+  resetsAt: string | null;
+  isActive: boolean;
+  severity: string | null;
+  exhausted: boolean;
+};
+
+/** Every limit window Claude reports for an account, in display order: session, weekly all models, then each scoped model. */
+export function claudeWindows(data?: ClaudeUsagePayload | null): ClaudeWindow[] {
+  const windows: ClaudeWindow[] = [];
+  const push = (kind: ClaudeWindow['kind'], label: string, window: ClaudeLimitWindow | null | undefined, limit: ClaudeLimitEntry | undefined) => {
+    const used = pickFinite(windowUtilization(window), limitPercent(limit));
+    if (used === null) return;
+    windows.push({ kind, label, usedPercent: used, resetsAt: window?.resets_at || limit?.resets_at || null,
+      isActive: limit?.is_active === true, severity: limit?.severity ?? null, exhausted: used >= 100 || isLimitExhausted(limit) });
+  };
+  push('session', 'Session', data?.five_hour, claudeLimitByKind(data ?? undefined, 'session'));
+  push('weekly_all', 'Weekly all models', data?.seven_day, claudeLimitByKind(data ?? undefined, 'weekly_all'));
+  for (const limit of scopedModelLimits(data ?? undefined)) push('weekly_scoped', `${scopeLabel(limit)} weekly`, null, limit);
+  return windows;
+}
+
+/** The window Claude marks active is the one constraining the account; otherwise the most used window. */
+export function claudeLimitingWindow(data?: ClaudeUsagePayload | null): ClaudeWindow | null {
+  const windows = claudeWindows(data);
+  const mostUsed = (list: ClaudeWindow[]) => list.reduce<ClaudeWindow | null>((best, window) => best && best.usedPercent >= window.usedPercent ? best : window, null);
+  return mostUsed(windows.filter((window) => window.isActive)) ?? mostUsed(windows);
+}
+
+function pickFinite(...values: Array<number | null | undefined>): number | null {
+  for (const value of values) if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return null;
+}
+
+export type QuotaTone = 'warn' | 'bad' | undefined;
+/** Shared thresholds for every quota surface: warn under 25 % left, bad under 10 % left or exhausted. */
+export function quotaTone(remainingPercent: number | null | undefined, exhausted = false): QuotaTone {
+  if (exhausted) return 'bad';
+  if (typeof remainingPercent !== 'number' || !Number.isFinite(remainingPercent)) return undefined;
+  if (remainingPercent < 10) return 'bad';
+  if (remainingPercent < 25) return 'warn';
+  return undefined;
+}
+
 export function deriveModelAvailability(data?: ClaudeUsagePayload): ModelAvailability {
   const exhausted = (data?.limits ?? []).filter(isLimitExhausted);
   const globalLimit = exhausted.find((limit) => limit.kind === 'session' || limit.kind === 'weekly_all');

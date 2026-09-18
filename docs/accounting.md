@@ -329,3 +329,24 @@ quota lease through the normal controller API. The container/controller stayed u
 manual leases were not touched. A future coordinated refresh pause would remove
 this race. Until then, verify ownership before any cleanup and never treat every
 active browser as disposable during deployment.
+
+## Limiting window and rolling 24-hour recency — 2026-09-18
+
+`GET /api/accounts` and the Overview quota card chose the fuller of Claude's
+five-hour and seven-day windows, so the scoped model week (`weekly_scoped`) that
+Claude actually marks `is_active` was invisible: a Work account showed 57 % left
+while its Fable week had 17 % left. Both surfaces now use one selector: the
+window flagged `is_active` wins (the most used one when several are active);
+without any flag the most used window, scoped windows included, is the limit.
+Reset times follow the selected window.
+
+The report's rollup gained `last_24h` (`period: "rolling_24h"`), a `rate_limited`
+counter (HTTP 429, a subset of `failed`), a `by_upstream` breakdown keyed by
+provider and account, and `last_request_at` per account and upstream. Native rows
+without an account still stay out of these breakdowns until they are attributed.
+The overview exposes the rolling window as `usage.last24h` only when the collector
+labels it as such; calendar-day figures are never relabelled. Account names that
+are raw API keys are shown as fingerprints.
+
+Validation: `tests/accounting-collectors.test.py` (20 tests) and the Vitest suite
+pass; no collector installation, deployment or ledger rewrite was performed.
