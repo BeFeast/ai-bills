@@ -175,7 +175,10 @@ button.stat-tile:focus-visible { box-shadow: var(--focus-ring); }
 
 /* ---------------------------------------------------------------- subscriptions */
 .subs-table td { vertical-align: middle; }
-.subs-table td:nth-child(2) { white-space: nowrap; }
+.subs-table td:first-child { min-width: 240px; }
+.subs-table td:nth-child(2), .subs-table td:nth-child(3) { white-space: nowrap; }
+.subs-table .cell__main { white-space: nowrap; overflow-wrap: normal; }
+.subs-table .access { gap: 5px; }
 .date-missing { color: var(--warn); font-weight: 500; }
 
 /* account browser access (subscriptions table, quota panels, account headers) */
@@ -183,6 +186,10 @@ button.stat-tile:focus-visible { box-shadow: var(--focus-ring); }
 .access--row { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; }
 .access__actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .access__note { font-size: 11px; color: var(--text-faint); }
+.access__links { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; line-height: 1.4; }
+.access__link { color: var(--text-link); font-weight: 600; white-space: nowrap; }
+.access__link:hover { text-decoration: underline; }
+.access--row .access__links { font-size: 12px; }
 .access__status { font-size: 11px; color: var(--text-faint); }
 .access__status--ok { color: var(--ok); }
 .access__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ProductSubscription } from '@/lib/overview';
 
 import { canOpenAccountBrowser, type AccountBrowserSelector, type AccountBrowserState as BrowserState } from '@/lib/account-browser-types';
-import { Button, ButtonLink, Pill, type PillTone } from './ui';
+import { Button, Pill, type PillTone } from './ui';
 
 const labels: Record<BrowserState['status'], string> = {
   unconfigured: 'Account browser not configured', login_required: 'Sign-in required',
@@ -114,10 +114,12 @@ export function AccountBrowserAccess({ subscription, account, children, showEntr
     {hasBrowserAccess ? <Button variant="secondary" size="sm" disabled={busy} onClick={openAccount} title={`${provider} · ${state?.intendedEmail || label}`}>
       {busy ? 'Opening…' : ready ? 'Manage account ↗' : subscription ? 'Open browser ↗' : 'Open account browser ↗'}
     </Button> : null}
-    {subscription?.manageUrl || subscription?.loginUrl ? <ButtonLink variant="ghost" size="sm" href={subscription.manageUrl || subscription.loginUrl!} target="_blank" rel="noreferrer" title={`Opens the provider website in your current browser. Check which account is signed in: ${label}.`}>Provider website ↗</ButtonLink> : null}
-    {showEntranceLink && hasBrowserAccess ? <ButtonLink variant="ghost" size="sm" href={`/account-browser?${new URLSearchParams(selector).toString()}`} title="Bookmark this entrance to start the browser when needed">Bookmark browser access</ButtonLink> : null}
     {children}
   </div>;
+  const links = subscription?.manageUrl || subscription?.loginUrl || (showEntranceLink && hasBrowserAccess) ? <div className="access__links">
+    {subscription?.manageUrl || subscription?.loginUrl ? <a className="access__link" href={subscription.manageUrl || subscription.loginUrl!} target="_blank" rel="noreferrer" title={`Opens the provider website in your current browser. Check which account is signed in: ${label}.`}>Provider website ↗</a> : null}
+    {showEntranceLink && hasBrowserAccess ? <a className="access__link" href={`/account-browser?${new URLSearchParams(selector).toString()}`} title="Bookmark this entrance to start the browser when needed">Bookmark browser access</a> : null}
+  </div> : null;
   const lease = state?.manualLeaseExpiresAt ? <div className="access__lease">
     <span>{Date.parse(state.manualLeaseExpiresAt) <= now ? 'Browser lease expired at ' : 'Browser access expires at '}{time(state.manualLeaseExpiresAt)}</span>
     <Button variant="ghost" size="sm" disabled={busy} onClick={() => void updateLease('renew')}>Extend session</Button>
@@ -131,6 +133,7 @@ export function AccountBrowserAccess({ subscription, account, children, showEntr
     return <div className="access access--row">
       <Pill tone={statusTone} dot><span role="status">{statusText}</span></Pill>
       {actions}
+      {links}
       {refreshButton}
       {details}
       {lease}
@@ -141,6 +144,7 @@ export function AccountBrowserAccess({ subscription, account, children, showEntr
   return <div className="access">
     {account && !state ? <small className="access__note">Provider website · separate browser sign-in</small> : null}
     {actions}
+    {links}
     {lease}
     <div className="access__meta">
       <small className={`access__status${ready ? ' access__status--ok' : ''}`} role="status">{statusText}</small>
