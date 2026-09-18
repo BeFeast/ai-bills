@@ -14,6 +14,12 @@
   --text-dim:#2a3547;
   --text-mute:#4b586c;
   --text-faint:#7f8a9c;
+  /* Zecori character accents — used only by the brand marks and intro surfaces, never by data, controls or statuses */
+  --zecori-ivory:#faf9f3;
+  --zecori-forest:#193f35;
+  --zecori-brass:#bc873c;
+  --zecori-copper:#a75e39;
+  --zecori-cyan:#34d9ee;
   /* brand */
   --brand-navy:#163065;
   --brand-cyan:#39bef9;

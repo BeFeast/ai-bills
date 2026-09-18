@@ -5,6 +5,7 @@ import type { BillingSnapshot } from '@/lib/billing';
 import type { UsageResponseBody } from '@/lib/usage-service';
 import { DEFAULT_TZ, fmtDate } from './format';
 import { ProductOverviewPanel } from './ProductOverviewPanel';
+import { PRODUCT_ATTRIBUTION, PRODUCT_TAGLINE, ZecoriMark, ZecoriWordmark } from './Brand';
 import type { ProductOverview } from '@/lib/overview';
 import { UsageCard } from './UsageCard';
 import { BillingSection } from './BillingSection';
@@ -144,7 +145,7 @@ export function Dashboard() {
 
   return (
     <AppShell
-      brand={{ mark: <img className="bf-sb__mark" src="/befeast-avatar.png" width={32} height={32} alt="" />, name: 'AI bills', sub: 'befeast · subscriptions & usage' }}
+      brand={{ mark: <ZecoriMark size={32} className="bf-sb__mark" />, name: <ZecoriWordmark height={19} />, sub: <>{PRODUCT_TAGLINE}<br />{PRODUCT_ATTRIBUTION}</> }}
       items={items}
       view={view}
       onView={setView}

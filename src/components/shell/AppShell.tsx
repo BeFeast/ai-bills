@@ -32,7 +32,7 @@ export function useTheme(): [Theme, () => void] {
 }
 
 type AppShellProps<T extends string> = {
-  brand: { mark: ReactNode; name: string; sub?: string };
+  brand: { mark: ReactNode; name: ReactNode; sub?: ReactNode };
   items: SidebarItem<T>[];
   view: T;
   onView: (view: T) => void;

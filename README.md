@@ -1,4 +1,17 @@
-# ai-bills
+# Zecori — your AI treasurer
+
+<img src="public/brand/zecori-avatar-256.png" width="96" height="96" align="right" alt="Zecori, a brass android treasurer with cyan eyes">
+
+**Zecori** (technical slug `ai-bills`, by BeFeast) is an attentive, calm and slightly ironic android
+treasurer for your AI resources. It keeps the books on subscriptions, real payments, prepaid credits,
+remaining quota, reset windows and upcoming renewals, and answers three questions: what can I use
+right now, how much is left and when does it reset, and what is paid, what does my AI cost and which
+charges are ahead. Payments, accrued costs, prepaid balances and API-equivalent estimates stay separate
+figures; quotas that are not comparable are never added up; a reset window is not a renewal; unknown,
+freshness and coverage stay visible. Zecori does not move money, route requests or run an LLM.
+
+Brand assets live in `public/brand/` (avatar, portrait, outlined wordmark) and `src/app/` (favicon,
+apple icon); the working interface keeps the BeFeast design system.
 
 AI subscription and usage dashboard. The overview shows subscription count, recurring
 prices, renewal dates, API-equivalent usage and the largest consumers. Subscription
