@@ -236,7 +236,9 @@ button.stat-tile:focus-visible { box-shadow: var(--focus-ring); }
 .limit__label { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; }
 .limit__label .tabular { margin-left: 4px; }
 .limit__chip { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 500 11px var(--font-mono); padding: 3px 8px; border-radius: 999px; background: var(--surface-1); border: 1px solid var(--border-1); color: var(--text-mute); white-space: nowrap; }
-.limit--unknown { flex-direction: column; align-items: stretch; gap: 10px; }
+.limit--unknown { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 10px; }
+.limit--unknown .kv-strip { flex: 0 0 auto; }
+[data-theme="dark"] .limit__fill { background: linear-gradient(90deg, rgba(57, 190, 249, .18), rgba(57, 190, 249, .40)); }
 @media (max-width: 640px) { .limit__left { flex-basis: 100%; } }
 
 /* Codex device-authorization flow */
