@@ -112,3 +112,11 @@ under `alerts` so the dashboard shows current conditions and recent events. Deli
 ntfy topics from the private config (`config/alerts.example.yml`); with none configured
 the process still records state and history. Run it after each collect and once a day
 with `--summary`; `--dry-run` prints the evaluation without side effects.
+
+## Portable partner collector
+
+`zecori-collect` runs the same extractor, ledger report and quota collectors on a partner's
+machine without the proxy or the secret manager: `zecori-auth-shim` exposes the credentials
+Claude Code and Codex CLI already keep locally, `ai-usage-collect-direct` reads the local session
+logs (`AI_USAGE_LEDGER_DIR`, `AI_USAGE_EXTRACTOR`, `AI_USAGE_HOSTS` point it at the private state
+directory), and the snapshot is `PUT` to the hosted instance. Details: `docs/partner-collector.md`.

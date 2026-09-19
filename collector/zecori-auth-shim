@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""zecori-auth-shim — expose the credentials Claude Code and Codex CLI already keep on this
+machine in the directory shape the quota collectors read (one JSON per account with
+type, email, access_token and, for Codex, account_id).
+
+The CLIs refresh their own tokens; this shim copies the current values on every run and
+never refreshes anything itself. Output files are 0600 inside a private state directory.
+Nothing is uploaded: the quota collectors call the providers directly and only the
+resulting percentages leave the machine.
+"""
+import base64, binascii, json, os, sys
+from pathlib import Path
+
+def read_json(path):
+    try:
+        with open(os.path.expanduser(path)) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+def jwt_claims(token):
+    try:
+        payload = token.split(".")[1]; payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return claims if isinstance(claims, dict) else {}
+    except (IndexError, ValueError, binascii.Error, AttributeError):
+        return {}
+
+def skipped(kind, reason):
+    return {"type": kind, "skipped": reason}
+
+def claude_paths(config_dir=None):
+    """CLAUDE_CONFIG_DIR replaces ~/.claude wholesale: both .credentials.json and .claude.json move inside it."""
+    custom = config_dir or os.environ.get("CLAUDE_CONFIG_DIR")
+    if custom:
+        return os.path.join(custom, ".credentials.json"), os.path.join(custom, ".claude.json")
+    return os.path.join("~", ".claude", ".credentials.json"), os.path.join("~", ".claude.json")
+
+def claude_account(config_dir=None):
+    """Claude Code keeps the OAuth token in <config dir>/.claude/.credentials.json and the signed-in
+    address in <config dir>/.claude.json. Claude Code sessions routed through a proxy (ANTHROPIC_AUTH_TOKEN)
+    or signed in with an API key leave the token empty; that is reported, not guessed around."""
+    creds_path, config_path = claude_paths(config_dir)
+    creds_doc = read_json(creds_path)
+    if creds_doc is None:
+        return skipped("claude", "no .credentials.json in the Claude Code config dir (Claude Code not signed in here)")
+    creds = creds_doc.get("claudeAiOauth") or {}
+    token = creds.get("accessToken")
+    if not token:
+        return skipped("claude", "no claude.ai OAuth token in .credentials.json (sign in with `claude` using a Claude subscription)")
+    email = ((read_json(config_path) or {}).get("oauthAccount") or {}).get("emailAddress") or ""
+    if not email:
+        return skipped("claude", "no oauthAccount.emailAddress in .claude.json")
+    return {"type": "claude", "email": email.strip().lower(), "access_token": token, "expires_at": creds.get("expiresAt"), "source": "claude-code"}
+
+def codex_account(home=None):
+    """Codex CLI keeps its tokens in $CODEX_HOME/auth.json; the address is a claim of the id_token."""
+    home = home or os.environ.get("CODEX_HOME") or "~/.codex"
+    doc = read_json(os.path.join(home, "auth.json"))
+    if doc is None:
+        return skipped("codex", "no auth.json in the Codex home (Codex CLI not signed in here)")
+    tokens = doc.get("tokens") or {}
+    token, account_id = tokens.get("access_token"), tokens.get("account_id")
+    email = (jwt_claims(tokens.get("id_token") or "").get("email") or "").strip().lower()
+    if not token or not account_id:
+        return skipped("codex", "auth.json has no ChatGPT tokens (API-key sign-ins have no quota window)")
+    if not email:
+        return skipped("codex", "id_token carries no email claim")
+    return {"type": "codex", "email": email, "access_token": token, "account_id": account_id, "source": "codex-cli"}
+
+def write_auth_dir(directory, accounts):
+    root = Path(os.path.expanduser(directory)); root.mkdir(parents=True, exist_ok=True); os.chmod(root, 0o700)
+    for stale in root.glob("*.json"):
+        stale.unlink()
+    names = []
+    for account in accounts:
+        name = f"{account['type']}-{account['email']}.json"
+        path = root / name
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            json.dump(account, fh)
+        names.append(name)
+    return names
+
+def main():
+    directory = os.environ.get("ZECORI_AUTH_DIR") or os.path.join(os.environ.get("ZECORI_STATE") or "~/.local/state/zecori", "auths")
+    found = [claude_account(), codex_account()]
+    accounts = [a for a in found if "access_token" in a]
+    names = write_auth_dir(directory, accounts)
+    print(json.dumps({"auth_dir": os.path.expanduser(directory), "accounts": [{"type": a["type"], "email": a["email"]} for a in accounts],
+                      "skipped": [a for a in found if "skipped" in a], "files": names}))
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

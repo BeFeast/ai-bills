@@ -24,6 +24,6 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
           uv --version
-          for test in tests/accounting-collectors.test.py tests/test_claude_quota_collector.py tests/test_codex_quota_collector.py tests/test_openrouter_collector.py tests/test_alerts_collector.py; do
+          for test in tests/accounting-collectors.test.py tests/test_claude_quota_collector.py tests/test_codex_quota_collector.py tests/test_openrouter_collector.py tests/test_alerts_collector.py tests/test_zecori_auth_shim.py; do
             uv run --project collector --frozen python "$test"
           done

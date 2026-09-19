@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# zecori-collect — portable collector for a hosted Zecori instance.
+#
+# Runs on the machine where Claude Code and/or Codex CLI are signed in. Needs python3 (>= 3.11),
+# jq and curl; PyYAML only for pricing (a bundled default is used when none is configured).
+# No proxy, no secret manager, no SSH: quotas come from the CLIs' own credentials through
+# zecori-auth-shim, usage from the CLIs' local session logs, and the snapshot is PUT to the
+# instance with a bearer token. Everything else the dashboard can show (subscriptions, payments,
+# proxy credentials) is left empty and rendered as unknown, never invented.
+#
+# Required:  ZECORI_SNAPSHOT_URL   https://<instance>/api/snapshot
+#            ZECORI_INGEST_TOKEN   bearer token (or ZECORI_INGEST_TOKEN_FILE with the token inside)
+# Optional:  ZECORI_STATE (~/.local/state/zecori), AI_USAGE_TIMEZONE (IANA, default UTC),
+#            AI_USAGE_PRICING (pricing.yml), ZECORI_SUBSCRIPTIONS_FILE (JSON array),
+#            OPENROUTER_API_KEY, ZECORI_ALERTS_CONFIG (enables ai-bills-alerts), ZECORI_DRY_RUN=1
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+: "${ZECORI_SNAPSHOT_URL:?Set ZECORI_SNAPSHOT_URL to https://<instance>/api/snapshot}"
+[[ "$ZECORI_SNAPSHOT_URL" =~ ^https://[a-zA-Z0-9.:/_-]+$ ]] || { echo "ZECORI_SNAPSHOT_URL must be a plain https URL" >&2; exit 2; }
+token="${ZECORI_INGEST_TOKEN:-}"; [ -z "$token" ] && [ -n "${ZECORI_INGEST_TOKEN_FILE:-}" ] && token=$(tr -d '\r\n' < "$ZECORI_INGEST_TOKEN_FILE")
+[ -n "$token" ] || [ "${ZECORI_DRY_RUN:-}" = 1 ] || { echo "Set ZECORI_INGEST_TOKEN or ZECORI_INGEST_TOKEN_FILE" >&2; exit 2; }
+state=$(python3 -c 'import os,sys; print(os.path.expanduser(sys.argv[1]))' "${ZECORI_STATE:-~/.local/state/zecori}")
+mkdir -p "$state/auths" "$state/usage"; chmod 700 "$state" "$state/auths"
+export AI_USAGE_TIMEZONE="${AI_USAGE_TIMEZONE:-UTC}"
+export AI_USAGE_LEDGER_DIR="$state/usage" AI_USAGE_EXTRACTOR="$here/ai-usage-extract" AI_USAGE_HOSTS="$state/hosts.json"
+export AI_USAGE_PRICING="${AI_USAGE_PRICING:-$here/pricing.default.yml}"
+py=(python3)
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# 1. credentials the CLIs already hold -> quota observations (percentages only)
+shim=$(ZECORI_STATE="$state" "${py[@]}" "$here/zecori-auth-shim")
+CLAUDE_USAGE=$(AI_BILLS_CLIPROXY_AUTH_DIR="$state/auths" "${py[@]}" "$here/ai-claude-quotas" 2>/dev/null) || CLAUDE_USAGE='{}'
+CODEX_USAGE=$(AI_BILLS_CLIPROXY_AUTH_DIR="$state/auths" "${py[@]}" "$here/ai-codex-quotas" 2>/dev/null) || CODEX_USAGE='{}'
+[ -n "$CLAUDE_USAGE" ] || CLAUDE_USAGE='{}'; [ -n "$CODEX_USAGE" ] || CODEX_USAGE='{}'
+# 2. native usage from the CLIs' session logs on this machine (no remote hosts)
+"${py[@]}" "$here/ai-usage-collect-direct" >/dev/null 2>&1 || echo "usage collection failed; the ledger keeps its previous rows" >&2
+LEDGER_STATUS=fresh
+LEDGER=$("${py[@]}" "$here/ai-usage-report" --rollup 2>/dev/null) || { LEDGER='{}'; LEDGER_STATUS=error; }
+[ -n "$LEDGER" ] || { LEDGER='{}'; LEDGER_STATUS=error; }
+# 3. optional inputs
+SUBSCRIPTIONS='[]'; SUBS_STATUS=missing
+if [ -n "${ZECORI_SUBSCRIPTIONS_FILE:-}" ]; then SUBSCRIPTIONS=$(jq -ce 'if type == "array" then . else error("subscriptions must be an array") end' "$ZECORI_SUBSCRIPTIONS_FILE") && SUBS_STATUS=fresh || { SUBSCRIPTIONS='[]'; SUBS_STATUS=error; }; fi
+OPENROUTER='{}'
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then OPENROUTER=$(printf '%s' "$OPENROUTER_API_KEY" | "${py[@]}" "$here/ai-openrouter-balance" 2>/dev/null) || OPENROUTER='{}'; fi
+ALERTS='{}'
+if [ -n "${ZECORI_ALERTS_CONFIG:-}" ] && [ -f "$state/alerts/alerts.json" ]; then ALERTS=$(cat "$state/alerts/alerts.json"); printf '%s' "$ALERTS" | jq -e 'type=="object"' >/dev/null 2>&1 || ALERTS='{}'; fi
+
+OUT=$(mktemp "$state/.snapshot.XXXXXX.json"); trap 'rm -f "$OUT"' EXIT
+jq -n --arg now "$now" --arg ledger_status "$LEDGER_STATUS" --arg subs_status "$SUBS_STATUS" \
+  --argjson claude_usage "$CLAUDE_USAGE" --argjson codex_usage "$CODEX_USAGE" --argjson ledger "$LEDGER" \
+  --argjson subscriptions "$SUBSCRIPTIONS" --argjson openrouter "$OPENROUTER" --argjson alerts "$ALERTS" --argjson shim "$shim" \
+  '{generated: $now, collector: {kind: "zecori-collect", accounts: $shim.accounts, skipped: $shim.skipped},
+    source_receipts: [{id: "token-ledger", status: $ledger_status, observedAt: $now}, {id: "provider-subscriptions", status: $subs_status, observedAt: $now}],
+    proxy_auths: [], proxy_usage: [], maestro_cost_today: [], providers: [], payments: [],
+    claude_usage: $claude_usage, codex_usage: $codex_usage, usage_ledger: $ledger, subscriptions: $subscriptions,
+    openrouter: $openrouter, alerts: $alerts, account_registry: {generatedAt: $now, accounts: [], sources: []}}' > "$OUT"
+cp "$OUT" "$state/snapshot.json"
+# 4. alerts, evaluated on the snapshot just produced (picked up by the next run)
+if [ -n "${ZECORI_ALERTS_CONFIG:-}" ]; then AI_BILLS_SNAPSHOT="$state/snapshot.json" AI_BILLS_ALERTS_STATE="$state/alerts" AI_BILLS_ALERTS_CONFIG="$ZECORI_ALERTS_CONFIG" "${py[@]}" "$here/ai-bills-alerts" >/dev/null 2>&1 || echo "alerts evaluation failed" >&2; fi
+# 5. deliver
+if [ "${ZECORI_DRY_RUN:-}" = 1 ]; then jq -c '{generated, accounts: .collector.accounts, claude: (.claude_usage|keys), codex: (.codex_usage|keys), ledger: .usage_ledger.last_24h.period, sources: .source_receipts}' "$OUT"; exit 0; fi
+# The bearer header goes through a private curl config file, never through argv (visible to other local users in ps).
+HDR=$(mktemp "$state/.header.XXXXXX"); trap 'rm -f "$OUT" "$HDR"' EXIT
+printf 'header = "Authorization: Bearer %s"\n' "$token" > "$HDR"
+if curl -fsS -m 60 -X PUT "$ZECORI_SNAPSHOT_URL" -K "$HDR" -H 'Content-Type: application/json' --data-binary "@$OUT" -o "$state/last-delivery.json"; then
+  jq -c '{delivered: .generated, bytes}' "$state/last-delivery.json"
+else
+  echo "delivery failed: $ZECORI_SNAPSHOT_URL (see $state/last-delivery.json)" >&2; exit 1
+fi
