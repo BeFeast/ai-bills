@@ -52,6 +52,10 @@ a:focus-visible, summary:focus-visible, button:focus-visible { outline: none; bo
 [data-theme="dark"] .zecori-wordmark .zecori-wordmark__dark { display: block; }
 .bf-sb__brand .zecori-wordmark { margin-bottom: 3px; }
 .bf-sb__brand .bf-sb__sub { line-height: 1.35; }
+.zecori-signature { margin: 0; font: 500 10.5px/1.4 var(--font-mono); color: var(--text-faint); white-space: pre; }
+.zecori-signature a { color: var(--text-mute); text-decoration: none; }
+.zecori-signature a:hover { color: var(--text); text-decoration: underline; }
+.bf-sb__footer:has(.zecori-signature) { padding-left: 4px; }
 .intro { display: flex; align-items: center; gap: 16px; }
 .intro__text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .intro__lead { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }

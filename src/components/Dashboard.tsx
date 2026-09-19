@@ -5,7 +5,7 @@ import type { BillingSnapshot } from '@/lib/billing';
 import type { UsageResponseBody } from '@/lib/usage-service';
 import { DEFAULT_TZ, fmtDate } from './format';
 import { ProductOverviewPanel } from './ProductOverviewPanel';
-import { PRODUCT_ATTRIBUTION, PRODUCT_TAGLINE, ZecoriMark, ZecoriWordmark } from './Brand';
+import { PRODUCT_ATTRIBUTION, PRODUCT_TAGLINE, ZecoriMark, ZecoriSignature, ZecoriWordmark } from './Brand';
 import type { ProductOverview } from '@/lib/overview';
 import { UsageCard } from './UsageCard';
 import { BillingSection } from './BillingSection';
@@ -155,7 +155,7 @@ export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
       items={items}
       view={view}
       onView={setView}
-      sidebarFooter={`ai-bills v${pkg.version} · ${tz}`}
+      sidebarFooter={<ZecoriSignature version={pkg.version} />}
       title={VIEWS[view].label}
       subtitle={VIEWS[view].subtitle}
       status={{ text: status.text, tone: statusTone[status.tone] }}

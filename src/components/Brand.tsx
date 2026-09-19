@@ -17,3 +17,12 @@ export function ZecoriWordmark({ height = 16 }: { height?: number }) {
     <img className="zecori-wordmark__dark" src="/brand/zecori-wordmark-inverse.svg" alt="" height={height} />
   </span>;
 }
+
+/** Sidebar signature: a small ledger mark, the product line and the BeFeast attribution. Mono, three lines, no timezone noise. */
+export function ZecoriSignature({ version }: { version: string }) {
+  return <pre className="zecori-signature" aria-label={`${PRODUCT_NAME} keeps the books. Version ${version}. By BeFeast.`}>
+{`┌─┐
+│¤│  Zecori keeps the books.
+└─┘  v${version} · `}<a href="https://befeast.com" target="_blank" rel="noreferrer">befeast.com</a>
+  </pre>;
+}
