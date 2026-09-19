@@ -16,8 +16,9 @@ export async function POST(request: Request) {
   try {
     const path = loadConfig().accounting?.journal_path;
     if (!path) return NextResponse.json({ error: 'Private accounting journal is not configured' }, { status: 503 });
-    // Bounded by bytes on the wire, not by decoded string length.
-    const read = await readBounded(request, MAX_STATEMENT_BYTES + 10_000);
+    // Bounded by bytes on the wire. JSON escaping can double a quote-heavy CSV, so the wire bound is twice the
+    // decoded limit plus the envelope; the decoded CSV is still held to MAX_STATEMENT_BYTES by importStatement.
+    const read = await readBounded(request, MAX_STATEMENT_BYTES * 2 + 10_000);
     if (!read.ok) throw new AccountingInputError('Import is too large');
     const body = JSON.parse(read.text);
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new AccountingInputError('Expected a JSON object');
