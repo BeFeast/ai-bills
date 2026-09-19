@@ -1,5 +1,5 @@
 import importlib.machinery, importlib.util, json, tempfile, unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -110,7 +110,7 @@ class EdgeTests(unittest.TestCase):
             self.assertEqual([(e['key'], e['kind'], e['severity']) for e in alerts.apply_edges(alerts.evaluate(exhausted, RULES, NOW), directory, NOW)], [('quota:codex:personal@example.invalid', 'escalated', 'P5')])
             self.assertEqual(alerts.apply_edges(alerts.evaluate(exhausted, RULES, NOW), directory, NOW), [])
             eased = json.loads(json.dumps(SNAPSHOT)); eased['codex_usage']['personal@example.invalid'] = codex(80)
-            later = NOW.replace(hour=3); eased_conditions = alerts.evaluate(eased, RULES, later)
+            later = NOW + timedelta(minutes=10); eased_conditions = alerts.evaluate(eased, RULES, later)
             self.assertEqual([(e['key'], e['kind'], e['state']) for e in alerts.apply_edges(eased_conditions, directory, later)], [('quota:codex:personal@example.invalid', 'eased', 'warn')])
             self.assertEqual(next(c['since'] for c in eased_conditions if c['key'] == 'quota:codex:personal@example.invalid'), raised_since['quota:codex:personal@example.invalid'])
             recovered = json.loads(json.dumps(SNAPSHOT)); recovered['codex_usage']['personal@example.invalid'] = codex(10)
