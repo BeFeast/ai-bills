@@ -12,7 +12,7 @@ import { AccountBrowserAccess } from './AccountBrowserAccess';
 import type { RegistryAccount } from '@/lib/accounts';
 import { Button, ButtonLink, Card, Cell, Dialog, Input, Notice, Panel, Pill, Progress, Select, StatTile, Table, TileGrid, type Column } from './ui';
 
-type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details';
+type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'alerts' | 'routing' | 'details';
 type SubscriptionDraft = { id: string; label: string; amount: string; currency: string; period: 'month' | 'year' | 'unknown'; renewsAt: string; endsAt: string; status: string };
 const money = (amount: number | null, currency = 'USD') => amount === null ? 'Price not recorded' : new Intl.NumberFormat('en', { style: 'currency', currency, maximumFractionDigits: 2 }).format(amount);
 function date(value: string | null) { return value && Number.isFinite(Date.parse(value)) ? new Date(value.length === 10 ? `${value}T12:00:00Z` : value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Jerusalem' }) : null; }

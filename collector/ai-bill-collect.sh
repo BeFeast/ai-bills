@@ -126,6 +126,10 @@ LEDGER=$(uv run --project "$COLLECTOR_DIR" --frozen python "${AI_USAGE_REPORT_BI
 [ -n "$LEDGER" ] || LEDGER='{}'
 REGISTRY=$(uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-account-inventory") || REGISTRY='{"accounts":[],"sources":[{"id":"inventory","status":"error"}]}'
 
+# Current alert state written by ai-bills-alerts on this host; absent or invalid -> {}.
+ALERTS=$(cat "${AI_BILLS_ALERTS_FILE:-$HOME/.local/state/ai-bills-alerts/alerts.json}" 2>/dev/null) || ALERTS='{}'
+printf '%s' "$ALERTS" | jq -e 'type == "object"' >/dev/null 2>&1 || ALERTS='{}'
+
 jq -n \
   --arg providers_status "$PROVIDERS_STATUS" --arg payments_status "$PAYMENTS_STATUS" --arg ledger_status "$LEDGER_STATUS" \
   --argjson runpod "$RUNPOD" --argjson vast "$VAST" --argjson openrouter "$OPENROUTER" \
@@ -138,10 +142,11 @@ jq -n \
   --argjson claude_usage "$CLAUDE_USAGE" \
   --argjson codex_usage "$CODEX_USAGE" \
   --argjson account_quotas "$ACCOUNT_QUOTAS" \
+  --argjson alerts "$ALERTS" \
   '{generated: (now | todate), source_receipts: [{id: "provider-subscriptions", status: $providers_status, observedAt: (now|todate)}, {id: "payments", status: $payments_status, observedAt: (now|todate)}, {id: "token-ledger", status: $ledger_status, observedAt: (now|todate)}], runpod: $runpod, vast: $vast, openrouter: $openrouter,
     proxy_auths: $auths, proxy_usage: $usage,
     maestro_cost_today: $cost, providers: $providers, subscriptions: $subscriptions, payments: $payments,
-    usage_ledger: $ledger, claude_usage: $claude_usage, codex_usage: $codex_usage, account_quotas:$account_quotas, account_registry: $registry}' > "$OUT"
+    usage_ledger: $ledger, claude_usage: $claude_usage, codex_usage: $codex_usage, account_quotas:$account_quotas, account_registry: $registry, alerts: $alerts}' > "$OUT"
 
 if [ -n "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ]; then
   : "${AI_BILLS_SNAPSHOT_RECEIVER:?Set fixed receiver executable path}"
