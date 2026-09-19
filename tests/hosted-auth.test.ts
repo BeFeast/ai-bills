@@ -94,5 +94,8 @@ describe('clerk runtime wiring', () => {
     expect(sat).toMatchObject({ isSatellite: true, domain: 'zecori-demo.befeast.com', signInUrl: 'https://zecori.befeast.com/sign-in', afterSignOutUrl: 'https://zecori.befeast.com/sign-in', allowedRedirectOrigins: ['https://zecori.befeast.com', 'https://*.befeast.com'] });
     // The primary naming itself is not a satellite.
     expect(clerkRuntime({ AI_BILLS_PUBLIC_ORIGIN: 'https://zecori.befeast.com', AI_BILLS_CLERK_PRIMARY_ORIGIN: 'https://zecori.befeast.com' }).isSatellite).toBe(false);
+    // A satellite without its own public origin cannot be configured for Clerk; refuse instead of running half-set-up.
+    expect(() => clerkRuntime({ AI_BILLS_CLERK_PRIMARY_ORIGIN: 'https://zecori.befeast.com' })).toThrow(/AI_BILLS_PUBLIC_ORIGIN/);
+    expect(() => clerkRuntime({ AI_BILLS_PUBLIC_ORIGIN: 'not a url', AI_BILLS_CLERK_PRIMARY_ORIGIN: 'https://zecori.befeast.com' })).toThrow(/AI_BILLS_PUBLIC_ORIGIN/);
   });
 });

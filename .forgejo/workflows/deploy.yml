@@ -59,7 +59,8 @@ jobs:
           bot_pat=$(get OKLABS_BOT_PAT /forgejo); dh_pass=$(get DOCKHAND_ADMIN_PASSWORD /dockhand)
           dockhand=$(get AI_BILLS_DOCKHAND_URL /ai-bills); app_url=$(get AI_BILLS_APP_URL /ai-bills); ntfy=$(get AI_BILLS_NTFY_URL /ai-bills)
           hosted_url=$(get ZECORI_APP_URL /ai-bills); clerk_pk=$(get ZECORI_CLERK_PUBLISHABLE_KEY /ai-bills)
-          stacks=$(get AI_BILLS_DEPLOY_STACKS /ai-bills 2>/dev/null || echo "ai-bills zecori")
+          # No fallback: a missing or unreadable stack list must fail the deploy, not silently skip partner stacks.
+          stacks=$(get AI_BILLS_DEPLOY_STACKS /ai-bills)
           for v in "$bot_pat" "$dh_pass" "$dockhand" "$app_url" "$ntfy" "$hosted_url"; do echo "::add-mask::$v"; done
           {
             echo "BOT_USER=$(get OKLABS_BOT_USERNAME /forgejo)"
@@ -91,7 +92,10 @@ jobs:
             curl -fsS -b "$RUNNER_TEMP/dockhand.jar" -H "Origin: $DOCKHAND" "$DOCKHAND/api/stacks/$stack/compose?env=1" | jq -j '.content' > "$RUNNER_TEMP/deployed-$stack.yaml"
             # Partner stacks (zecori-<slug>) are the zecori file with the stack name, container name, port and paths substituted.
             if [[ "$stack" == zecori-* ]]; then
-              port=$(grep -oE '"[0-9]+:18088"' "$RUNNER_TEMP/deployed-$stack.yaml" | tr -d '"' | cut -d: -f1)
+              # Exactly one host port must map to 18088; anything else is a malformed partner stack, not a drift.
+              port=$(grep -oE '"[0-9]+:18088"' "$RUNNER_TEMP/deployed-$stack.yaml" | tr -d '"' | cut -d: -f1 | sort -u)
+              if [ -z "$port" ] || [ "$(printf '%s\n' "$port" | wc -l)" -ne 1 ]; then echo "FATAL: expected exactly one host port mapped to 18088 in the deployed $stack stack file" >&2; exit 1; fi
+              printf '%s' "$port" > "$RUNNER_TEMP/port-$stack"
               curl -fsS "$STACK_SOURCE_BASE/zecori/compose.yaml" | sed -e "s/zecori:$/$stack:/; s/container_name: zecori/container_name: $stack/; s#13190:18088#$port:18088#; s#/opt/stacks/zecori/#/opt/stacks/$stack/#g" > "$RUNNER_TEMP/source-$stack.yaml"
             else
               curl -fsS "$STACK_SOURCE_BASE/$stack/compose.yaml" > "$RUNNER_TEMP/source-$stack.yaml"
@@ -164,7 +168,7 @@ jobs:
               case "$stack" in
                 ai-bills) curl -fsS -m 5 "$APP_URL/api/health" >/dev/null && curl -fsS -m 10 "$APP_URL/" | grep -q '<title>Zecori' || all=0 ;;
                 zecori) curl -fsS -m 5 "$HOSTED_URL/api/health" >/dev/null || all=0 ;;
-                zecori-*) port=$(grep -oE '"[0-9]+:18088"' "$RUNNER_TEMP/deployed-$stack.yaml" | tr -d '"' | cut -d: -f1); curl -fsS -m 5 "${HOSTED_URL%:*}:$port/api/health" >/dev/null || all=0 ;;
+                zecori-*) curl -fsS -m 5 "${HOSTED_URL%:*}:$(cat "$RUNNER_TEMP/port-$stack")/api/health" >/dev/null || all=0 ;;
               esac
             done
             if [ "$all" = 1 ]; then ok=1; break; fi
