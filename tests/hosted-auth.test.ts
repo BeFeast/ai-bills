@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { authMode, authorizeEmail, parseEmailList } from '../src/lib/hosted-auth';
+import { publicUrl } from '../src/middleware';
 import { bearerAccepted, parseTokenDigests, readBounded, validateSnapshot, writeSnapshotAtomically } from '../src/lib/snapshot-ingest';
 
 describe('hosted authorization', () => {
@@ -73,5 +74,14 @@ describe('snapshot ingest', () => {
     expect(JSON.parse(await readFile(join(dir, 'snapshot.json'), 'utf8')).generated).toBe('2026-09-19T00:00:00Z');
     delete process.env.AI_BILLS_INGEST_TOKEN_SHA256;
     expect((await call(`Bearer ${token}`, '{"generated":"x"}')).status).toBe(404);
+  });
+});
+
+describe('public return address', () => {
+  const request = { nextUrl: { pathname: '/usage', search: '?x=1' }, url: 'https://0.0.0.0:18088/usage?x=1' };
+  it('rebuilds the URL on the configured public origin and falls back to the request URL', () => {
+    expect(publicUrl(request, 'https://zecori.befeast.com')).toBe('https://zecori.befeast.com/usage?x=1');
+    expect(publicUrl(request, undefined)).toBe('https://0.0.0.0:18088/usage?x=1');
+    expect(publicUrl(request, 'not a url')).toBe('https://0.0.0.0:18088/usage?x=1');
   });
 });

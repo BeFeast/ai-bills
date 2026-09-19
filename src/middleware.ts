@@ -5,6 +5,16 @@ import { PUBLIC_PATHS, authMode, authorizeEmail, parseEmailList } from '@/lib/ho
 const isPublic = createRouteMatcher(PUBLIC_PATHS);
 const isApi = createRouteMatcher(['/api/(.*)']);
 let warnedAboutClaim = false;
+/** The public URL of a request: configured origin plus the request path, or the request URL when no origin is configured. */
+let warnedAboutOrigin = false;
+export function publicUrl(request: { nextUrl: { pathname: string; search: string }; url: string }, origin = process.env.AI_BILLS_PUBLIC_ORIGIN): string {
+  if (!origin) return request.url;
+  try { return new URL(request.nextUrl.pathname + request.nextUrl.search, origin).toString(); }
+  catch {
+    if (!warnedAboutOrigin) { warnedAboutOrigin = true; console.warn(`[zecori] AI_BILLS_PUBLIC_ORIGIN is not an absolute URL (${origin}); sign-in return addresses fall back to the request URL.`); }
+    return request.url;
+  }
+}
 
 /** Order: public paths → Clerk session (redirect to sign-in / 401 for API) → this instance's own allow list (403 by name). */
 const withClerk = clerkMiddleware(async (auth, request) => {
@@ -12,7 +22,8 @@ const withClerk = clerkMiddleware(async (auth, request) => {
   const session = await auth();
   if (!session.userId) {
     if (isApi(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    return session.redirectToSignIn({ returnBackUrl: request.url });
+    // Behind the tunnel the request URL names the container (0.0.0.0:18088); the return address must be the public origin.
+    return session.redirectToSignIn({ returnBackUrl: publicUrl(request) });
   }
   const claims = session.sessionClaims as { email?: unknown } | null;
   let email = typeof claims?.email === 'string' ? claims.email : null;
