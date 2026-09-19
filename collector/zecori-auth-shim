@@ -29,19 +29,26 @@ def jwt_claims(token):
 def skipped(kind, reason):
     return {"type": kind, "skipped": reason}
 
+def claude_paths(config_dir=None):
+    """CLAUDE_CONFIG_DIR replaces ~/.claude wholesale: both .credentials.json and .claude.json move inside it."""
+    custom = config_dir or os.environ.get("CLAUDE_CONFIG_DIR")
+    if custom:
+        return os.path.join(custom, ".credentials.json"), os.path.join(custom, ".claude.json")
+    return os.path.join("~", ".claude", ".credentials.json"), os.path.join("~", ".claude.json")
+
 def claude_account(config_dir=None):
     """Claude Code keeps the OAuth token in <config dir>/.claude/.credentials.json and the signed-in
     address in <config dir>/.claude.json. Claude Code sessions routed through a proxy (ANTHROPIC_AUTH_TOKEN)
     or signed in with an API key leave the token empty; that is reported, not guessed around."""
-    base = config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or "~"
-    creds_doc = read_json(os.path.join(base, ".claude", ".credentials.json"))
+    creds_path, config_path = claude_paths(config_dir)
+    creds_doc = read_json(creds_path)
     if creds_doc is None:
-        return skipped("claude", "no .claude/.credentials.json (Claude Code not signed in here)")
+        return skipped("claude", "no .credentials.json in the Claude Code config dir (Claude Code not signed in here)")
     creds = creds_doc.get("claudeAiOauth") or {}
     token = creds.get("accessToken")
     if not token:
         return skipped("claude", "no claude.ai OAuth token in .credentials.json (sign in with `claude` using a Claude subscription)")
-    email = ((read_json(os.path.join(base, ".claude.json")) or {}).get("oauthAccount") or {}).get("emailAddress") or ""
+    email = ((read_json(config_path) or {}).get("oauthAccount") or {}).get("emailAddress") or ""
     if not email:
         return skipped("claude", "no oauthAccount.emailAddress in .claude.json")
     return {"type": "claude", "email": email.strip().lower(), "access_token": token, "expires_at": creds.get("expiresAt"), "source": "claude-code"}
