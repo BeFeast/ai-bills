@@ -1,0 +1,9 @@
+{
+  "rules": [
+    { "project": "product-app", "client": "t3" },
+    { "project": "product-app", "client_prefix": "zed-" },
+    { "project": "ops", "host": "sindri" },
+    { "project": "personal", "account": "operator@example.com", "provider": "claude" },
+    { "project": "personal", "via": "direct" }
+  ]
+}

@@ -142,10 +142,12 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
       <div className="stack stack--loose">
         {data.usage.reconciliation?.status === 'partial' ? <Notice tone="info" role="status">Combined usage is unknown: {data.usage.reconciliation.nativeObservations?.toLocaleString()} native observations may overlap with proxy traffic. Rankings below show the confirmed subtotal of {fmtTokens(data.usage.reconciliation.confirmedTokens ?? 0)} tokens and {data.usage.reconciliation.confirmedRequests?.toLocaleString()} requests. No repeated observations are added to that subtotal.</Notice> : null}
         <div className="rank-grid">
+          {data.usage.byProject?.length ? rankColumn('By project', data.usage.byProject) : null}
           {rankColumn('By client', data.usage.byClient)}
           {rankColumn('By model', data.usage.byModel)}
           {data.usage.byAccount?.length ? rankColumn('By account', data.usage.byAccount) : null}
         </div>
+        {view === 'usage' ? <p className="t-small">Export this month as CSV: {(['project', 'client', 'model', 'account'] as const).map((by, index) => <span key={by}>{index ? ' · ' : ''}<a className="text-link" href={`/api/usage/export?period=month&by=${by}`} download>by {by}</a></span>)} · <a className="text-link" href="/api/usage/export?period=last_24h&by=upstream" download>last 24h by upstream</a>. Rows carry the period and its reconciliation state; unpriced models leave the USD column empty.</p> : null}
         {view === 'usage' && Object.keys(data.usage.unpriced).length ? <details className="details-panel">
           <summary><span>{Object.keys(data.usage.unpriced).length} models have no verified API price</span><span className="details-hint">expand</span></summary>
           <p className="t-small">Tokens are included in usage. Their cost is excluded from the known API subtotal.</p>
