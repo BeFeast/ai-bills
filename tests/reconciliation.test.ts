@@ -57,5 +57,11 @@ describe('reconcileMonth', () => {
     const rows = reconcileMonth([rec({ provider: 'xai', kind: 'api-equivalent' }), rec({ provider: 'xai', id: 'z', amount: 10 })], only, '2026-09').rows;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ provider: 'xai', invoicedUsd: 10, usageUsd: null, status: 'no-usage-evidence', note: expect.stringContaining('none are priced') });
+    expect(rows[0].note).toContain('1 balance/subscription/estimate record not counted');
+    // A provider with only balance/subscription rows is explained, not silently shown as uninvoiced.
+    const onlyBalance = reconcileMonth([rec({ kind: 'balance', amount: 40 }), rec({ id: 'q', kind: 'subscription', amount: 20 })], ledger, '2026-09').rows.find(r => r.provider === 'openai')!;
+    expect(onlyBalance).toMatchObject({ status: 'no-invoice', invoicedUsd: null, invoiceRecords: 0 });
+    expect(onlyBalance.note).toContain('no statement charges');
+    expect(onlyBalance.note).toContain('2 balance/subscription/estimate records not counted');
   });
 });

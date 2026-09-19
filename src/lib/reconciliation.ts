@@ -52,11 +52,13 @@ export function reconcileMonth(records: FinancialRecord[], ledgerMonth: unknown,
   const tolerance = options.tolerance ?? RECONCILIATION_TOLERANCE; const rates = options.rates ?? new Map<string, FxRate>();
   const usage = usageByProvider(ledgerMonth, month);
   const ledgerForMonth = Boolean(usage.period?.start?.startsWith(month));
-  const invoices = new Map<string, { accrual: number | null; payment: number | null; count: number; foreign: Set<string>; converted: Set<string> }>();
+  const invoices = new Map<string, { accrual: number | null; payment: number | null; count: number; other: number; foreign: Set<string>; converted: Set<string> }>();
   for (const record of records) {
-    if (!record.date.startsWith(`${month}-`) || (record.kind !== 'accrual' && record.kind !== 'payment')) continue;
+    if (!record.date.startsWith(`${month}-`)) continue;
     const key = providerKey(record.provider);
-    const entry = invoices.get(key) ?? { accrual: null, payment: null, count: 0, foreign: new Set<string>(), converted: new Set<string>() };
+    const entry = invoices.get(key) ?? { accrual: null, payment: null, count: 0, other: 0, foreign: new Set<string>(), converted: new Set<string>() };
+    // Balances, subscription schedules and our own estimates are not statement charges; they are counted so their absence from the figure is explained.
+    if (record.kind !== 'accrual' && record.kind !== 'payment') { entry.other++; invoices.set(key, entry); continue; }
     entry.count++;
     // Same rule as the accounting totals: declared rates convert, anything else stays out and is named.
     const declared = rates.get(record.currency)?.rate_to_usd;
@@ -74,6 +76,7 @@ export function reconcileMonth(records: FinancialRecord[], ledgerMonth: unknown,
     const notes: string[] = [];
     if (invoice?.converted.size) notes.push(`${[...invoice.converted].join(', ')} converted at declared rates`);
     if (invoice?.foreign.size) notes.push(`${[...invoice.foreign].join(', ')} records excluded (no verified conversion)`);
+    if (invoice?.other) notes.push(`${invoice.other} balance/subscription/estimate record${invoice.other === 1 ? '' : 's'} not counted as statement charges`);
     if (used?.unpriced) notes.push(`${used.unpriced} unpriced requests not in the usage figure`);
     let status: ReconciliationStatus; let differenceUsd: number | null = null;
     if (invoicedUsd !== null && usageUsd !== null) {
@@ -86,7 +89,7 @@ export function reconcileMonth(records: FinancialRecord[], ledgerMonth: unknown,
       notes.unshift(!ledgerForMonth ? 'ledger rollup is not for this month' : used ? 'usage rows exist but none are priced' : 'no usage rows for this provider in the ledger month');
     } else {
       status = 'no-invoice';
-      notes.unshift(invoice ? 'only non-USD statement records' : 'no statement records for this provider and month');
+      notes.unshift(invoice?.count ? 'only non-USD statement records' : 'no statement charges (payments or accruals) for this provider and month');
     }
     return { provider, month, invoicedUsd, invoiceBasis: basis, invoiceRecords: invoice?.count ?? 0, usageUsd, unpricedRequests: used?.unpriced ?? 0, differenceUsd, status, note: notes.join(' · ') };
   });

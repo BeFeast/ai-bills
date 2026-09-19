@@ -28,6 +28,10 @@ describe('dates and amounts', () => {
     expect(parseStatementAmount('1.234,56 EUR')).toEqual({ amount: 1234.56, currency: 'EUR' });
     expect(parseStatementAmount('€19,99')).toEqual({ amount: 19.99, currency: 'EUR' });
     expect(parseStatementAmount('12.5')).toEqual({ amount: 12.5 });
+    // A comma before one or two digits is a decimal comma; before exactly three it is grouping; anything else is refused.
+    expect(parseStatementAmount('12,34')).toEqual({ amount: 12.34 });
+    expect(parseStatementAmount('1,234')).toEqual({ amount: 1234 });
+    expect(parseStatementAmount('1,2345')).toMatchObject({ reason: expect.stringContaining('unreadable') });
     expect(parseStatementAmount('n/a')).toMatchObject({ reason: expect.stringContaining('unreadable') });
   });
 });

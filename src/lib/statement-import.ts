@@ -102,6 +102,8 @@ export function parseStatementAmount(raw: string): { amount: number; currency?: 
   value = value.replace(/[A-Z]{3}/g, '').replace(/[$€£₪\s]/g, '');
   if (value.startsWith('-')) { negative = !negative; value = value.slice(1); }
   if (value.startsWith('+')) value = value.slice(1);
+  // Grouping: a comma or dot followed by exactly three digits is a thousands separator; a comma followed by
+  // one or two digits can only be a decimal comma. Anything else ("1,2345") is reported, not guessed.
   if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(value)) value = value.replace(/,/g, '');
   else if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(value)) value = value.replace(/\./g, '').replace(',', '.');
   else if (/^\d+,\d{1,2}$/.test(value)) value = value.replace(',', '.');
