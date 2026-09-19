@@ -14,8 +14,8 @@ const themeScript = "(function(){try{if(localStorage.getItem('ai-bills-theme')==
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   // Hosted instances wrap the tree in Clerk; self-hosted ones never load it.
-  const clerk = clerkRuntime();
-  const body = authMode() === 'clerk'
+  const clerk = authMode() === 'clerk' ? clerkRuntime() : null;
+  const body = clerk
     ? <ClerkProvider publishableKey={clerk.publishableKey} signInUrl={clerk.signInUrl} afterSignOutUrl={clerk.afterSignOutUrl} isSatellite={clerk.isSatellite} domain={clerk.domain} allowedRedirectOrigins={clerk.allowedRedirectOrigins.length ? clerk.allowedRedirectOrigins : undefined}>{children}</ClerkProvider>
     : children;
   return (

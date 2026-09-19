@@ -164,11 +164,13 @@ jobs:
           for i in $(seq 1 30); do
             # The hosted instance answers / with a redirect to sign-in; its liveness is the public health endpoint.
             all=1
+            # Partner instances answer on the hosted instance's host with their own port, whether or not HOSTED_URL names one.
+            hosted_base=$(printf '%s' "$HOSTED_URL" | sed -E 's#^(https?://[^/:]+).*$#\1#')
             for stack in $STACKS; do
               case "$stack" in
                 ai-bills) curl -fsS -m 5 "$APP_URL/api/health" >/dev/null && curl -fsS -m 10 "$APP_URL/" | grep -q '<title>Zecori' || all=0 ;;
                 zecori) curl -fsS -m 5 "$HOSTED_URL/api/health" >/dev/null || all=0 ;;
-                zecori-*) curl -fsS -m 5 "${HOSTED_URL%:*}:$(cat "$RUNNER_TEMP/port-$stack")/api/health" >/dev/null || all=0 ;;
+                zecori-*) curl -fsS -m 5 "$hosted_base:$(cat "$RUNNER_TEMP/port-$stack")/api/health" >/dev/null || all=0 ;;
               esac
             done
             if [ "$all" = 1 ]; then ok=1; break; fi
