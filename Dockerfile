@@ -7,6 +7,12 @@ RUN npm ci
 
 FROM node:22-slim AS build
 WORKDIR /app
+# Clerk's publishable key is inlined at build time (NEXT_PUBLIC_*); it is not a secret. Empty keeps self-host builds unchanged.
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY \
+    NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in \
+    NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL=/ \
+    NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL=/
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

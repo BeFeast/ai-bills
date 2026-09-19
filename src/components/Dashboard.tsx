@@ -5,12 +5,13 @@ import type { BillingSnapshot } from '@/lib/billing';
 import type { UsageResponseBody } from '@/lib/usage-service';
 import { DEFAULT_TZ, fmtDate } from './format';
 import { ProductOverviewPanel } from './ProductOverviewPanel';
-import { PRODUCT_ATTRIBUTION, PRODUCT_TAGLINE, ZecoriMark, ZecoriWordmark } from './Brand';
+import { PRODUCT_ATTRIBUTION, PRODUCT_TAGLINE, ZecoriMark, ZecoriSignature, ZecoriWordmark } from './Brand';
 import type { ProductOverview } from '@/lib/overview';
 import { UsageCard } from './UsageCard';
 import { BillingSection } from './BillingSection';
 import { AccountOverview } from './AccountOverview';
 import { AlertsSection } from './AlertsSection';
+import { UserButton } from '@clerk/nextjs';
 import type { AlertsReport } from '@/lib/alerts';
 import { RoutingSection } from './RoutingSection';
 import type { AccountRegistry } from '@/lib/accounts';
@@ -36,7 +37,7 @@ const VIEWS: Record<View, { label: string; subtitle: string }> = {
 
 const statusTone: Record<StatusTone, PillTone> = { '': 'idle', ok: 'ok', warn: 'warn', danger: 'bad' };
 
-export function Dashboard() {
+export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
   const [view, setView] = useState<View>('overview');
   const [overview, setOverview] = useState<ProductOverview | null>(null);
   const [overviewError, setOverviewError] = useState('');
@@ -154,7 +155,7 @@ export function Dashboard() {
       items={items}
       view={view}
       onView={setView}
-      sidebarFooter={`ai-bills v${pkg.version} · ${tz}`}
+      sidebarFooter={<ZecoriSignature version={pkg.version} />}
       title={VIEWS[view].label}
       subtitle={VIEWS[view].subtitle}
       status={{ text: status.text, tone: statusTone[status.tone] }}
@@ -163,6 +164,7 @@ export function Dashboard() {
       refreshing={refreshing}
       theme={theme}
       onToggleTheme={toggleTheme}
+      account={hosted ? <UserButton /> : undefined}
       footerLeft="Plan prices are separate from payments. API equivalent estimates the value of measured usage."
       footerRight={usage ? `Last refresh: ${fmtDate(usage.generatedAt, tz)}` : 'Never updated'}
     >

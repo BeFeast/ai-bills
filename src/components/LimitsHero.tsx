@@ -3,7 +3,7 @@
 import type { ReactNode } from 'react';
 import type { HeroActivity, HeroWindow, LimitsHero as LimitsHeroData, LimitsHeroCard } from '@/lib/limits-hero';
 import type { ProductSubscription } from '@/lib/overview';
-import { countdown, fmtDate, fmtMoney } from './format';
+import { countdown, fmtDate, fmtMoney, refillLabel } from './format';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
 import { Button, ButtonLink, Card, Pill, Progress } from './ui';
@@ -15,10 +15,9 @@ function remainingText(window: HeroWindow): string {
   if (window.unit === 'requests') return window.remaining === null ? 'n/a' : `${window.remaining.toLocaleString()} requests`;
   return pct(window.remainingPercent);
 }
-const untilReset = (reset: string | null, now: number) => { const text = reset ? countdown(reset, now) : 'n/a'; return text === 'n/a' ? null : text.replace(/ left$/, ''); };
 function ResetChip({ reset, now }: { reset: string | null; now: number }) {
-  const text = untilReset(reset, now);
-  return text ? <span className="hero-chip" title={`Resets ${fmtDate(reset, TZ)}`}>↻ {text}</span> : <span className="hero-chip">reset unknown</span>;
+  const text = refillLabel(reset, now);
+  return text ? <span className="hero-chip" title={`Resets ${fmtDate(reset, TZ)}`}>↻ {text}</span> : <span className="hero-chip">refill time unknown</span>;
 }
 function activityText(activity: HeroActivity | null, recencyKnown: boolean, now: number): string {
   if (!recencyKnown) return 'Traffic for the last 24h is not available yet';
@@ -71,7 +70,7 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
         <span className="hero-window__label">{window.label}</span>
         <span className="hero-window__value">{remainingText(window)}{window.exhausted || window.unit === 'requests' ? '' : ' left'}</span>
         <Progress value={window.remainingPercent ?? 0} tone={window.tone} label={`${window.label} remaining`} />
-        <span className="hero-window__reset">{untilReset(window.resetsAt, now) ? `↻ ${untilReset(window.resetsAt, now)}` : 'reset unknown'}</span>
+        <span className="hero-window__reset">{refillLabel(window.resetsAt, now) ? `↻ ${refillLabel(window.resetsAt, now)}` : 'refill time unknown'}</span>
       </li>)}</ul> : null}
     </div>
     <div className="hero-card__foot"><span className="t-small">{activityText(card.activity, recencyKnown, now)}</span>{access}</div>

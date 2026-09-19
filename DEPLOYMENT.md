@@ -34,6 +34,24 @@ run. A successful health response does not prove snapshot/card freshness or comp
 Rollback source independently from append-only records. Do not restore old OAuth tokens
 blindly or run a second collector against the same consumptive queue.
 
+## Hosted mode (Clerk sign-in)
+
+Set `AI_BILLS_AUTH=clerk` and the instance requires a Clerk session for every page and
+API except `/api/health`, `/api/snapshot`, brand assets and the auth pages. The signed-in
+address must also appear in `AI_BILLS_ALLOWED_EMAILS` (comma-separated; `AI_BILLS_ADMIN_EMAILS`
+marks admins) — a second list independent of Clerk's own allowlist, so removing an address
+revokes access on the next request; an empty list keeps the instance open and is logged.
+Denied accounts see a page naming the account with a sign-out button. Runtime secrets:
+`CLERK_SECRET_KEY`. The publishable key is inlined at build time
+(`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` build argument); the Clerk session token must carry an
+`email` claim. Self-hosted instances leave `AI_BILLS_AUTH` unset and never load Clerk.
+
+A hosted instance receives its data through `PUT /api/snapshot` with
+`Authorization: Bearer <token>`; the instance stores only `AI_BILLS_INGEST_TOKEN_SHA256`
+(hex digests, comma-separated). The collector sends with `AI_BILLS_SNAPSHOT_URL` and reads
+the token from the secret manager (`AI_BILLS_SNAPSHOT_TOKEN_SECRET`, path
+`AI_BILLS_SNAPSHOT_TOKEN_PATH`, default `/ai-bills`).
+
 ## Shared account browsers
 
 By default each `account_browsers` entry owns an isolated `ai-bills-*` profile.

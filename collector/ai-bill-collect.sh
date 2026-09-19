@@ -9,8 +9,8 @@ set -euo pipefail
 : "${AI_BILLS_PROVIDERS_DIR:?Set AI_BILLS_PROVIDERS_DIR}"
 : "${AI_BILLS_PAYMENTS_FILE:?Set AI_BILLS_PAYMENTS_FILE}"
 : "${AI_BILLS_MAESTRO_DB:?Set AI_BILLS_MAESTRO_DB}"
-if [ -z "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ]; then
-  : "${AI_BILLS_SNAPSHOT_TARGET:?Set AI_BILLS_SNAPSHOT_TARGET or AI_BILLS_SNAPSHOT_SSH_HOST}"
+if [ -z "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ] && [ -z "${AI_BILLS_SNAPSHOT_URL:-}" ]; then
+  : "${AI_BILLS_SNAPSHOT_TARGET:?Set AI_BILLS_SNAPSHOT_TARGET, AI_BILLS_SNAPSHOT_SSH_HOST or AI_BILLS_SNAPSHOT_URL}"
 fi
 : "${INFISICAL_PROJECT_ID:?Set INFISICAL_PROJECT_ID}"
 export AI_BILLS_MAESTRO_DB AI_BILLS_PAYMENTS_FILE
@@ -148,6 +148,22 @@ jq -n \
     maestro_cost_today: $cost, providers: $providers, subscriptions: $subscriptions, payments: $payments,
     usage_ledger: $ledger, claude_usage: $claude_usage, codex_usage: $codex_usage, account_quotas:$account_quotas, account_registry: $registry, alerts: $alerts}' > "$OUT"
 
+# Hosted instance: PUT the snapshot over HTTPS with a bearer token read from the secret
+# manager at run time. Additive to the SSH/SCP path so both targets can be fed.
+if [ -n "${AI_BILLS_SNAPSHOT_URL:-}" ]; then
+  : "${AI_BILLS_SNAPSHOT_TOKEN_SECRET:?Set the secret-manager key that holds the ingest token}"
+  [[ "$AI_BILLS_SNAPSHOT_URL" =~ ^https://[a-zA-Z0-9./_-]+$ ]] || exit 2
+  INGEST_TOKEN=$(curl -fsS -G "${INFISICAL_API_URL}/v3/secrets/raw/${AI_BILLS_SNAPSHOT_TOKEN_SECRET}" -H "Authorization: Bearer $TOKEN" \
+    --data-urlencode "workspaceId=${INFISICAL_PROJECT_ID}" --data-urlencode "environment=prod" --data-urlencode "secretPath=${AI_BILLS_SNAPSHOT_TOKEN_PATH:-/ai-bills}" | jq -r '.secret.secretValue') || INGEST_TOKEN=''
+  if [ -n "$INGEST_TOKEN" ]; then
+    curl -fsS -m 60 -X PUT "$AI_BILLS_SNAPSHOT_URL" -H "Authorization: Bearer $INGEST_TOKEN" -H 'Content-Type: application/json' --data-binary "@$OUT" >/dev/null \
+      || echo "hosted snapshot delivery failed: $AI_BILLS_SNAPSHOT_URL" >&2
+  else
+    echo "hosted snapshot delivery skipped: ingest token unavailable" >&2
+  fi
+  unset INGEST_TOKEN
+fi
+
 if [ -n "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ]; then
   : "${AI_BILLS_SNAPSHOT_RECEIVER:?Set fixed receiver executable path}"
   : "${AI_BILLS_SNAPSHOT_DESTINATION:?Set fixed snapshot destination}"
@@ -155,7 +171,7 @@ if [ -n "${AI_BILLS_SNAPSHOT_SSH_HOST:-}" ]; then
   [[ "$AI_BILLS_SNAPSHOT_RECEIVER" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 2
   [[ "$AI_BILLS_SNAPSHOT_DESTINATION" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 2
   ssh -- "$AI_BILLS_SNAPSHOT_SSH_HOST" "sudo -- $AI_BILLS_SNAPSHOT_RECEIVER $AI_BILLS_SNAPSHOT_DESTINATION" < "$OUT"
-else
+elif [ -n "${AI_BILLS_SNAPSHOT_TARGET:-}" ]; then
   scp -q "$OUT" "$AI_BILLS_SNAPSHOT_TARGET"
 fi
 
