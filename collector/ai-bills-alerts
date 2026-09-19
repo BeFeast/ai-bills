@@ -209,7 +209,7 @@ def apply_edges(conditions, state_dir, now):
             kind = "recovered" if after[0] == 0 else "raised" if before[0] == 0 else "escalated" if after > before else "eased"
             events.append({"at": now.isoformat(timespec="seconds"), "kind": kind, "key": cond["key"], "severity": cond["severity"], "state": cond["state"], "title": cond["title"], "message": cond["message"], "value": cond["value"]})
             # `since` is when the condition became non-ok; escalations and easing keep it.
-            cond["since"] = now.isoformat(timespec="seconds") if before[0] == 0 else (previous.get("since") or now.isoformat(timespec="seconds"))
+            cond["since"] = None if after[0] == 0 else now.isoformat(timespec="seconds") if before[0] == 0 else (previous.get("since") or now.isoformat(timespec="seconds"))
             path.write_text(json.dumps({"state": cond["state"], "severity": cond["severity"], "since": cond["since"]}))
         else:
             cond["since"] = previous.get("since")

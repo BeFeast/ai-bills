@@ -122,6 +122,7 @@ class EdgeTests(unittest.TestCase):
             self.assertTrue((Path(directory) / 'alerts.json').exists())
             self.assertEqual(len((Path(directory) / 'alerts-2026-09.jsonl').read_text().splitlines()), 1)
             self.assertTrue(all('since' in c for c in report['conditions']))
+            self.assertIsNone(next(c['since'] for c in conditions if c['key'] == 'quota:codex:personal@example.invalid'))
 
     def test_main_dry_run_never_touches_state_or_notifies(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(alerts, 'notify') as notify, patch.object(alerts, 'utc_now', return_value=NOW):
