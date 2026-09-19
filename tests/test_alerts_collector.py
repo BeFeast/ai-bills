@@ -60,6 +60,13 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn('limit reached', c['quota:codex:work@example.invalid']['title'])
         self.assertNotIn('quota:claude:deadbeefdeadbeefdeadbeef', c)
 
+    def test_scoped_window_with_null_model_does_not_abort_the_run(self):
+        snapshot = json.loads(json.dumps(SNAPSHOT))
+        snapshot['claude_usage']['work@example.invalid']['data']['limits'][2]['scope'] = {'model': None, 'surface': None}
+        c = self.conditions(snapshot)
+        self.assertIn('Scoped weekly', c['quota:claude:work@example.invalid']['title'])
+        self.assertEqual(alerts.window_label({'kind': 'weekly_scoped', 'scope': 'Fable'}), 'Fable weekly')
+
     def test_failed_sources_and_stale_snapshot_are_alerts_not_silence(self):
         c = self.conditions()
         self.assertEqual((c['source:claude:broken@example.invalid']['state'], c['source:claude:broken@example.invalid']['severity']), ('bad', 'P5'))
@@ -93,6 +100,9 @@ class EdgeTests(unittest.TestCase):
             escalated = json.loads(json.dumps(SNAPSHOT)); escalated['codex_usage']['personal@example.invalid'] = codex(95)
             third = alerts.apply_edges(alerts.evaluate(escalated, RULES, NOW), directory, NOW)
             self.assertEqual([(e['key'], e['kind']) for e in third], [('quota:codex:personal@example.invalid', 'escalated')])
+            exhausted = json.loads(json.dumps(escalated)); exhausted['codex_usage']['personal@example.invalid'] = codex(100, limit_reached=True)
+            self.assertEqual([(e['key'], e['kind'], e['severity']) for e in alerts.apply_edges(alerts.evaluate(exhausted, RULES, NOW), directory, NOW)], [('quota:codex:personal@example.invalid', 'escalated', 'P5')])
+            self.assertEqual(alerts.apply_edges(alerts.evaluate(exhausted, RULES, NOW), directory, NOW), [])
             eased = json.loads(json.dumps(SNAPSHOT)); eased['codex_usage']['personal@example.invalid'] = codex(80)
             self.assertEqual([(e['key'], e['kind'], e['state']) for e in alerts.apply_edges(alerts.evaluate(eased, RULES, NOW), directory, NOW)], [('quota:codex:personal@example.invalid', 'eased', 'warn')])
             recovered = json.loads(json.dumps(SNAPSHOT)); recovered['codex_usage']['personal@example.invalid'] = codex(10)

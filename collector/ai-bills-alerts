@@ -76,7 +76,7 @@ def window_label(window):
     kind = window.get("kind")
     if kind == "weekly_scoped":
         scope = window.get("scope")
-        name = scope.get("model", {}).get("display_name") if isinstance(scope, dict) else scope
+        name = ((scope.get("model") or {}).get("display_name") if isinstance(scope.get("model"), (dict, type(None))) else None) if isinstance(scope, dict) else scope
         return f"{name or 'Scoped'} weekly"
     return {"session": "Session", "weekly_all": "Weekly all models"}.get(kind, kind or "window")
 
@@ -188,19 +188,21 @@ def apply_edges(conditions, state_dir, now):
     events = []
     for cond in conditions:
         path = root / (re.sub(r"[^A-Za-z0-9._@-]", "_", cond["key"]) + ".state")
-        previous = {"state": "ok", "since": None}
+        previous = {"state": "ok", "severity": None, "since": None}
         if path.exists():
             try:
                 previous = json.loads(path.read_text())
             except ValueError:
                 pass
-        if cond["state"] != previous.get("state"):
-            rank = {"ok": 0, "warn": 1, "bad": 2}
-            before = rank.get(previous.get("state"), 0); after = rank[cond["state"]]
-            kind = "recovered" if after == 0 else "raised" if before == 0 else "escalated" if after > before else "eased"
+        # Level = (state rank, severity): exhausted (bad/P5) after low (bad/P4) is a real escalation.
+        rank = {"ok": 0, "warn": 1, "bad": 2}
+        level = lambda state, severity: (rank.get(state, 0), 0 if rank.get(state, 0) == 0 else int(str(severity or "P3")[1]))
+        before = level(previous.get("state"), previous.get("severity")); after = level(cond["state"], cond["severity"])
+        if after != before:
+            kind = "recovered" if after[0] == 0 else "raised" if before[0] == 0 else "escalated" if after > before else "eased"
             events.append({"at": now.isoformat(timespec="seconds"), "kind": kind, "key": cond["key"], "severity": cond["severity"], "state": cond["state"], "title": cond["title"], "message": cond["message"], "value": cond["value"]})
-            cond["since"] = now.isoformat(timespec="seconds")
-            path.write_text(json.dumps({"state": cond["state"], "since": cond["since"]}))
+            cond["since"] = now.isoformat(timespec="seconds") if after[0] != before[0] or before[0] == 0 else (previous.get("since") or now.isoformat(timespec="seconds"))
+            path.write_text(json.dumps({"state": cond["state"], "severity": cond["severity"], "since": cond["since"]}))
         else:
             cond["since"] = previous.get("since")
     return events
