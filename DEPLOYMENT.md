@@ -53,6 +53,13 @@ the token from the secret manager (`AI_BILLS_SNAPSHOT_TOKEN_SECRET`, path
 `AI_BILLS_SNAPSHOT_TOKEN_PATH`, default `/ai-bills`; workspace `AI_BILLS_SNAPSHOT_TOKEN_WORKSPACE`,
 default the collector's own project).
 
+## Partner instances fed by the portable collector
+
+An instance whose config declares no `[[accounts]]` lists its Claude/Codex accounts from the
+`collector.accounts` rows of the snapshot it receives, re-reading them whenever the snapshot
+file changes. Partners run `collector/zecori-collect` on their own machine; see
+`docs/partner-collector.md` for what it reads, what it sends and how to configure it.
+
 ## Shared account browsers
 
 By default each `account_browsers` entry owns an isolated `ai-bills-*` profile.

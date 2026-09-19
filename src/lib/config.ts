@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { parse } from 'smol-toml';
 import type { AccountingConfig } from './accounting';
 import type { SubscriptionConfig } from './overview';
@@ -85,8 +85,43 @@ function configPath(): string {
   return process.env.AI_BILLS_CONFIG ?? '/app/config.toml';
 }
 
+const SNAPSHOT_ACCOUNT_PROVIDERS = new Set(['claude', 'codex']);
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Accounts a portable collector declares in its snapshot (`collector.accounts`: `{type, email}` rows).
+ * Only the two providers whose quota the collector fetches itself are accepted; the key is stable per address.
+ */
+export function accountsFromSnapshot(snapshot: unknown): AccountConfig[] {
+  const collector = (snapshot as { collector?: { accounts?: unknown } } | null)?.collector;
+  const rows = Array.isArray(collector?.accounts) ? collector.accounts as Array<Record<string, unknown>> : [];
+  const seen = new Set<string>(); const result: AccountConfig[] = [];
+  for (const row of rows) {
+    const provider = typeof row?.type === 'string' ? row.type : '';
+    const email = typeof row?.email === 'string' ? row.email.trim().toLowerCase() : '';
+    if (!SNAPSHOT_ACCOUNT_PROVIDERS.has(provider) || !EMAIL.test(email) || seen.has(`${provider}:${email}`)) continue;
+    seen.add(`${provider}:${email}`);
+    result.push({ key: `${provider}-${email}`, provider: provider as AccountConfig['provider'], label: email, email });
+  }
+  return result;
+}
+
+let derived: { path: string; mtimeMs: number; accounts: AccountConfig[] } | null = null;
+/** Re-read the declared accounts only when the snapshot file changes; a stat per call is the whole cost. */
+function deriveAccounts(snapshotPath: string): AccountConfig[] {
+  let mtimeMs: number;
+  try { mtimeMs = statSync(snapshotPath).mtimeMs; } catch { return []; }
+  if (derived && derived.path === snapshotPath && derived.mtimeMs === mtimeMs) return derived.accounts;
+  let accounts: AccountConfig[] = [];
+  try { accounts = accountsFromSnapshot(JSON.parse(readFileSync(snapshotPath, 'utf8'))); } catch { accounts = []; }
+  derived = { path: snapshotPath, mtimeMs, accounts };
+  return accounts;
+}
+
+let accountsDeclared = true;
 export function loadConfig(path = configPath()): AppConfig {
-  if (cached) return cached;
+  // A config without accounts (hosted partner instance) takes them from the snapshot the collector delivers.
+  if (cached) return accountsDeclared ? cached : { ...cached, accounts: deriveAccounts(cached.billing.snapshot_path) };
   let raw: Record<string, unknown> = {};
   try {
     raw = parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
@@ -102,11 +137,12 @@ export function loadConfig(path = configPath()): AppConfig {
   const accounting = raw.accounting as AccountingConfig | undefined;
   const subscriptions = Array.isArray(raw.subscriptions) ? raw.subscriptions as SubscriptionConfig[] : [];
   const account_browsers = Array.isArray(raw.account_browsers) ? raw.account_browsers as AccountBrowserConfig[] : [];
+  accountsDeclared = accounts.length > 0;
   cached = { server, infisical, billing, secrets, accounts, accounting, subscriptions, account_browsers };
-  return cached;
+  return loadConfig(path);
 }
 
 /** Test hook: reset the cached config. */
 export function resetConfigCache() {
-  cached = null;
+  cached = null; derived = null; accountsDeclared = true;
 }

@@ -14,10 +14,11 @@ host by its session_meta model_provider.
 import argparse, json, os, shlex, subprocess, sys, glob
 from datetime import datetime, timezone, timedelta
 
-LEDGER_DIR = os.path.expanduser("~/.local/state/ai-usage")
+LEDGER_DIR = os.path.expanduser(os.environ.get("AI_USAGE_LEDGER_DIR", "~/.local/state/ai-usage"))
 STATE = os.path.join(LEDGER_DIR, "direct-state.json")
-HOSTS_CFG = os.path.expanduser("~/.config/ai-usage/hosts.json")
-EXTRACTOR = os.path.expanduser("~/.local/bin/ai-usage-extract")
+HOSTS_CFG = os.path.expanduser(os.environ.get("AI_USAGE_HOSTS", "~/.config/ai-usage/hosts.json"))
+# The extractor is shipped to remote hosts over stdin; a portable install may keep it next to this script.
+EXTRACTOR = os.path.expanduser(os.environ.get("AI_USAGE_EXTRACTOR", "~/.local/bin/ai-usage-extract"))
 SEEN_CAP = 200_000
 
 def log(m): print(f"[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] {m}", flush=True)
