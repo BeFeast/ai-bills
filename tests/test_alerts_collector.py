@@ -96,7 +96,9 @@ class EvaluateTests(unittest.TestCase):
 class EdgeTests(unittest.TestCase):
     def test_notify_once_on_raise_escalation_and_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
-            first = alerts.apply_edges(alerts.evaluate(SNAPSHOT, RULES, NOW), directory, NOW)
+            first_conditions = alerts.evaluate(SNAPSHOT, RULES, NOW)
+            first = alerts.apply_edges(first_conditions, directory, NOW)
+            raised_since = {c['key']: c['since'] for c in first_conditions if c['key'] == 'quota:codex:personal@example.invalid'}
             self.assertEqual({e['key']: e['kind'] for e in first if e['key'].startswith('quota:')},
                              {'quota:claude:work@example.invalid': 'raised', 'quota:codex:personal@example.invalid': 'raised', 'quota:codex:work@example.invalid': 'raised'})
             second = alerts.apply_edges(alerts.evaluate(SNAPSHOT, RULES, NOW), directory, NOW)
@@ -108,7 +110,9 @@ class EdgeTests(unittest.TestCase):
             self.assertEqual([(e['key'], e['kind'], e['severity']) for e in alerts.apply_edges(alerts.evaluate(exhausted, RULES, NOW), directory, NOW)], [('quota:codex:personal@example.invalid', 'escalated', 'P5')])
             self.assertEqual(alerts.apply_edges(alerts.evaluate(exhausted, RULES, NOW), directory, NOW), [])
             eased = json.loads(json.dumps(SNAPSHOT)); eased['codex_usage']['personal@example.invalid'] = codex(80)
-            self.assertEqual([(e['key'], e['kind'], e['state']) for e in alerts.apply_edges(alerts.evaluate(eased, RULES, NOW), directory, NOW)], [('quota:codex:personal@example.invalid', 'eased', 'warn')])
+            later = NOW.replace(hour=3); eased_conditions = alerts.evaluate(eased, RULES, later)
+            self.assertEqual([(e['key'], e['kind'], e['state']) for e in alerts.apply_edges(eased_conditions, directory, later)], [('quota:codex:personal@example.invalid', 'eased', 'warn')])
+            self.assertEqual(next(c['since'] for c in eased_conditions if c['key'] == 'quota:codex:personal@example.invalid'), raised_since['quota:codex:personal@example.invalid'])
             recovered = json.loads(json.dumps(SNAPSHOT)); recovered['codex_usage']['personal@example.invalid'] = codex(10)
             conditions = alerts.evaluate(recovered, RULES, NOW)
             fourth = alerts.apply_edges(conditions, directory, NOW)
