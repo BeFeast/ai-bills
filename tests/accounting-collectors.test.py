@@ -197,6 +197,50 @@ class MonthOverviewTests(unittest.TestCase):
             self.assertEqual(result['month']['unpriced'], {'unknown': 400})
             self.assertEqual(len((Path(directory) / 'ledger-fixture.jsonl').read_text().splitlines()), 4)
 
+    def test_project_rules_attribute_rows_in_order_and_leave_the_rest_unassigned(self):
+        from unittest.mock import patch
+        report = module('ai-usage-report')
+        rules = report.load_projects.__wrapped__ if hasattr(report.load_projects, '__wrapped__') else None
+        with tempfile.TemporaryDirectory() as directory:
+            rules_path = Path(directory) / 'projects.json'
+            rules_path.write_text(json.dumps({"rules": [
+                {"project": "app", "client": "t3"},
+                {"project": "app", "client_prefix": "zed-"},
+                {"project": "ops", "host": "sindri"},
+                {"project": "me", "account": "A@example.invalid", "provider": "claude"},
+                {"project": "", "client": "ignored"}, {"nonsense": 1}, "not a rule",
+            ]}))
+            loaded = report.load_projects(str(rules_path))
+            self.assertEqual([r['project'] for r in loaded], ['app', 'app', 'ops', 'me'])
+            self.assertEqual(report.load_projects(str(Path(directory) / 'missing.json')), [])
+            self.assertEqual(report.project_of({'client': 't3', 'via': 'proxy'}, loaded), 'app')
+            self.assertEqual(report.project_of({'client': 'zed-sindri', 'via': 'proxy'}, loaded), 'app')
+            self.assertEqual(report.project_of({'client': 'sindri:Codex Desktop', 'via': 'direct'}, loaded), 'ops')
+            # A proxy client that merely looks like host:app never matches a host rule.
+            self.assertEqual(report.project_of({'client': 'sindri:thing', 'via': 'proxy'}, loaded), 'unassigned')
+            self.assertEqual(report.project_of({'client': 'x', 'via': 'proxy', 'account': 'a@example.invalid', 'provider': 'claude'}, loaded), 'me')
+            self.assertEqual(report.project_of({'client': 'x', 'via': 'proxy', 'account': 'a@example.invalid', 'provider': 'codex'}, loaded), 'unassigned')
+            report.LEDGER_DIR = directory
+            records = [
+                dict(ts='2026-09-07T01:00:00Z', via='proxy', provider='claude', account='a@example.invalid', client='t3', model='m', in_uncached=100),
+                # A Codex native row is placed by the existing reconciliation rule; a Claude native row without its identity would stay unreconciled.
+                dict(ts='2026-09-07T02:00:00Z', via='direct', provider=None, account=None, client='sindri:Codex Desktop', model='m', native_kind='codex', in_uncached=10),
+                dict(ts='2026-09-07T03:00:00Z', via='proxy', provider='codex', account='b@example.invalid', client='other', model='m', in_uncached=1),
+            ]
+            (Path(directory) / 'ledger-fixture.jsonl').write_text('\n'.join(json.dumps(row) for row in records))
+            original = report.local_day
+            with patch.object(report, 'local_day', side_effect=lambda ts=None: '2026-09-07' if ts is None else original(ts)):
+                result = report.rollup({}, {'m': {'in': 1, 'out': 2}}, days=1, projects=loaded)
+            by_project = {row['name']: row for row in result['month']['by_project']}
+            self.assertEqual({k: v['requests'] for k, v in by_project.items()}, {'app': 1, 'ops': 1, 'unassigned': 1})
+            self.assertEqual(by_project['app']['tokens'], 100)
+            self.assertEqual(result['month']['attribution'], {'rules': 4, 'assigned_requests': 2, 'unassigned_requests': 1})
+            # Without rules nothing is guessed: every row is unassigned and the summary says so.
+            with patch.object(report, 'local_day', side_effect=lambda ts=None: '2026-09-07' if ts is None else original(ts)):
+                bare = report.rollup({}, {'m': {'in': 1, 'out': 2}}, days=1, projects=[])
+            self.assertEqual([row['name'] for row in bare['month']['by_project']], ['unassigned'])
+            self.assertEqual(bare['month']['attribution'], {'rules': 0, 'assigned_requests': 0, 'unassigned_requests': 3})
+
     def test_rolling_24h_window_counts_rate_limits_and_last_request_per_upstream(self):
         from datetime import datetime, timezone
         from unittest.mock import patch

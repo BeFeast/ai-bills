@@ -120,3 +120,13 @@ machine without the proxy or the secret manager: `zecori-auth-shim` exposes the 
 Claude Code and Codex CLI already keep locally, `ai-usage-collect-direct` reads the local session
 logs (`AI_USAGE_LEDGER_DIR`, `AI_USAGE_EXTRACTOR`, `AI_USAGE_HOSTS` point it at the private state
 directory), and the snapshot is `PUT` to the hosted instance. Details: `docs/partner-collector.md`.
+
+## Projects (attribution)
+
+`ai-usage-report` groups every period by `project` as well: rules in `AI_USAGE_PROJECTS`
+(default `~/.config/ai-usage/projects.json`, example `config/projects.example.json`) map a
+row's `client`, `client_prefix`, `host` (native rows only: the part of the client before `:`),
+`account`, `provider` or `via` to a project name; the first rule whose every condition matches
+wins, and rows no rule claims are reported as `unassigned`, never guessed. Each period carries
+`attribution: {rules, assigned_requests, unassigned_requests}`. `ai-usage-report --by project`
+prints the same grouping in text mode; the dashboard exports it as CSV (`/api/usage/export`).

@@ -26,6 +26,43 @@ def local_day(ts=None):
 LEDGER_DIR = os.path.expanduser(os.environ.get("AI_USAGE_LEDGER_DIR", "~/.local/state/ai-usage"))
 PRICING = os.environ.get("AI_USAGE_PRICING", os.path.expanduser("~/.config/ai-usage/pricing.yml"))
 ROUTING_DB = os.environ.get("AI_USAGE_ROUTING_DB")
+PROJECTS = os.environ.get("AI_USAGE_PROJECTS", os.path.expanduser("~/.config/ai-usage/projects.json"))
+UNASSIGNED = "unassigned"
+
+def load_projects(path=None):
+    """Operator rules mapping observations to projects: a JSON list (or {"rules": [...]}) of
+    {"project": name, <one or more of> "client", "client_prefix", "host", "account", "provider", "via"}.
+    Rules are tried in order; the first whose every condition matches wins. A missing or invalid
+    file means no rules, so everything is reported as unassigned rather than guessed."""
+    try:
+        with open(path or PROJECTS) as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    rules = doc.get("rules") if isinstance(doc, dict) else doc
+    valid = []
+    for rule in rules if isinstance(rules, list) else []:
+        if not isinstance(rule, dict) or not isinstance(rule.get("project"), str) or not rule["project"].strip():
+            continue
+        conditions = {k: rule[k] for k in ("client", "client_prefix", "host", "account", "provider", "via") if isinstance(rule.get(k), str) and rule[k]}
+        if conditions:
+            valid.append({"project": rule["project"].strip(), **conditions})
+    return valid
+
+def project_of(row, rules):
+    """First matching rule's project, else "unassigned". Native rows carry the host as the client's
+    prefix ("host:App"); proxy rows have no host, so a host condition never matches them."""
+    client = row.get("client") or ""
+    host = client.split(":", 1)[0] if row.get("via") == "direct" and ":" in client else None
+    for rule in rules:
+        if "client" in rule and rule["client"] != client: continue
+        if "client_prefix" in rule and not client.startswith(rule["client_prefix"]): continue
+        if "host" in rule and rule["host"] != host: continue
+        if "account" in rule and rule["account"].lower() != (row.get("account") or "").lower(): continue
+        if "provider" in rule and rule["provider"] != (row.get("provider") or ""): continue
+        if "via" in rule and rule["via"] != (row.get("via") or ""): continue
+        return rule["project"]
+    return UNASSIGNED
 
 def load_pricing():
     import yaml
@@ -258,7 +295,7 @@ def is_rate_limited(row):
     except (TypeError, ValueError):
         return False
 
-def rollup(defaults, models, days=30):
+def rollup(defaults, models, days=30, projects=None):
     """Day, full current-calendar-month and rolling-24h projections over the preserved ledger.
 
     `today` and `month` follow the report timezone; `last_24h` is a rolling window of
@@ -272,7 +309,8 @@ def rollup(defaults, models, days=30):
     per_day = collections.defaultdict(collections.Counter)
     # `upstream` groups by provider and account: one email can serve several providers,
     # and upstream-key providers are identified by provider alone.
-    dims = ("client", "model", "via", "account", "upstream")
+    dims = ("client", "model", "via", "account", "upstream", "project")
+    rules = load_projects() if projects is None else projects
     periods = {key: {"total": collections.Counter(), "unreconciled": collections.Counter(),
                      "dims": {dim: collections.defaultdict(collections.Counter) for dim in dims},
                      "latest": {dim: {} for dim in ("account", "upstream")}, "unpriced": collections.Counter()}
@@ -293,6 +331,8 @@ def rollup(defaults, models, days=30):
     def group_key(row, dim):
         if dim == "upstream":
             return (row.get("provider") or "?", row.get("account") or "?")
+        if dim == "project":
+            return project_of(row, rules)
         return row.get(dim) or "?"
 
     for row in rows_for(None):
@@ -354,6 +394,9 @@ def rollup(defaults, models, days=30):
         if unresolved["requests"]:
             result["api_equivalent_usd"] = None
             result["marginal_usd"] = None
+        projects_dim = period["dims"]["project"]
+        result["attribution"] = {"rules": len(rules), "assigned_requests": sum(v["requests"] for k, v in projects_dim.items() if k != UNASSIGNED),
+                                 "unassigned_requests": projects_dim[UNASSIGNED]["requests"] if UNASSIGNED in projects_dim else 0}
         for dim, groups in period["dims"].items():
             latest = period["latest"].get(dim, {})
             entries = []
@@ -378,7 +421,7 @@ def rollup(defaults, models, days=30):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--day", default=local_day(), help="YYYY-MM-DD, or 'all'")
-    ap.add_argument("--by", default="client", choices=["client", "model", "provider", "account", "via"])
+    ap.add_argument("--by", default="client", choices=["client", "model", "provider", "account", "via", "project"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--rollup", action="store_true", help="full dashboard payload on stdout")
     args = ap.parse_args()
@@ -390,6 +433,7 @@ def main():
     day = None if args.day == "all" else args.day
 
     defaults, models = load_pricing()
+    rules = load_projects()
     agg = collections.defaultdict(lambda: collections.Counter())
     unpriced = collections.Counter()
     flat = collections.Counter()
@@ -407,7 +451,7 @@ def main():
         # cliproxy calls the Anthropic upstream "claude"; keep one name per vendor.
         if args.by == "provider" and r.get("provider") == "claude":
             r["provider"] = "anthropic"
-        k = r.get(args.by) or "?"
+        k = project_of(r, rules) if args.by == "project" else (r.get(args.by) or "?")
         a = agg[k]
         a["attempts"] += 1
         a["ok"] += 0 if r.get("failed") else 1
