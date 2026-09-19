@@ -2,7 +2,7 @@
  * The two lists are deliberately independent of Clerk's own allowlist (which governs sign-up, not access):
  * removing an address here revokes access on the next request without touching the identity provider. */
 export type AuthMode = 'none' | 'clerk';
-export const authMode = (env: NodeJS.ProcessEnv = process.env): AuthMode => env.AI_BILLS_AUTH === 'clerk' ? 'clerk' : 'none';
+export const authMode = (env: Record<string, string | undefined> = process.env): AuthMode => env.AI_BILLS_AUTH === 'clerk' ? 'clerk' : 'none';
 
 export const normalizeEmail = (value: string) => value.trim().toLowerCase();
 export function parseEmailList(value: string | undefined): string[] {

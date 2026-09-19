@@ -4,13 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { authMode, authorizeEmail, parseEmailList } from '../src/lib/hosted-auth';
-import { bearerAccepted, parseTokenDigests, validateSnapshot, writeSnapshotAtomically } from '../src/lib/snapshot-ingest';
+import { bearerAccepted, parseTokenDigests, readBounded, validateSnapshot, writeSnapshotAtomically } from '../src/lib/snapshot-ingest';
 
 describe('hosted authorization', () => {
   it('is off unless explicitly switched to clerk', () => {
-    expect(authMode({} as NodeJS.ProcessEnv)).toBe('none');
-    expect(authMode({ AI_BILLS_AUTH: 'clerk' } as NodeJS.ProcessEnv)).toBe('clerk');
-    expect(authMode({ AI_BILLS_AUTH: 'yes' } as NodeJS.ProcessEnv)).toBe('none');
+    expect(authMode({})).toBe('none');
+    expect(authMode({ AI_BILLS_AUTH: 'clerk' })).toBe('clerk');
+    expect(authMode({ AI_BILLS_AUTH: 'yes' })).toBe('none');
   });
   it('normalises the lists and admits only listed addresses once a list exists', () => {
     const allowed = parseEmailList(' Owner@Example.com, second@example.com\n bogus ');
@@ -49,6 +49,12 @@ describe('snapshot ingest', () => {
     await writeSnapshotAtomically(target, '{"generated":"a"}');
     await writeSnapshotAtomically(target, '{"generated":"b"}');
     expect(JSON.parse(await readFile(target, 'utf8')).generated).toBe('b');
+  });
+  it('stops reading an oversized body at the cap, with or without a content-length header', async () => {
+    const big = new ReadableStream<Uint8Array>({ start(controller) { for (let i = 0; i < 6; i++) controller.enqueue(new Uint8Array(1024).fill(120)); controller.close(); } });
+    expect(await readBounded(new Request('http://x/', { method: 'PUT', body: big, duplex: 'half' } as RequestInit), 4096)).toEqual({ ok: false });
+    expect(await readBounded(new Request('http://x/', { method: 'PUT', body: 'small', headers: { 'content-length': '99999999' } }), 4096)).toEqual({ ok: false });
+    expect(await readBounded(new Request('http://x/', { method: 'PUT', body: '{"generated":"a"}' }), 4096)).toEqual({ ok: true, text: '{"generated":"a"}' });
   });
   it('serves the route with the configured digest and rejects everything else', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'zecori-route-'));

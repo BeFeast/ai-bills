@@ -33,3 +33,19 @@ export async function writeSnapshotAtomically(destination: string, raw: string):
   try { await handle.writeFile(raw, 'utf8'); await handle.sync(); } finally { await handle.close(); }
   await rename(temporary, destination);
 }
+
+/** Read at most `limit` bytes from a request body, stopping (and cancelling the stream) as soon as the cap is exceeded, so an oversized upload never sits in memory. */
+export async function readBounded(request: Request, limit = MAX_SNAPSHOT_BYTES): Promise<{ ok: true; text: string } | { ok: false }> {
+  const declared = Number(request.headers.get('content-length') ?? 0);
+  if (declared > limit) return { ok: false };
+  if (!request.body) return { ok: true, text: '' };
+  const reader = request.body.getReader(); const chunks: Uint8Array[] = []; let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) { await reader.cancel().catch(() => undefined); return { ok: false }; }
+    chunks.push(value);
+  }
+  return { ok: true, text: Buffer.concat(chunks).toString('utf8') };
+}
