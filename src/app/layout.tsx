@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { ClerkProvider } from '@clerk/nextjs';
-import { authMode } from '@/lib/hosted-auth';
+import { authMode, clerkRuntime } from '@/lib/hosted-auth';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -14,7 +14,10 @@ const themeScript = "(function(){try{if(localStorage.getItem('ai-bills-theme')==
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   // Hosted instances wrap the tree in Clerk; self-hosted ones never load it.
-  const body = authMode() === 'clerk' ? <ClerkProvider signInUrl="/sign-in" afterSignOutUrl="/sign-in">{children}</ClerkProvider> : children;
+  const clerk = authMode() === 'clerk' ? clerkRuntime() : null;
+  const body = clerk
+    ? <ClerkProvider publishableKey={clerk.publishableKey} signInUrl={clerk.signInUrl} afterSignOutUrl={clerk.afterSignOutUrl} isSatellite={clerk.isSatellite} domain={clerk.domain} allowedRedirectOrigins={clerk.allowedRedirectOrigins.length ? clerk.allowedRedirectOrigins : undefined}>{children}</ClerkProvider>
+    : children;
   return (
     <html lang="en" suppressHydrationWarning>
       <head>

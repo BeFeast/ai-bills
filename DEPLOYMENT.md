@@ -41,10 +41,14 @@ API except `/api/health`, `/api/snapshot`, brand assets and the auth pages. The 
 address must also appear in `AI_BILLS_ALLOWED_EMAILS` (comma-separated; `AI_BILLS_ADMIN_EMAILS`
 marks admins) — a second list independent of Clerk's own allowlist, so removing an address
 revokes access on the next request; an empty list keeps the instance open and is logged.
-Denied accounts see a page naming the account with a sign-out button. Runtime secrets:
-`CLERK_SECRET_KEY`. The publishable key is inlined at build time
-(`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` build argument); the Clerk session token must carry an
-`email` claim. Self-hosted instances leave `AI_BILLS_AUTH` unset and never load Clerk.
+Denied accounts see a page naming the account with a sign-out button. Runtime configuration:
+`CLERK_SECRET_KEY` and `CLERK_PUBLISHABLE_KEY` (read per request; the build-time
+`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is only a fallback), `AI_BILLS_PUBLIC_ORIGIN`. A partner
+instance on another host of the same Clerk instance runs as a satellite: set
+`AI_BILLS_CLERK_PRIMARY_ORIGIN` to the primary's origin and people sign in there; the primary
+lists satellites in `AI_BILLS_CLERK_ALLOWED_REDIRECT_ORIGINS` (comma-separated, wildcards
+allowed). The Clerk session token must carry an `email` claim. Self-hosted instances leave
+`AI_BILLS_AUTH` unset and never load Clerk.
 
 A hosted instance receives its data through `PUT /api/snapshot` with
 `Authorization: Bearer <token>`; the instance stores only `AI_BILLS_INGEST_TOKEN_SHA256`
