@@ -3,6 +3,7 @@ import { hasAllowedOrigin } from '@/lib/request-origin';
 import { loadConfig } from '@/lib/config';
 import { AccountingConflictError, AccountingInputError, appendFinancialRecords } from '@/lib/accounting';
 import { MAX_STATEMENT_BYTES, StatementImportError, importStatement, type StatementImportInput } from '@/lib/statement-import';
+import { readBounded } from '@/lib/snapshot-ingest';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -15,9 +16,10 @@ export async function POST(request: Request) {
   try {
     const path = loadConfig().accounting?.journal_path;
     if (!path) return NextResponse.json({ error: 'Private accounting journal is not configured' }, { status: 503 });
-    const content = await request.text();
-    if (content.length > MAX_STATEMENT_BYTES + 10_000) throw new AccountingInputError('Import is too large');
-    const body = JSON.parse(content);
+    // Bounded by bytes on the wire, not by decoded string length.
+    const read = await readBounded(request, MAX_STATEMENT_BYTES + 10_000);
+    if (!read.ok) throw new AccountingInputError('Import is too large');
+    const body = JSON.parse(read.text);
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new AccountingInputError('Expected a JSON object');
     for (const key of ['csv', 'sourceId', 'accountId', 'provider', 'kind']) if (typeof body[key] !== 'string' || !body[key].trim()) throw new AccountingInputError(`Missing ${key}`);
     if (!KINDS.has(body.kind)) throw new AccountingInputError('Invalid financial kind');

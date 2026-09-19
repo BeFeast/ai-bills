@@ -41,6 +41,10 @@ describe('reconcileMonth', () => {
     const withRate = reconcileMonth([rec({ id: 'b', amount: 90 }), rec({ id: 'c', currency: 'EUR', amount: 5 })], ledger, '2026-09', { rates: new Map([['EUR', { currency: 'EUR', rate_to_usd: 1.2, as_of: '2026-09-01' }]]) }).rows.find(r => r.provider === 'openai')!;
     expect(withRate.invoicedUsd).toBeCloseTo(96, 6);
     expect(withRate.note).toContain('EUR converted at declared rates');
+    // A hand-built map with a bad rate is treated as undeclared, not applied.
+    const bad = reconcileMonth([rec({ id: 'c', currency: 'EUR', amount: 5 })], ledger, '2026-09', { rates: new Map([['EUR', { currency: 'EUR', rate_to_usd: -1, as_of: '2026-09-01' }]]) }).rows.find(r => r.provider === 'openai')!;
+    expect(bad).toMatchObject({ invoicedUsd: null, status: 'no-invoice' });
+    expect(bad.note).toContain('EUR records excluded');
   });
   it('reports no usage evidence when the ledger rollup is for another month or absent', () => {
     expect(reconcileMonth([rec({ date: '2026-08-05' })], ledger, '2026-08').rows[0]).toMatchObject({ status: 'no-usage-evidence', note: expect.stringContaining('not for this month') });

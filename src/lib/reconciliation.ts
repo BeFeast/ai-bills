@@ -59,7 +59,8 @@ export function reconcileMonth(records: FinancialRecord[], ledgerMonth: unknown,
     const entry = invoices.get(key) ?? { accrual: null, payment: null, count: 0, foreign: new Set<string>(), converted: new Set<string>() };
     entry.count++;
     // Same rule as the accounting totals: declared rates convert, anything else stays out and is named.
-    const rate = record.currency === 'USD' ? 1 : rates.get(record.currency)?.rate_to_usd;
+    const declared = rates.get(record.currency)?.rate_to_usd;
+    const rate = record.currency === 'USD' ? 1 : typeof declared === 'number' && Number.isFinite(declared) && declared > 0 ? declared : undefined;
     if (rate === undefined) entry.foreign.add(record.currency);
     else { entry[record.kind] = (entry[record.kind] ?? 0) + record.amount * rate; if (rate !== 1) entry.converted.add(record.currency); }
     invoices.set(key, entry);
