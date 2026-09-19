@@ -18,6 +18,7 @@ export function publicUrl(request: { nextUrl: { pathname: string; search: string
 
 /** Order: public paths → Clerk session (redirect to sign-in / 401 for API) → this instance's own allow list (403 by name). */
 // Only evaluated in Clerk mode: a half-configured satellite must not take a local instance down with it.
+// allowedRedirectOrigins is a ClerkProvider (browser) option only; the server-side AuthenticateRequestOptions has no such field.
 const clerkOptions = (() => { if (authMode() !== 'clerk') return {}; const c = clerkRuntime(); return { publishableKey: c.publishableKey, signInUrl: c.signInUrl, isSatellite: c.isSatellite, domain: c.domain }; })();
 const withClerk = clerkMiddleware(async (auth, request) => {
   if (isPublic(request)) return NextResponse.next();

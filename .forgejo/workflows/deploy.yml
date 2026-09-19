@@ -171,6 +171,8 @@ jobs:
                 ai-bills) curl -fsS -m 5 "$APP_URL/api/health" >/dev/null && curl -fsS -m 10 "$APP_URL/" | grep -q '<title>Zecori' || all=0 ;;
                 zecori) curl -fsS -m 5 "$HOSTED_URL/api/health" >/dev/null || all=0 ;;
                 zecori-*) curl -fsS -m 5 "$hosted_base:$(cat "$RUNNER_TEMP/port-$stack")/api/health" >/dev/null || all=0 ;;
+                # A stack this workflow cannot probe must not pass unprobed; extend the cases before adding it to the list.
+                *) echo "FATAL: no health probe for stack $stack" >&2; exit 1 ;;
               esac
             done
             if [ "$all" = 1 ]; then ok=1; break; fi
