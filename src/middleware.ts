@@ -1,6 +1,6 @@
 import { NextResponse, type NextFetchEvent, type NextRequest } from 'next/server';
 import { clerkClient, clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
-import { PUBLIC_PATHS, authMode, authorizeEmail, parseEmailList } from '@/lib/hosted-auth';
+import { PUBLIC_PATHS, authMode, authorizeEmail, clerkRuntime, parseEmailList } from '@/lib/hosted-auth';
 
 const isPublic = createRouteMatcher(PUBLIC_PATHS);
 const isApi = createRouteMatcher(['/api/(.*)']);
@@ -17,12 +17,14 @@ export function publicUrl(request: { nextUrl: { pathname: string; search: string
 }
 
 /** Order: public paths → Clerk session (redirect to sign-in / 401 for API) → this instance's own allow list (403 by name). */
+const clerkOptions = (() => { const c = clerkRuntime(); return { publishableKey: c.publishableKey, signInUrl: c.signInUrl, isSatellite: c.isSatellite, domain: c.domain }; })();
 const withClerk = clerkMiddleware(async (auth, request) => {
   if (isPublic(request)) return NextResponse.next();
   const session = await auth();
   if (!session.userId) {
     if (isApi(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     // Behind the tunnel the request URL names the container (0.0.0.0:18088); the return address must be the public origin.
+    // On a satellite instance Clerk sends the person to the primary's sign-in and back here afterwards.
     return session.redirectToSignIn({ returnBackUrl: publicUrl(request) });
   }
   const claims = session.sessionClaims as { email?: unknown } | null;
@@ -38,7 +40,7 @@ const withClerk = clerkMiddleware(async (auth, request) => {
   if (isApi(request)) return NextResponse.json({ error: 'Forbidden', account: email ?? undefined }, { status: 403 });
   const url = request.nextUrl.clone(); url.pathname = '/forbidden'; url.search = '';
   return NextResponse.rewrite(url, { request: { headers: new Headers({ ...Object.fromEntries(request.headers), 'x-zecori-denied-email': email ?? 'unknown account' }) } });
-});
+}, clerkOptions);
 
 export default function middleware(request: NextRequest, event: NextFetchEvent) {
   if (authMode() !== 'clerk') return NextResponse.next();

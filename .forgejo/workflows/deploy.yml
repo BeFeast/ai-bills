@@ -30,8 +30,8 @@ concurrency:
 env:
   REGISTRY: git.oklabs.uk
   IMAGE: git.oklabs.uk/befeast/ai-bills
-  # Two stacks run this image on the app host: the LAN dashboard and the hosted Zecori instance.
-  STACKS: ai-bills zecori
+  # The stacks that run this image (LAN dashboard, hosted Zecori, partner instances) are listed in the secret
+  # manager (AI_BILLS_DEPLOY_STACKS); partner stacks share the zecori compose file with a per-stack name and port.
   STACK_SOURCE_BASE: https://git.oklabs.uk/BeFeast/infra-stacks/raw/branch/main/devbox
   INFISICAL_SERVICES: 5b5038c7-46d5-496f-bfa6-6184cb41e143
 
@@ -59,6 +59,7 @@ jobs:
           bot_pat=$(get OKLABS_BOT_PAT /forgejo); dh_pass=$(get DOCKHAND_ADMIN_PASSWORD /dockhand)
           dockhand=$(get AI_BILLS_DOCKHAND_URL /ai-bills); app_url=$(get AI_BILLS_APP_URL /ai-bills); ntfy=$(get AI_BILLS_NTFY_URL /ai-bills)
           hosted_url=$(get ZECORI_APP_URL /ai-bills); clerk_pk=$(get ZECORI_CLERK_PUBLISHABLE_KEY /ai-bills)
+          stacks=$(get AI_BILLS_DEPLOY_STACKS /ai-bills 2>/dev/null || echo "ai-bills zecori")
           for v in "$bot_pat" "$dh_pass" "$dockhand" "$app_url" "$ntfy" "$hosted_url"; do echo "::add-mask::$v"; done
           {
             echo "BOT_USER=$(get OKLABS_BOT_USERNAME /forgejo)"
@@ -69,6 +70,7 @@ jobs:
             echo "APP_URL=$app_url"
             echo "HOSTED_URL=$hosted_url"
             echo "CLERK_PK=$clerk_pk"
+            echo "STACKS=$stacks"
             echo "NTFY=$ntfy"
             echo "TAG=${GITHUB_SHA:0:12}"
           } >> "$GITHUB_ENV"
@@ -87,7 +89,13 @@ jobs:
           # jq -j, not -r: -r appends its own newline and every diff fails on that byte.
           for stack in $STACKS; do
             curl -fsS -b "$RUNNER_TEMP/dockhand.jar" -H "Origin: $DOCKHAND" "$DOCKHAND/api/stacks/$stack/compose?env=1" | jq -j '.content' > "$RUNNER_TEMP/deployed-$stack.yaml"
-            curl -fsS "$STACK_SOURCE_BASE/$stack/compose.yaml" > "$RUNNER_TEMP/source-$stack.yaml"
+            # Partner stacks (zecori-<slug>) are the zecori file with the stack name, container name, port and paths substituted.
+            if [[ "$stack" == zecori-* ]]; then
+              port=$(grep -oE '"[0-9]+:18088"' "$RUNNER_TEMP/deployed-$stack.yaml" | tr -d '"' | cut -d: -f1)
+              curl -fsS "$STACK_SOURCE_BASE/zecori/compose.yaml" | sed -e "s/zecori:$/$stack:/; s/container_name: zecori/container_name: $stack/; s#13190:18088#$port:18088#; s#/opt/stacks/zecori/#/opt/stacks/$stack/#g" > "$RUNNER_TEMP/source-$stack.yaml"
+            else
+              curl -fsS "$STACK_SOURCE_BASE/$stack/compose.yaml" > "$RUNNER_TEMP/source-$stack.yaml"
+            fi
             if ! diff -u "$RUNNER_TEMP/source-$stack.yaml" "$RUNNER_TEMP/deployed-$stack.yaml"; then
               echo "FATAL: the deployed stack file for $stack differs from infra-stacks devbox/$stack/compose.yaml" >&2
               exit 1
@@ -151,7 +159,15 @@ jobs:
           ok=0
           for i in $(seq 1 30); do
             # The hosted instance answers / with a redirect to sign-in; its liveness is the public health endpoint.
-            if curl -fsS -m 5 "$APP_URL/api/health" >/dev/null && curl -fsS -m 10 "$APP_URL/" | grep -q '<title>Zecori' && curl -fsS -m 5 "$HOSTED_URL/api/health" >/dev/null; then ok=1; break; fi
+            all=1
+            for stack in $STACKS; do
+              case "$stack" in
+                ai-bills) curl -fsS -m 5 "$APP_URL/api/health" >/dev/null && curl -fsS -m 10 "$APP_URL/" | grep -q '<title>Zecori' || all=0 ;;
+                zecori) curl -fsS -m 5 "$HOSTED_URL/api/health" >/dev/null || all=0 ;;
+                zecori-*) port=$(grep -oE '"[0-9]+:18088"' "$RUNNER_TEMP/deployed-$stack.yaml" | tr -d '"' | cut -d: -f1); curl -fsS -m 5 "${HOSTED_URL%:*}:$port/api/health" >/dev/null || all=0 ;;
+              esac
+            done
+            if [ "$all" = 1 ]; then ok=1; break; fi
             sleep 5
           done
           [ "$ok" = 1 ] || { echo "FATAL: a stack did not answer within 150s after redeploy" >&2; exit 1; }

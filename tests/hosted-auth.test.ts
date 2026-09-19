@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { authMode, authorizeEmail, parseEmailList } from '../src/lib/hosted-auth';
+import { authMode, authorizeEmail, clerkRuntime, parseEmailList } from '../src/lib/hosted-auth';
 import { publicUrl } from '../src/middleware';
 import { bearerAccepted, parseTokenDigests, readBounded, validateSnapshot, writeSnapshotAtomically } from '../src/lib/snapshot-ingest';
 
@@ -83,5 +83,16 @@ describe('public return address', () => {
     expect(publicUrl(request, 'https://zecori.befeast.com')).toBe('https://zecori.befeast.com/usage?x=1');
     expect(publicUrl(request, undefined)).toBe('https://0.0.0.0:18088/usage?x=1');
     expect(publicUrl(request, 'not a url')).toBe('https://0.0.0.0:18088/usage?x=1');
+  });
+});
+
+describe('clerk runtime wiring', () => {
+  it('reads the publishable key at runtime and configures a satellite from the primary origin', () => {
+    expect(clerkRuntime({ CLERK_PUBLISHABLE_KEY: 'pk_live_a', AI_BILLS_PUBLIC_ORIGIN: 'https://zecori.befeast.com/' })).toMatchObject({ publishableKey: 'pk_live_a', isSatellite: false, signInUrl: '/sign-in', domain: undefined });
+    expect(clerkRuntime({ NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: 'pk_build' }).publishableKey).toBe('pk_build');
+    const sat = clerkRuntime({ CLERK_PUBLISHABLE_KEY: 'pk_live_a', AI_BILLS_PUBLIC_ORIGIN: 'https://zecori-demo.befeast.com', AI_BILLS_CLERK_PRIMARY_ORIGIN: 'https://zecori.befeast.com', AI_BILLS_CLERK_ALLOWED_REDIRECT_ORIGINS: 'https://zecori.befeast.com, https://*.befeast.com' });
+    expect(sat).toMatchObject({ isSatellite: true, domain: 'zecori-demo.befeast.com', signInUrl: 'https://zecori.befeast.com/sign-in', afterSignOutUrl: 'https://zecori.befeast.com/sign-in', allowedRedirectOrigins: ['https://zecori.befeast.com', 'https://*.befeast.com'] });
+    // The primary naming itself is not a satellite.
+    expect(clerkRuntime({ AI_BILLS_PUBLIC_ORIGIN: 'https://zecori.befeast.com', AI_BILLS_CLERK_PRIMARY_ORIGIN: 'https://zecori.befeast.com' }).isSatellite).toBe(false);
   });
 });
