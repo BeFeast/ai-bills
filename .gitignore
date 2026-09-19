@@ -69,3 +69,5 @@ payments.yml
 # Design-token stylesheets are public CSS, not credentials
 !src/app/tokens/
 !src/app/tokens/*.css
+deploy/selfhost/data/
+deploy/selfhost/.env

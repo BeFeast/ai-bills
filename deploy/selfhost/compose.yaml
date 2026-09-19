@@ -1,0 +1,27 @@
+# Self-host quickstart: the dashboard only. The collector runs on the machine where Claude Code /
+# Codex CLI are signed in (usually this one) and pushes snapshots to the ingest endpoint; see
+# docs/self-host.md. No login in this mode: keep the port on loopback or a private network.
+services:
+  zecori:
+    build:
+      context: ../..
+    image: ${AI_BILLS_IMAGE:-zecori:local}
+    container_name: zecori
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      AI_BILLS_CONFIG: /app/config.toml
+      HOSTNAME: "0.0.0.0"
+      PORT: "18088"
+    env_file:
+      - .env
+    ports:
+      - "${AI_BILLS_BIND:-127.0.0.1}:${AI_BILLS_PORT:-13180}:18088"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18088/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3

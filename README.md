@@ -32,6 +32,12 @@ repository and its complete history remain preserved privately. Archived browser
 sources are retained there and are not part of the active Next.js application. This public
 repository contains no production account config, ledger, payment records or credentials.
 
+## Install
+
+- Self-host on one machine, no login: [docs/self-host.md](docs/self-host.md) (`deploy/selfhost/`, collector from cron).
+- Feeding a hosted instance from your machine: [docs/partner-collector.md](docs/partner-collector.md).
+- Operating a hosted instance with sign-in: [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Development
 
 Use bun for JavaScript/TypeScript commands and uv for Python operations.
