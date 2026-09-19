@@ -122,6 +122,8 @@ export function importStatement(input: StatementImportInput): StatementImport {
   const index = (header?: string) => header === undefined ? -1 : columns.indexOf(header);
   const at = (row: string[], header?: string) => { const i = index(header); return i >= 0 ? (row[i] ?? '').trim() : ''; };
   const records: FinancialInput[] = []; const skipped: SkippedRow[] = [];
+  // Rows with identical facts and no reference are distinct charges: numbered in statement order, stable across re-imports.
+  const seen = new Map<string, number>();
   rows.slice(1).forEach((row, n) => {
     const line = n + 2;
     const date = parseStatementDate(at(row, mapping.date), input.dateFormat);
@@ -132,8 +134,13 @@ export function importStatement(input: StatementImportInput): StatementImport {
     if (!/^[A-Z]{3}$/.test(currency)) { skipped.push({ row: line, reason: currency ? `invalid currency "${currency}"` : 'no currency column and no default currency' }); return; }
     const description = at(row, mapping.description);
     const reference = at(row, mapping.id);
-    // A statement reference is the identity; without one, the row's facts are (re-importing the same file stays idempotent).
-    const sourceRecordId = reference || `row:${createHash('sha256').update([date.date, money.amount, currency, description].join('\0')).digest('hex').slice(0, 24)}`;
+    // A statement reference is the identity; without one, the row's facts plus its ordinal among equal rows are.
+    let sourceRecordId = reference;
+    if (!sourceRecordId) {
+      const digest = `row:${createHash('sha256').update([date.date, money.amount, currency, description].join('\0')).digest('hex').slice(0, 24)}`;
+      const ordinal = (seen.get(digest) ?? 0) + 1; seen.set(digest, ordinal);
+      sourceRecordId = ordinal === 1 ? digest : `${digest}#${ordinal}`;
+    }
     const record: FinancialInput = { sourceId: input.sourceId, sourceRecordId, accountId: input.accountId, provider: input.provider, kind: input.kind, amount: money.amount, currency, date: date.date };
     if (description) record.note = description.slice(0, 1000);
     records.push(record);

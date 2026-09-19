@@ -52,13 +52,15 @@ describe('importStatement', () => {
     expect(result.skipped).toEqual([{ row: 4, reason: expect.stringContaining('date') }, { row: 5, reason: 'empty amount' }]);
     expect(result.mapping).toMatchObject({ date: 'Date', amount: 'Amount', id: 'Invoice number' });
   });
-  it('derives a stable identity from the row facts when the statement has no reference', () => {
+  it('derives a stable identity from the row facts when the statement has no reference, keeping equal rows apart', () => {
     const csv = 'date,amount\n2026-09-01,10\n2026-09-01,10\n2026-09-02,10\n';
     const a = importStatement({ ...base, csv, currency: 'USD' }); const b = importStatement({ ...base, csv, currency: 'USD' });
     expect(a.records.map(r => r.sourceRecordId)).toEqual(b.records.map(r => r.sourceRecordId));
-    expect(a.records[0].sourceRecordId).toBe(a.records[1].sourceRecordId);
-    expect(a.records[0].sourceRecordId).not.toBe(a.records[2].sourceRecordId);
+    // Two identical charges on one day are two records; the same file imported twice is still two records, not four.
     expect(a.records[0].sourceRecordId).toMatch(/^row:[a-f0-9]{24}$/);
+    expect(a.records[1].sourceRecordId).toBe(`${a.records[0].sourceRecordId}#2`);
+    expect(a.records[2].sourceRecordId).not.toBe(a.records[0].sourceRecordId);
+    expect(new Set(a.records.map(r => r.sourceRecordId)).size).toBe(3);
   });
   it('needs a currency from the column, the amount or the default, and refuses empty or oversized statements', () => {
     expect(importStatement({ ...base, csv: 'date,amount\n2026-09-01,10\n' }).skipped[0].reason).toContain('no currency');

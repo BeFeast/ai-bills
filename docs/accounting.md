@@ -386,7 +386,9 @@ was performed.
 Columns are matched by header name: date, amount, currency, reference (invoice number / id)
 and description are detected from common headers, or named explicitly in `mapping`. The
 statement's own reference is the `sourceRecordId`; without one, a digest of the row's date,
-amount, currency and description is, so re-importing the same export inserts nothing twice.
+amount, currency and description is, numbered in statement order when several rows share the
+same facts, so two equal charges stay two records and re-importing the same export inserts
+nothing twice.
 Slash-separated dates are refused unless `dateFormat` is `mdy` or `dmy`; ISO and month-name
 dates are always read. Amounts accept currency symbols and codes, thousands separators and
 parentheses for negatives. Rows that cannot be read are returned as `skipped` with the row
