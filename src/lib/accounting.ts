@@ -17,7 +17,8 @@ export type FinancialSource = {
   fields?: Partial<Record<keyof FinancialInput, string>>; currency?: string;
 };
 export type AccountBinding = { id: string; label?: string; members: string[]; quota_account_key?: string; billing_mode?: 'included' | 'metered' | 'unknown' };
-export type AccountingConfig = { openrouter_account_id?: string; account_bindings?: AccountBinding[]; declared_inventory_complete?: boolean; journal_path?: string; registry_snapshot_path?: string; proxy_auth_dir?: string; proxy_config_path?: string; declared_accounts?: DeclaredAccount[]; sources?: FinancialSource[] };
+export type FxRate = { currency: string; rate_to_usd: number; as_of: string };
+export type AccountingConfig = { fx_rates?: FxRate[]; openrouter_account_id?: string; account_bindings?: AccountBinding[]; declared_inventory_complete?: boolean; journal_path?: string; registry_snapshot_path?: string; proxy_auth_dir?: string; proxy_config_path?: string; declared_accounts?: DeclaredAccount[]; sources?: FinancialSource[] };
 export type AccountingOverview = { month: string; currency: 'USD'; paymentsUsd: number | null; accruedUsd: number | null; apiEquivalentUsd: number | null; records: FinancialRecord[]; coverage: Freshness[]; complete: boolean; diagnostics: string[] };
 
 const KINDS = new Set<FinancialKind>(['payment', 'accrual', 'api-equivalent', 'balance', 'subscription']);
@@ -129,6 +130,17 @@ export async function readFinancialSource(source: FinancialSource): Promise<{ re
   } catch { return unavailable('error', 'Source could not be read or validated; no records imported'); }
 }
 
+/** Declared conversion rates by currency code; malformed entries are ignored rather than applied. */
+export function fxRates(rows: FxRate[] | undefined): Map<string, FxRate> {
+  const rates = new Map<string, FxRate>();
+  for (const row of rows ?? []) {
+    if (!row || typeof row.currency !== 'string' || !/^[A-Z]{3}$/.test(row.currency) || row.currency === 'USD') continue;
+    if (typeof row.rate_to_usd !== 'number' || !(row.rate_to_usd > 0) || !Number.isFinite(row.rate_to_usd)) continue;
+    if (typeof row.as_of !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.as_of)) continue;
+    rates.set(row.currency, row);
+  }
+  return rates;
+}
 export function currentMonth(timezone = 'Asia/Jerusalem', date = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit' }).formatToParts(date);
   return `${parts.find(p => p.type === 'year')!.value}-${parts.find(p => p.type === 'month')!.value}`;
@@ -150,10 +162,15 @@ export async function accountingOverview(config: AccountingConfig = {}, month = 
   let records: FinancialRecord[];
   try { records = deduplicateRecords(collected).filter(row => row.date.startsWith(`${month}-`)); }
   catch { records = journal.filter(row => row.date.startsWith(`${month}-`)); diagnostics.push('Conflicting source records: provider records excluded until reconciliation'); }
+  // Operator-declared rates convert foreign records into the USD totals; the record keeps its own currency.
+  const rates = fxRates(config.fx_rates);
   const currencies = new Set(records.filter(row => row.currency !== 'USD').map(row => row.currency));
-  if (currencies.size) diagnostics.push(`Not included in USD totals: ${[...currencies].join(', ')}; no verified conversion supplied`);
+  const converted = [...currencies].filter(code => rates.has(code)); const unconverted = [...currencies].filter(code => !rates.has(code));
+  if (converted.length) diagnostics.push(`Converted at declared rates: ${converted.map(code => `${code} ${rates.get(code)!.rate_to_usd} (as of ${rates.get(code)!.as_of})`).join(', ')}`);
+  if (unconverted.length) diagnostics.push(`Not included in USD totals: ${unconverted.join(', ')}; no verified conversion supplied`);
   if (!coverage.length) coverage.push({ id: 'financial-coverage', status: 'missing', observedAt: null, maxAgeSeconds: 0, message: 'No financial sources configured' });
-  const sum = (kind: FinancialKind) => { const rows = records.filter(row => row.kind === kind && row.currency === 'USD'); return rows.length ? rows.reduce((total, row) => total + row.amount, 0) : null; };
+  const usd = (row: FinancialRecord): number | null => row.currency === 'USD' ? row.amount : rates.has(row.currency) ? row.amount * rates.get(row.currency)!.rate_to_usd : null;
+  const sum = (kind: FinancialKind) => { const rows = records.filter(row => row.kind === kind).map(usd).filter((v): v is number => v !== null); return rows.length ? rows.reduce((total, v) => total + v, 0) : null; };
   // Readable sources cannot prove declared-account and full-period coverage.
   return { month, currency: 'USD', paymentsUsd: sum('payment'), accruedUsd: sum('accrual'), apiEquivalentUsd: sum('api-equivalent'), records, coverage, complete: false, diagnostics };
 }

@@ -1,14 +1,20 @@
 import { NextResponse } from 'next/server';
+import { readFile } from 'node:fs/promises';
+import { reconcileMonth } from '@/lib/reconciliation';
 import { hasAllowedOrigin } from '@/lib/request-origin';
 import { loadConfig } from '@/lib/config';
-import { accountingOverview, appendFinancialRecords, AccountingConflictError, AccountingInputError, currentMonth } from '@/lib/accounting';
+import { accountingOverview, appendFinancialRecords, AccountingConflictError, AccountingInputError, currentMonth, fxRates } from '@/lib/accounting';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   try {
     const config = loadConfig();
     const month = new URL(request.url).searchParams.get('month') ?? currentMonth(config.server.timezone);
-    return NextResponse.json(await accountingOverview(config.accounting, month), { headers: { 'cache-control': 'no-store' } });
+    const overview = await accountingOverview(config.accounting, month);
+    // Reconciliation needs the whole month's records (the overview already filtered them) and the ledger rollup from the snapshot.
+    let ledgerMonth: unknown = null;
+    try { ledgerMonth = (JSON.parse(await readFile(config.billing.snapshot_path, 'utf8')) as { usage_ledger?: { month?: unknown } }).usage_ledger?.month ?? null; } catch { ledgerMonth = null; }
+    return NextResponse.json({ ...overview, reconciliation: reconcileMonth(overview.records, ledgerMonth, month, { rates: fxRates(config.accounting?.fx_rates) }) }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) { return failure(error); }
 }
 export async function POST(request: Request) {
