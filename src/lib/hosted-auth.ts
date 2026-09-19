@@ -20,4 +20,4 @@ export function authorizeEmail(email: string | null | undefined, allowed: string
 }
 
 /** Paths that never require a session: liveness for monitors, the bearer-authenticated snapshot ingest, brand assets and the auth pages themselves. */
-export const PUBLIC_PATHS = ['/api/health', '/api/snapshot', '/sign-in(.*)', '/forbidden', '/brand/(.*)', '/favicon.ico', '/apple-icon.png', '/fonts/(.*)', '/provider-icons/(.*)'];
+export const PUBLIC_PATHS = ['/api/health', '/api/snapshot', '/sign-in(.*)', '/forbidden', '/about', '/privacy', '/terms', '/robots.txt', '/brand/(.*)', '/favicon.ico', '/apple-icon.png', '/fonts/(.*)', '/provider-icons/(.*)'];

@@ -26,7 +26,7 @@ test('overview opens with the Limits now hero and moves money tiles to accountin
   expect(html).toContain('Accounts used in the last 24h · refreshed 23:15');
   expect(html).toContain('Fable weekly');
   expect(html).toContain('>17%<');
-  expect(html).toContain('↻ 59h 40m');
+  expect(html).toContain('↻ refills in 2d 11h 40m');
   expect(html).toContain('Weekly all models');
   expect(html).toContain('579 ok · 3 failed · 24h');
   expect(html).toContain('Source error');

@@ -35,7 +35,7 @@ import {
   type ProviderUsage,
   quotaTone,
 } from '@/lib/usage';
-import { countdown, fmtDate, fmtNumber, fmtPct, normalizePct, pickPct, resetLabel } from './format';
+import { fmtDate, fmtNumber, fmtPct, normalizePct, pickPct, refillLabel, resetLabel } from './format';
 import { CodexAuthBox, useCodexAuth } from './CodexAuth';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
@@ -102,7 +102,7 @@ function LimitCard({ label, provider, pct, reset, badge, rows, tone, now, tz }: 
 }) {
   const remaining = pct === null ? null : Math.max(0, Math.min(100, 100 - pct));
   const leftText = remaining === null ? 'n/a' : `${Number(remaining.toFixed(1))}%`;
-  const short = reset ? countdown(reset, now).replace(/ left$/, '') : 'n/a';
+  const short = refillLabel(reset, now) ?? 'n/a';
   return (
     <div className={`bf-card limit${tone ? ` limit--${tone}` : ''}`}>
       <div className="limit__left">

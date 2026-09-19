@@ -34,14 +34,30 @@ export function fmtDate(value: string | null | undefined, tz: string = DEFAULT_T
     : d.toLocaleString('en-IL', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
 }
 
+/** Compact duration: days once past 24 hours ("1d 3h 14m"), no zero hours below one hour ("5m"). */
+export function duration(ms: number): string {
+  const abs = Math.abs(ms);
+  const d = Math.floor(abs / 86_400_000);
+  const h = Math.floor((abs % 86_400_000) / 3_600_000);
+  const m = Math.floor((abs % 3_600_000) / 60_000);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 export function countdown(value: string | null | undefined, now: number): string {
   if (!value) return 'n/a';
   const ms = new Date(value).getTime() - now;
   if (!Number.isFinite(ms)) return 'n/a';
-  const abs = Math.abs(ms);
-  const h = Math.floor(abs / 3_600_000);
-  const m = Math.floor((abs % 3_600_000) / 60_000);
-  return ms >= 0 ? `${h}h ${m}m left` : `${h}h ${m}m ago`;
+  return ms >= 0 ? `${duration(ms)} left` : `${duration(ms)} ago`;
+}
+
+/** Wording for a limit window: what happens (refill) and when, or that it is overdue. */
+export function refillLabel(value: string | null | undefined, now: number): string | null {
+  if (!value) return null;
+  const ms = new Date(value).getTime() - now;
+  if (!Number.isFinite(ms)) return null;
+  return ms >= 0 ? `refills in ${duration(ms)}` : `refill was due ${duration(ms)} ago`;
 }
 
 export function resetLabel(value: string | null | undefined, now: number, tz: string): string {

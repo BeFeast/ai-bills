@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { barWidth, normalizePct, pickPct } from '../src/components/format';
+import { barWidth, countdown, duration, normalizePct, pickPct, refillLabel } from '../src/components/format';
 
 describe('percent formatting', () => {
   test('normalizePct takes Claude percents as-is', () => {
@@ -28,5 +28,21 @@ describe('percent formatting', () => {
     expect(pickPct(null, undefined, 7, 9)).toBe(7);
     expect(pickPct(0, 9)).toBe(0);
     expect(pickPct(null, undefined)).toBeNull();
+  });
+});
+
+describe('durations', () => {
+  const now = Date.parse('2026-09-19T12:00:00Z');
+  test('shows days past 24 hours and drops zero hours under one hour', () => {
+    expect(duration(27 * 3_600_000 + 14 * 60_000)).toBe('1d 3h 14m');
+    expect(duration(5 * 60_000)).toBe('5m');
+    expect(duration(2 * 3_600_000)).toBe('2h 0m');
+    expect(countdown('2026-09-20T15:14:00Z', now)).toBe('1d 3h 14m left');
+    expect(countdown('2026-09-19T11:55:00Z', now)).toBe('5m ago');
+  });
+  test('names the refill and its timing', () => {
+    expect(refillLabel('2026-09-22T16:00:00Z', now)).toBe('refills in 3d 4h 0m');
+    expect(refillLabel('2026-09-19T11:00:00Z', now)).toBe('refill was due 1h 0m ago');
+    expect(refillLabel(null, now)).toBeNull();
   });
 });
