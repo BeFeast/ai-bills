@@ -9,7 +9,9 @@ type Inventory = import('@/lib/accounts').AccountRegistry;
 type RegistryAccount = import('@/lib/accounts').RegistryAccount;
 type FinancialRecord = import('@/lib/accounting').FinancialInput;
 type StoredRecord = import('@/lib/accounting').FinancialRecord;
-type Accounting = import('@/lib/accounting').AccountingOverview;
+type Accounting = import('@/lib/accounting').AccountingOverview & { reconciliation?: import('@/lib/reconciliation').Reconciliation };
+type ReconciliationRow = import('@/lib/reconciliation').ReconciliationRow;
+type ImportPreview = { parsed: number; skipped: { row: number; reason: string }[]; columns: string[]; mapping: Record<string, string | undefined>; sample: FinancialRecord[]; dryRun: boolean; inserted?: number; duplicates?: number };
 
 export async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', ...init });
@@ -32,6 +34,10 @@ const inventoryColumns: Column<'account' | 'origin' | 'routing' | 'quota' | 'cov
 const recordColumns: Column<'date' | 'who' | 'kind' | 'amount' | 'source'>[] = [
   { key: 'date', label: 'Date', mono: true }, { key: 'who', label: 'Provider / account' }, { key: 'kind', label: 'Type' }, { key: 'amount', label: 'Amount', mono: true, align: 'right' }, { key: 'source', label: 'Source / note' },
 ];
+const reconciliationColumns: Column<'provider' | 'invoiced' | 'usage' | 'difference' | 'status'>[] = [
+  { key: 'provider', label: 'Provider' }, { key: 'invoiced', label: 'Statement (USD)', mono: true, align: 'right' }, { key: 'usage', label: 'Usage at list price (USD)', mono: true, align: 'right' }, { key: 'difference', label: 'Difference', mono: true, align: 'right' }, { key: 'status', label: 'Status' },
+];
+const reconciliationTone: Record<ReconciliationRow['status'], 'ok' | 'warn' | 'bad' | 'info'> = { matched: 'ok', partial: 'warn', 'no-usage-evidence': 'info', 'no-invoice': 'info' };
 const kindOptions = [
   { value: 'payment', label: 'Actual payment / refund' }, { value: 'accrual', label: 'Provider accrued consumption' }, { value: 'balance', label: 'Prepaid balance' }, { value: 'subscription', label: 'Subscription schedule' }, { value: 'api-equivalent', label: 'API-equivalent estimate' },
 ];
@@ -46,6 +52,11 @@ export function AccountOverview({ tz }: { tz: string }) {
   const [selectedAccount, setSelectedAccount] = useState('');
   const [kind, setKind] = useState<import('@/lib/accounting').FinancialKind>('payment');
   const pendingRecord = useRef<FinancialRecord | null>(null);
+  const [importAccount, setImportAccount] = useState('');
+  const [importKind, setImportKind] = useState<import('@/lib/accounting').FinancialKind>('accrual');
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importNotice, setImportNotice] = useState('');
+  const [importing, setImporting] = useState(false);
   const generation = useRef(0);
   useEffect(() => {
     const parts = new Intl.DateTimeFormat('en', { timeZone: tz, year: 'numeric', month: '2-digit' }).formatToParts(new Date());
@@ -83,6 +94,30 @@ export function AccountOverview({ tz }: { tz: string }) {
     finally { setBusy(false); }
   }
 
+  /** Statement import: preview first (nothing written), then import the same text. */
+  async function submitStatement(form: HTMLFormElement, dryRun: boolean) {
+    const values = new FormData(form);
+    const account = inventory?.accounts.find((item) => item.id === importAccount);
+    if (!account) { setImportNotice('Choose the account the statement belongs to.'); return; }
+    const body = { csv: String(values.get('csv') ?? ''), sourceId: String(values.get('sourceId') ?? '').trim(), accountId: account.id, provider: account.provider, kind: importKind, currency: String(values.get('currency') ?? '').trim() || undefined, dateFormat: String(values.get('dateFormat') ?? 'iso'), dryRun };
+    setImporting(true); setImportNotice('');
+    try {
+      const result = await readJson<ImportPreview>('/api/accounts/accounting/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      setImportPreview(result);
+      if (dryRun) setImportNotice(`${result.parsed} rows readable, ${result.skipped.length} skipped. Nothing written yet.`);
+      else { setImportNotice(`${result.inserted ?? 0} records imported, ${result.duplicates ?? 0} already known, ${result.skipped.length} skipped.`); await refresh(); }
+    } catch (cause) { setImportNotice(`Import not confirmed: ${cause instanceof Error ? cause.message : String(cause)}`); }
+    finally { setImporting(false); }
+  }
+  function reconciliationCell(row: ReconciliationRow, column: Column<typeof reconciliationColumns[number]['key']>): ReactNode {
+    switch (column.key) {
+      case 'provider': return <Cell main={row.provider} sub={row.invoiceBasis ? `${row.invoiceRecords} ${row.invoiceBasis} record${row.invoiceRecords === 1 ? '' : 's'}` : 'no statement records'} />;
+      case 'invoiced': return fmtMoney(row.invoicedUsd);
+      case 'usage': return <Cell main={fmtMoney(row.usageUsd)} sub={row.unpricedRequests ? `${row.unpricedRequests} unpriced requests` : undefined} mono />;
+      case 'difference': return row.differenceUsd === null ? '—' : `${row.differenceUsd > 0 ? '+' : ''}${fmtMoney(row.differenceUsd)}`;
+      case 'status': return <div className="cell" style={{ alignItems: 'flex-start', gap: 4 }}><Pill tone={reconciliationTone[row.status]}>{row.status.replaceAll('-', ' ')}</Pill><span className="cell__sub">{row.note}</span></div>;
+    }
+  }
   function inventoryCell(account: RegistryAccount, column: Column<typeof inventoryColumns[number]['key']>): ReactNode {
     switch (column.key) {
       case 'account': return <Cell main={account.label || account.id} sub={account.provider} />;
@@ -118,6 +153,11 @@ export function AccountOverview({ tz }: { tz: string }) {
       <summary><span>Source freshness and coverage</span><span className="details-hint">missing is not zero</span></summary>
       <CoverageList labels={Object.fromEntries((inventory?.accounts || []).map(account => [`quota:${account.id}`, `${account.label} quota`]))} sources={[...(inventory?.sources || []), ...(accounting?.coverage || []).filter((s) => !inventory?.sources.some((i) => i.id === s.id))]} tz={tz} />
     </details>
+    <details className="bf-card details-card" open>
+      <summary><span>Statement vs usage reconciliation</span><span className="details-hint">{accounting?.reconciliation ? `${accounting.reconciliation.rows.length} providers · tolerance ${Math.round(accounting.reconciliation.tolerance.fraction * 100)}% or $${accounting.reconciliation.tolerance.minimumUsd}` : 'per provider, per month'}</span></summary>
+      <p className="t-small">Provider statements (accruals, else payments) beside the ledger's list-price value for the same month. A difference is shown, never corrected; missing sides are named.{accounting?.reconciliation?.usagePeriod?.start ? ` Ledger rollup: ${accounting.reconciliation.usagePeriod.start}${accounting.reconciliation.usagePeriod.end ? ` → ${accounting.reconciliation.usagePeriod.end}` : ''}.` : ' No ledger rollup available.'}</p>
+      <Table columns={reconciliationColumns} rows={accounting?.reconciliation?.rows ?? []} rowKey={(row) => row.provider} renderCell={reconciliationCell} empty="Nothing to reconcile: no statement records and no priced usage for this month." />
+    </details>
     <Table caption="Account inventory, routing enrollment and quota evidence" columns={inventoryColumns} rows={inventory?.accounts ?? []} rowKey={(account) => account.id} renderCell={inventoryCell} empty="No accounts observed yet. Check source coverage above." />
     <details className="bf-card details-card">
       <summary><span>Add a manual financial record</span><span className="details-hint">payments, consumption, balances or subscription schedule</span></summary>
@@ -135,6 +175,30 @@ export function AccountOverview({ tz }: { tz: string }) {
           <Button type="submit" disabled={busy || !inventory?.accounts.length}>{busy ? 'Saving…' : 'Save record'}</Button>
           {notice ? <span role="status" className="t-small" style={{ color: 'var(--ok)' }}>{notice}</span> : null}
         </div>
+      </form>
+    </details>
+    <details className="bf-card details-card">
+      <summary><span>Import a statement (CSV)</span><span className="details-hint">provider billing export → records, idempotent</span></summary>
+      <form className="stack stack--loose" onSubmit={(event) => { event.preventDefault(); void submitStatement(event.currentTarget, false); }} onChange={() => setImportPreview(null)}>
+        <div className="record-grid">
+          <Select label="Account" required value={importAccount} onChange={(e) => setImportAccount(e.target.value)} options={[{ value: '', label: 'Choose account' }, ...(inventory?.accounts ?? []).map((a) => ({ value: a.id, label: `${a.label} · ${a.provider}` }))]} />
+          <Select label="Rows are" value={importKind} onChange={(e) => setImportKind(e.target.value as import('@/lib/accounting').FinancialKind)} options={kindOptions} />
+          <Input label="Source id" name="sourceId" required placeholder="openai-invoices" pattern="[a-z0-9][a-z0-9-]{1,60}" hint="One id per statement source; reuse it for later exports of the same source" />
+          <Input label="Default currency" name="currency" placeholder="USD" pattern="[A-Za-z]{3}" maxLength={3} hint="Used when the statement has no currency column" />
+          <Select label="Slash dates are" name="dateFormat" defaultValue="iso" options={[{ value: 'iso', label: 'not used (ISO / month names)' }, { value: 'mdy', label: 'month/day/year' }, { value: 'dmy', label: 'day/month/year' }]} />
+        </div>
+        <label className="bf-field"><span className="bf-label">Statement CSV</span><textarea className="bf-input" name="csv" required rows={6} spellCheck={false} placeholder={'Invoice number,Date,Description,Amount,Currency\nINV-1,2026-09-01,API usage,120.00,USD'} /></label>
+        <p className="t-small">Columns are matched by header (date, amount, currency, invoice number/id, description); each provider row becomes one record keyed by its reference, so re-importing the same export adds nothing twice. Check the preview against the statement before importing.</p>
+        <div className="toolbar" style={{ gap: 12 }}>
+          <Button type="button" variant="secondary" disabled={importing || !inventory?.accounts.length} onClick={(event) => { const form = event.currentTarget.form; if (form?.reportValidity()) void submitStatement(form, true); }}>{importing ? 'Working…' : 'Preview'}</Button>
+          <Button type="submit" disabled={importing || !inventory?.accounts.length || !importPreview || !importPreview.dryRun}>{importing ? 'Working…' : 'Import previewed rows'}</Button>
+          {importNotice ? <span role="status" className="t-small">{importNotice}</span> : null}
+        </div>
+        {importPreview ? <div className="stack" style={{ gap: 4 }}>
+          <span className="t-small">Columns: {importPreview.columns.join(', ')} · date ← {importPreview.mapping.date}, amount ← {importPreview.mapping.amount}{importPreview.mapping.id ? `, reference ← ${importPreview.mapping.id}` : ', reference derived from row facts'}</span>
+          {importPreview.sample.map((row) => <span key={row.sourceRecordId} className="mono-faint">{row.date} · {row.currency} {row.amount} · {row.sourceRecordId}{row.note ? ` · ${row.note}` : ''}</span>)}
+          {importPreview.skipped.slice(0, 5).map((skip) => <span key={skip.row} className="t-small" style={{ color: 'var(--warn)' }}>Row {skip.row}: {skip.reason}</span>)}
+        </div> : null}
       </form>
     </details>
     <details className="bf-card details-card" open>

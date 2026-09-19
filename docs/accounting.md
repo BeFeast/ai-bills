@@ -378,3 +378,39 @@ be attributed to the host's signed-in account rather than the proxy credential.
 Validation: `tests/accounting-collectors.test.py` (23 tests) passes; no collector
 installation, deployment, provider inference, account change or ledger rewrite
 was performed.
+
+## Statement import and reconciliation — 2026-09-19
+
+`POST /api/accounts/accounting/import` turns a provider's CSV export into financial records
+(`{csv, sourceId, accountId, provider, kind, currency?, mapping?, dateFormat?, dryRun?}`).
+Columns are matched by header name: date, amount, currency, reference (invoice number / id)
+and description are detected from common headers, or named explicitly in `mapping`. The
+statement's own reference is the `sourceRecordId`; without one, a digest of the row's date,
+amount, currency and description is, so re-importing the same export inserts nothing twice.
+Slash-separated dates are refused unless `dateFormat` is `mdy` or `dmy`; ISO and month-name
+dates are always read. Amounts accept currency symbols and codes, thousands separators and
+parentheses for negatives. Rows that cannot be read are returned as `skipped` with the row
+number and reason; `dryRun: true` returns the same preview and writes nothing. Limits: 2 MB,
+5000 rows. The dashboard's "Import a statement" form previews first, then imports.
+
+`GET /api/accounts/accounting?month=` now carries `reconciliation`: one row per provider
+(names normalised, gateway prefixes dropped) comparing the month's statement figure
+(accruals when present, otherwise payments; USD only) with the ledger rollup's API-equivalent
+for the same month. Statuses: `matched` (difference within 5% or $1), `partial` (both sides
+present, larger difference), `no-usage-evidence` (statement without priced usage rows, or the
+ledger rollup is for another month), `no-invoice` (priced usage without statement records).
+The difference is displayed, never applied to either side; unpriced requests and non-USD
+records are named in the note.
+
+`[accounting.fx_rates]` declares conversion rates the operator vouches for:
+
+```toml
+[[accounting.fx_rates]]
+currency = "EUR"
+rate_to_usd = 1.08
+as_of = "2026-09-01"
+```
+
+Records keep their own currency; with a declared rate they enter the USD totals, and the
+overview's diagnostics name the rate and its date. Currencies without a rate stay excluded as
+before. Malformed rates (non-positive, non-ISO code, no date) are ignored, not applied.

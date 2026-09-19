@@ -28,6 +28,15 @@ describe('financial journal', () => {
     expect(view.diagnostics.join(' ')).toContain('EUR');
     expect((await accountingOverview({ journal_path: path }, '2026-08')).paymentsUsd).toBeNull();
   });
+  test('declared conversion rates bring foreign records into the USD totals; undeclared ones stay out', async () => {
+    const path = join(await directory(), 'payments.jsonl');
+    await appendFinancialRecords(path, [record, { ...record, sourceRecordId: 'eur-1', amount: 10, currency: 'EUR' }, { ...record, sourceRecordId: 'gbp-1', amount: 10, currency: 'GBP' }]);
+    const view = await accountingOverview({ journal_path: path, fx_rates: [{ currency: 'EUR', rate_to_usd: 1.1, as_of: '2026-09-01' }, { currency: 'USD', rate_to_usd: 2, as_of: '2026-09-01' }, { currency: 'GBP', rate_to_usd: -1, as_of: '2026-09-01' }] }, '2026-09');
+    expect(view.paymentsUsd).toBeCloseTo(31, 6);
+    expect(view.diagnostics.find(d => d.startsWith('Converted'))).toContain('EUR 1.1 (as of 2026-09-01)');
+    expect(view.diagnostics.find(d => d.startsWith('Not included'))).toContain('GBP');
+    expect(view.records.find(r => r.sourceRecordId === 'eur-1')?.currency).toBe('EUR');
+  });
   test('validates dates, kinds and source identities before any append', () => {
     expect(() => validateRecord({ ...record, date: '2026-02-30' })).toThrow();
     expect(() => validateRecord({ ...record, amount: Infinity })).toThrow();
