@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { readFile } from 'node:fs/promises';
 import { loadConfig } from '@/lib/config';
-import { EXPORT_DIMENSIONS, EXPORT_PERIODS, usageCsv, type ExportDimension, type ExportPeriod } from '@/lib/usage-export';
+import { EXPORT_DIMENSIONS, EXPORT_PERIODS, usageCsv, type ExportDimension } from '@/lib/usage-export';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -17,4 +17,3 @@ export async function GET(request: Request) {
   const result = usageCsv(ledger[period], by as ExportDimension);
   return new NextResponse(result.csv, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${result.filename}"`, 'cache-control': 'no-store', 'x-rows': String(result.rows) } });
 }
-export type { ExportPeriod };
