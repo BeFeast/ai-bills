@@ -116,6 +116,20 @@ class EdgeTests(unittest.TestCase):
             self.assertTrue(any('limit reached' in t for t in titles))
             self.assertEqual(notify.call_args_list[0].args[0], [])  # no topics configured -> nothing delivered, state still recorded
 
+    def test_notifications_carry_unicode_titles_through_json_publish(self):
+        request = alerts.ntfy_request('https://ntfy.example.invalid/ai-billing', 'urgent', 'Claude · work@example.invalid — recovered', 'Fable weekly 10% used', 'white_check_mark')
+        self.assertEqual(request.full_url, 'https://ntfy.example.invalid/')
+        body = json.loads(request.data.decode('utf-8'))
+        self.assertEqual((body['topic'], body['priority'], body['tags']), ('ai-billing', 5, ['white_check_mark']))
+        self.assertEqual(body['title'], 'Claude · work@example.invalid — recovered')
+        self.assertTrue(all(ord(ch) < 128 for ch in ''.join(f'{k}{v}' for k, v in request.header_items())))
+        sent = []
+        with patch.object(alerts.urllib.request, 'urlopen', side_effect=lambda req, timeout=10: sent.append(req) or type('R', (), {'read': lambda self: b''})()):
+            alerts.notify(['https://ntfy.example.invalid/ai-billing', 'https://ntfy.sh/oklabs-x'], 'high', 'Ünïcode — title', 'msg')
+        self.assertEqual([json.loads(r.data)['topic'] for r in sent], ['ai-billing', 'oklabs-x'])
+        with self.assertRaises(ValueError):
+            alerts.ntfy_request('https://ntfy.example.invalid/', 'high', 't', 'm', 'x')
+
     def test_config_merges_defaults_and_keeps_only_http_topics(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg = Path(directory) / 'alerts.yml'

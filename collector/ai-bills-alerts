@@ -15,7 +15,7 @@ Modes:
   ai-bills-alerts --summary  additionally send one digest of the current state
   ai-bills-alerts --dry-run  evaluate and print; no notification, no state change
 """
-import argparse, json, os, re, sys, urllib.request
+import argparse, json, os, re, sys, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
 
@@ -203,12 +203,24 @@ def apply_edges(conditions, state_dir, now):
             cond["since"] = previous.get("since")
     return events
 
+NTFY_PRIORITY = {"urgent": 5, "high": 4, "default": 3}
+
+def ntfy_request(topic_url, priority, title, message, tags):
+    """ntfy JSON publish: the topic moves from the path into the body, so title and
+    message travel as UTF-8 JSON instead of latin-1 HTTP headers (an em dash or a
+    Cyrillic label in a header would raise before the request is sent)."""
+    parts = urllib.parse.urlsplit(topic_url)
+    topic = parts.path.strip("/").split("/")[-1]
+    if not topic:
+        raise ValueError(f"no topic in {topic_url}")
+    body = json.dumps({"topic": topic, "title": title, "message": message, "priority": NTFY_PRIORITY.get(priority, 3), "tags": [tags]}, ensure_ascii=False).encode()
+    base = urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/", "", ""))
+    return urllib.request.Request(base, data=body, method="POST", headers={"Content-Type": "application/json; charset=utf-8"})
+
 def notify(topics, priority, title, message, tags="moneybag"):
     for topic in topics:
-        request = urllib.request.Request(topic, data=message.encode(), method="POST",
-                                         headers={"Title": title, "Priority": priority, "Tags": tags})
         try:
-            urllib.request.urlopen(request, timeout=10).read()
+            urllib.request.urlopen(ntfy_request(topic, priority, title, message, tags), timeout=10).read()
         except Exception as exc:  # delivery failure must not stop state bookkeeping
             print(f"notify failed for {topic}: {exc}", file=sys.stderr)
 
