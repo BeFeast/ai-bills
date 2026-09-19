@@ -299,6 +299,11 @@ button.stat-tile:focus-visible { box-shadow: var(--focus-ring); }
 .codex-device-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; overflow-wrap: anywhere; }
 .codex-device-row code { font-family: var(--font-mono); background: var(--surface-1); padding: 3px 8px; border-radius: 6px; font-size: 13px; letter-spacing: .05em; border: 1px solid var(--border-1); }
 
+.topbar__account { display: inline-flex; align-items: center; margin-left: 4px; }
+.auth-page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 32px 16px; background: var(--bg-page); }
+.auth-page__intro { display: flex; align-items: center; gap: 16px; max-width: 420px; }
+.auth-page__lead { margin: 0 0 4px; font-size: 16px; font-weight: 600; color: var(--text); }
+
 /* ---------------------------------------------------------------- alerts */
 .alert-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .alert-row { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 4px 14px; align-items: start; padding: 10px 0; border-top: 1px solid var(--border-1); }

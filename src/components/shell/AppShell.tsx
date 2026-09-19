@@ -47,11 +47,13 @@ type AppShellProps<T extends string> = {
   onToggleTheme: () => void;
   footerLeft?: ReactNode;
   footerRight?: ReactNode;
+  /** Hosted instances put the signed-in account control here. */
+  account?: ReactNode;
   children: ReactNode;
 };
 
 /** 232px sidebar + sticky topbar + content + footer; ≤900px the sidebar becomes a 264px drawer on a blurred scrim. */
-export function AppShell<T extends string>({ brand, items, view, onView, sidebarFooter, title, subtitle, status, countdown, onRefresh, refreshing, theme, onToggleTheme, footerLeft, footerRight, children }: AppShellProps<T>) {
+export function AppShell<T extends string>({ brand, items, view, onView, sidebarFooter, title, subtitle, status, countdown, onRefresh, refreshing, theme, onToggleTheme, footerLeft, footerRight, account, children }: AppShellProps<T>) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   useEffect(() => {
     if (!drawerOpen) return;
@@ -81,6 +83,7 @@ export function AppShell<T extends string>({ brand, items, view, onView, sidebar
             {countdown ? <span className="topbar__countdown mono">{countdown}</span> : null}
             <Button variant="secondary" size="sm" className={`bf-btn--icon${refreshing ? ' is-busy' : ''}`} onClick={onRefresh} disabled={refreshing} aria-label={refreshing ? 'Refreshing…' : 'Refresh now'} title={refreshing ? 'Refreshing…' : 'Refresh now'}>{refreshIcon}</Button>
             <Button variant="ghost" size="sm" className="bf-btn--icon" onClick={onToggleTheme} aria-label={theme === 'dark' ? 'Light scheme' : 'Dark scheme'} title={theme === 'dark' ? 'Light scheme' : 'Dark scheme'}>{theme === 'dark' ? sunIcon : moonIcon}</Button>
+            {account ? <span className="topbar__account">{account}</span> : null}
           </div>
         </header>
         <main className="content" key={view}>{children}</main>

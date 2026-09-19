@@ -1,0 +1,35 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { mkdir, open, rename } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+
+export const MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024;
+
+/** Tokens are configured as hex SHA-256 digests (`AI_BILLS_INGEST_TOKEN_SHA256`, comma-separated); plaintext never lives on the app host. */
+export function parseTokenDigests(value: string | undefined): string[] {
+  return (value ?? '').split(/[,\s]+/).map(entry => entry.trim().toLowerCase().replace(/^sha256:/, '')).filter(entry => /^[0-9a-f]{64}$/.test(entry));
+}
+
+export function bearerAccepted(header: string | null, digests: string[]): boolean {
+  const match = /^Bearer\s+(\S+)$/i.exec(header ?? '');
+  if (!match || !digests.length) return false;
+  const presented = Buffer.from(createHash('sha256').update(match[1]).digest('hex'), 'hex');
+  return digests.some(digest => { const expected = Buffer.from(digest, 'hex'); return expected.length === presented.length && timingSafeEqual(expected, presented); });
+}
+
+/** Same envelope rule as the SSH receiver: a JSON object with a string `generated`. */
+export function validateSnapshot(raw: string): { ok: true; generated: string } | { ok: false; error: string } {
+  if (raw.length > MAX_SNAPSHOT_BYTES) return { ok: false, error: 'snapshot too large' };
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return { ok: false, error: 'snapshot is not valid JSON' }; }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof (value as { generated?: unknown }).generated !== 'string') return { ok: false, error: 'invalid snapshot envelope' };
+  return { ok: true, generated: (value as { generated: string }).generated };
+}
+
+/** Write next to the destination, fsync, then rename: readers see either the previous or the complete new snapshot. */
+export async function writeSnapshotAtomically(destination: string, raw: string): Promise<void> {
+  await mkdir(dirname(destination), { recursive: true });
+  const temporary = join(dirname(destination), `.snapshot-${process.pid}-${Date.now()}.tmp`);
+  const handle = await open(temporary, 'w', 0o640);
+  try { await handle.writeFile(raw, 'utf8'); await handle.sync(); } finally { await handle.close(); }
+  await rename(temporary, destination);
+}

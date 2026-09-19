@@ -3,7 +3,7 @@
   "license": "MIT",
   "version": "2.0.0",
   "private": true,
-  "description": "AI usage and billing dashboard \u2014 Next.js client-server app",
+  "description": "AI usage and billing dashboard — Next.js client-server app",
   "scripts": {
     "dev": "next dev -p 18088",
     "build": "next build",
@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.9.4",
     "@openai/codex": "0.144.6",
     "next": "^15.4.0",
     "react": "^19.1.0",
