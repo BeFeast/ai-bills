@@ -61,7 +61,9 @@ jobs:
           hosted_url=$(get ZECORI_APP_URL /ai-bills); clerk_pk=$(get ZECORI_CLERK_PUBLISHABLE_KEY /ai-bills)
           # No fallback: a missing or unreadable stack list must fail the deploy, not silently skip partner stacks.
           stacks=$(get AI_BILLS_DEPLOY_STACKS /ai-bills)
-          for v in "$bot_pat" "$dh_pass" "$dockhand" "$app_url" "$ntfy" "$hosted_url"; do echo "::add-mask::$v"; done
+          for v in "$bot_pat" "$dh_pass" "$dockhand" "$app_url" "$ntfy" "$hosted_url" "$stacks"; do echo "::add-mask::$v"; done
+          # Partner slugs name customers; mask each one on its own so per-stack log lines do not leak them either.
+          for v in $stacks; do case "$v" in zecori-*) echo "::add-mask::$v" ;; esac; done
           {
             echo "BOT_USER=$(get OKLABS_BOT_USERNAME /forgejo)"
             echo "BOT_PAT=$bot_pat"
