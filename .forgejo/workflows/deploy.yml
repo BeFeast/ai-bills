@@ -95,7 +95,7 @@ jobs:
             # Partner stacks (zecori-<slug>) are the zecori file with the stack name, container name, port and paths substituted.
             if [[ "$stack" == zecori-* ]]; then
               # Exactly one host port must map to 18088; anything else is a malformed partner stack, not a drift.
-              port=$(grep -oE '"[0-9]+:18088"' "$RUNNER_TEMP/deployed-$stack.yaml" | tr -d '"' | cut -d: -f1 | sort -u)
+              port=$(grep -oE '"?[0-9]+:18088"?' "$RUNNER_TEMP/deployed-$stack.yaml" | tr -d '"' | cut -d: -f1 | sort -u)
               if [ -z "$port" ] || [ "$(printf '%s\n' "$port" | wc -l)" -ne 1 ]; then echo "FATAL: expected exactly one host port mapped to 18088 in the deployed $stack stack file" >&2; exit 1; fi
               printf '%s' "$port" > "$RUNNER_TEMP/port-$stack"
               curl -fsS "$STACK_SOURCE_BASE/zecori/compose.yaml" | sed -e "s/zecori:$/$stack:/; s/container_name: zecori/container_name: $stack/; s#13190:18088#$port:18088#; s#/opt/stacks/zecori/#/opt/stacks/$stack/#g" > "$RUNNER_TEMP/source-$stack.yaml"
