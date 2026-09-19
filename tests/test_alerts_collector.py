@@ -41,7 +41,8 @@ SNAPSHOT = {
         {'id': 'sub-soon', 'label': 'Kimi', 'status': 'active', 'renews_at': '2026-09-21', 'amount': 19, 'currency': 'USD'},
         {'id': 'sub-far', 'label': 'OpenCode', 'status': 'active', 'ends_at': '2026-10-04', 'amount': 10},
         {'id': 'sub-past', 'label': 'Suno', 'status': 'active', 'ends_at': '2026-09-08', 'amount': 9},
-        {'id': 'sub-cancelled', 'label': 'Moises', 'status': 'cancelled', 'renews_at': '2026-09-20'}],
+        {'id': 'sub-cancelled', 'label': 'Moises', 'status': 'cancelled', 'renews_at': '2026-09-20'},
+        {'id': 'sub-both', 'label': 'Trial', 'status': 'active', 'renews_at': '2026-12-01', 'ends_at': '2026-09-20'}],
     'openrouter': {'credits': {'balanceUsd': 3.5}},
 }
 
@@ -81,11 +82,14 @@ class EvaluateTests(unittest.TestCase):
         c = self.conditions()
         self.assertEqual(c['ratelimit:xai:work@example.invalid']['state'], 'warn')
         self.assertEqual(c['ratelimit:claude:work@example.invalid']['state'], 'ok')
-        self.assertIn('sk-or-v1…', c['ratelimit:openai-compatible-openrouter:sk-or-v1-0123456789']['title'])
+        keyed = [k for k in c if k.startswith('ratelimit:openai-compatible-openrouter:')]
+        self.assertEqual(len(keyed), 1); self.assertNotIn('0123456789', keyed[0]); self.assertTrue(keyed[0].endswith(alerts.upstream_label('sk-or-v1-0123456789')))
+        self.assertNotIn('0123456789', json.dumps(list(c.values())))
         self.assertEqual((c['renewal:sub-soon:renews_at']['state'], c['renewal:sub-soon:renews_at']['value']), ('warn', 2))
         self.assertEqual(c['renewal:sub-far:ends_at']['state'], 'ok')
         self.assertEqual(c['renewal:sub-past:ends_at']['state'], 'ok')
         self.assertNotIn('renewal:sub-cancelled:renews_at', c)
+        self.assertEqual((c['renewal:sub-both:renews_at']['state'], c['renewal:sub-both:ends_at']['state']), ('ok', 'warn'))
         self.assertEqual((c['balance:openrouter']['state'], c['balance:openrouter']['value']), ('warn', 3.5))
 
 

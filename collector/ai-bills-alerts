@@ -15,7 +15,7 @@ Modes:
   ai-bills-alerts --summary  additionally send one digest of the current state
   ai-bills-alerts --dry-run  evaluate and print; no notification, no state change
 """
-import argparse, json, os, re, sys, urllib.parse, urllib.request
+import argparse, hashlib, json, os, re, sys, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
 
@@ -79,6 +79,14 @@ def window_label(window):
         name = ((scope.get("model") or {}).get("display_name") if isinstance(scope.get("model"), (dict, type(None))) else None) if isinstance(scope, dict) else scope
         return f"{name or 'Scoped'} weekly"
     return {"session": "Session", "weekly_all": "Weekly all models"}.get(kind, kind or "window")
+
+def upstream_label(name):
+    """Emails identify accounts; anything else is a key and is reduced to a stable fingerprint
+    before it reaches condition keys, state files, history or the snapshot."""
+    name = str(name)
+    if "@" in name:
+        return name
+    return f"{name[:8]}…{hashlib.sha256(name.encode()).hexdigest()[:6]}"
 
 def quota_state(remaining, exhausted, rules):
     if exhausted:
@@ -149,8 +157,8 @@ def evaluate(snapshot, rules, now):
             if not isinstance(row, dict) or not row.get("name"):
                 continue
             hits = row.get("rate_limited") or 0
-            name = row["name"] if "@" in str(row["name"]) else f"{str(row['name'])[:8]}…"
-            out.append(condition(f"ratelimit:{row.get('provider')}:{row['name']}", "P4", "warn" if hits >= rules["rate_limited"]["min_requests"] else "ok",
+            name = upstream_label(row["name"])
+            out.append(condition(f"ratelimit:{row.get('provider')}:{name}", "P4", "warn" if hits >= rules["rate_limited"]["min_requests"] else "ok",
                                  f"{row.get('provider')} · {name}: {hits} rate-limited in 24h", f"{row.get('requests', 0)} requests, {hits} answered HTTP 429", hits))
     # Renewals ahead (a reset window is not a renewal; this reads subscriptions only).
     today = now.date(); horizon = today + timedelta(days=rules["renewal"]["days"])
@@ -173,7 +181,6 @@ def evaluate(snapshot, rules, now):
             out.append(condition(f"renewal:{sub.get('id')}:{field}", "P3", "warn" if soon else "ok",
                                  f"{label}: {'renews' if field == 'renews_at' else 'ends'} {due.isoformat()}",
                                  when + (f", {amount} {cur}" if isinstance(amount, (int, float)) else ""), days))
-            break
     # Prepaid balance.
     credits = ((snapshot.get("openrouter") or {}).get("credits") or {})
     balance = credits.get("balanceUsd")
