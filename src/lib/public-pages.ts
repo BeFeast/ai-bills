@@ -5,7 +5,7 @@
  * subresources; Next.js pages would emit hydration scripts, so these are route handlers. */
 export const APP_NAME = 'Zecori';
 export const PUBLIC_ORIGIN = () => (process.env.AI_BILLS_PUBLIC_ORIGIN || 'https://zecori.befeast.com').replace(/\/$/, '');
-export const CONTACT_EMAIL = 'oleg@befeast.com';
+export const CONTACT_EMAIL = 'support@befeast.com';
 
 const css = `body{margin:0;background:#f5f7fb;color:#0c1424;font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:720px;margin:0 auto;padding:40px 20px 64px}h1{font-size:28px;margin:0 0 8px}h2{font-size:18px;margin:28px 0 8px}p,li{margin:0 0 12px}a{color:#163065}nav{font-size:14px;margin-bottom:24px}footer{margin-top:40px;padding-top:16px;border-top:1px solid #dfe5ee;font-size:14px;color:#4b586c}`;
 
