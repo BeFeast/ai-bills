@@ -195,7 +195,9 @@ def apply_edges(conditions, state_dir, now):
             except ValueError:
                 pass
         if cond["state"] != previous.get("state"):
-            kind = "recovered" if cond["state"] == "ok" else ("escalated" if previous.get("state") not in (None, "ok") else "raised")
+            rank = {"ok": 0, "warn": 1, "bad": 2}
+            before = rank.get(previous.get("state"), 0); after = rank[cond["state"]]
+            kind = "recovered" if after == 0 else "raised" if before == 0 else "escalated" if after > before else "eased"
             events.append({"at": now.isoformat(timespec="seconds"), "kind": kind, "key": cond["key"], "severity": cond["severity"], "state": cond["state"], "title": cond["title"], "message": cond["message"], "value": cond["value"]})
             cond["since"] = now.isoformat(timespec="seconds")
             path.write_text(json.dumps({"state": cond["state"], "since": cond["since"]}))
@@ -267,8 +269,9 @@ def main():
         return 0
     events = apply_edges(conditions, cfg["state_dir"], now)
     for event in events:
-        title = event["title"] + (" — recovered" if event["kind"] == "recovered" else "")
-        notify(cfg["topics"], "default" if event["kind"] == "recovered" else PRIORITY[event["severity"]], title, event["message"], "white_check_mark" if event["kind"] == "recovered" else "moneybag")
+        calmer = event["kind"] in ("recovered", "eased")
+        title = event["title"] + {"recovered": " — recovered", "eased": " — eased"}.get(event["kind"], "")
+        notify(cfg["topics"], "default" if calmer else PRIORITY[event["severity"]], title, event["message"], "white_check_mark" if calmer else "moneybag")
     if args.summary:
         notify(cfg["topics"], "default", "Zecori daily", summary_text(conditions), "ledger")
     write_outputs(cfg["state_dir"], conditions, events, now)

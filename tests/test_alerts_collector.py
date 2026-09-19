@@ -93,6 +93,8 @@ class EdgeTests(unittest.TestCase):
             escalated = json.loads(json.dumps(SNAPSHOT)); escalated['codex_usage']['personal@example.invalid'] = codex(95)
             third = alerts.apply_edges(alerts.evaluate(escalated, RULES, NOW), directory, NOW)
             self.assertEqual([(e['key'], e['kind']) for e in third], [('quota:codex:personal@example.invalid', 'escalated')])
+            eased = json.loads(json.dumps(SNAPSHOT)); eased['codex_usage']['personal@example.invalid'] = codex(80)
+            self.assertEqual([(e['key'], e['kind'], e['state']) for e in alerts.apply_edges(alerts.evaluate(eased, RULES, NOW), directory, NOW)], [('quota:codex:personal@example.invalid', 'eased', 'warn')])
             recovered = json.loads(json.dumps(SNAPSHOT)); recovered['codex_usage']['personal@example.invalid'] = codex(10)
             conditions = alerts.evaluate(recovered, RULES, NOW)
             fourth = alerts.apply_edges(conditions, directory, NOW)

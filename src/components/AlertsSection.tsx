@@ -5,7 +5,7 @@ import { countdown, fmtDate } from './format';
 import { Card, Cell, Notice, Pill, Table, type Column, type PillTone } from './ui';
 
 const tone: Record<AlertCondition['state'], PillTone> = { bad: 'bad', warn: 'warn', ok: 'ok' };
-const eventTone: Record<AlertEvent['kind'], PillTone> = { raised: 'warn', escalated: 'bad', recovered: 'ok' };
+const eventTone: Record<AlertEvent['kind'], PillTone> = { raised: 'warn', escalated: 'bad', eased: 'info', recovered: 'ok' };
 const group = (key: string) => ({ quota: 'Quota', source: 'Source', ratelimit: 'Rate limit', renewal: 'Renewal', balance: 'Balance' }[key.split(':')[0]] ?? key.split(':')[0]);
 const eventColumns: Column<'at' | 'kind' | 'what'>[] = [{ key: 'at', label: 'When', mono: true }, { key: 'kind', label: 'Event' }, { key: 'what', label: 'What' }];
 
@@ -23,7 +23,7 @@ export function AlertsSection({ report, now, tz }: { report: AlertsReport | null
         <span className="alert-row__meta mono-faint">{group(c.key)} · {c.severity}{c.since ? ` · ${countdown(c.since, now).replace(/ left$/, ' ahead')}` : ''}</span>
       </li>)}</ul> : <p className="t-small">No rules evaluated.</p>}
     </Card>
-    <Card title="Recent events" subtitle="Each notification sent: raised, escalated or recovered. History is append-only on the collector host.">
+    <Card title="Recent events" subtitle="Each notification sent: raised, escalated, eased or recovered. History is append-only on the collector host.">
       <Table columns={eventColumns} rows={report.events} rowKey={e => `${e.at}:${e.key}:${e.kind}`} empty="No notifications yet." renderCell={(e, column) => {
         switch (column.key) {
           case 'at': return fmtDate(e.at, tz);

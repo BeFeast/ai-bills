@@ -3,7 +3,7 @@ import { loadConfig, type AppConfig } from './config';
 
 /** One rule evaluation as the collector-side alerts process reported it. `state` is the condition now; `severity` is what a page would carry. */
 export type AlertCondition = { key: string; severity: 'P3' | 'P4' | 'P5'; state: 'ok' | 'warn' | 'bad'; title: string; message: string; value: number | null; since: string | null };
-export type AlertEvent = { at: string; kind: 'raised' | 'escalated' | 'recovered'; key: string; severity: 'P3' | 'P4' | 'P5'; state: 'ok' | 'warn' | 'bad'; title: string; message: string };
+export type AlertEvent = { at: string; kind: 'raised' | 'escalated' | 'eased' | 'recovered'; key: string; severity: 'P3' | 'P4' | 'P5'; state: 'ok' | 'warn' | 'bad'; title: string; message: string };
 export type AlertsReport = { generatedAt: string | null; snapshotAt: string | null; conditions: AlertCondition[]; active: AlertCondition[]; events: AlertEvent[]; available: boolean };
 
 type Row = Record<string, unknown>;
@@ -13,7 +13,7 @@ const text = (value: unknown) => typeof value === 'string' ? value : '';
 const iso = (value: unknown) => { const v = text(value); return v && Number.isFinite(Date.parse(v)) ? v : null; };
 const severity = (value: unknown): AlertCondition['severity'] => value === 'P5' || value === 'P4' ? value : 'P3';
 const state = (value: unknown): AlertCondition['state'] => value === 'bad' || value === 'warn' ? value : 'ok';
-const kind = (value: unknown): AlertEvent['kind'] => value === 'raised' || value === 'escalated' ? value : 'recovered';
+const kind = (value: unknown): AlertEvent['kind'] => value === 'raised' || value === 'escalated' || value === 'eased' ? value : 'recovered';
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null;
 
 /** The alerts block is optional in the snapshot: an operator without the alerts process sees "not configured", never invented silence. */
