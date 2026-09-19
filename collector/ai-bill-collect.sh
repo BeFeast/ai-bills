@@ -154,7 +154,7 @@ if [ -n "${AI_BILLS_SNAPSHOT_URL:-}" ]; then
   : "${AI_BILLS_SNAPSHOT_TOKEN_SECRET:?Set the secret-manager key that holds the ingest token}"
   [[ "$AI_BILLS_SNAPSHOT_URL" =~ ^https://[a-zA-Z0-9./_-]+$ ]] || exit 2
   INGEST_TOKEN=$(curl -fsS -G "${INFISICAL_API_URL}/v3/secrets/raw/${AI_BILLS_SNAPSHOT_TOKEN_SECRET}" -H "Authorization: Bearer $TOKEN" \
-    --data-urlencode "workspaceId=${INFISICAL_PROJECT_ID}" --data-urlencode "environment=prod" --data-urlencode "secretPath=${AI_BILLS_SNAPSHOT_TOKEN_PATH:-/ai-bills}" | jq -r '.secret.secretValue') || INGEST_TOKEN=''
+    --data-urlencode "workspaceId=${AI_BILLS_SNAPSHOT_TOKEN_WORKSPACE:-$INFISICAL_PROJECT_ID}" --data-urlencode "environment=prod" --data-urlencode "secretPath=${AI_BILLS_SNAPSHOT_TOKEN_PATH:-/ai-bills}" | jq -r '.secret.secretValue') || INGEST_TOKEN=''
   if [ -n "$INGEST_TOKEN" ]; then
     curl -fsS -m 60 -X PUT "$AI_BILLS_SNAPSHOT_URL" -H "Authorization: Bearer $INGEST_TOKEN" -H 'Content-Type: application/json' --data-binary "@$OUT" >/dev/null \
       || echo "hosted snapshot delivery failed: $AI_BILLS_SNAPSHOT_URL" >&2

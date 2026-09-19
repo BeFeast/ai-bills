@@ -50,7 +50,8 @@ A hosted instance receives its data through `PUT /api/snapshot` with
 `Authorization: Bearer <token>`; the instance stores only `AI_BILLS_INGEST_TOKEN_SHA256`
 (hex digests, comma-separated). The collector sends with `AI_BILLS_SNAPSHOT_URL` and reads
 the token from the secret manager (`AI_BILLS_SNAPSHOT_TOKEN_SECRET`, path
-`AI_BILLS_SNAPSHOT_TOKEN_PATH`, default `/ai-bills`).
+`AI_BILLS_SNAPSHOT_TOKEN_PATH`, default `/ai-bills`; workspace `AI_BILLS_SNAPSHOT_TOKEN_WORKSPACE`,
+default the collector's own project).
 
 ## Shared account browsers
 
