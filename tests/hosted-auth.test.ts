@@ -97,5 +97,6 @@ describe('clerk runtime wiring', () => {
     // A satellite without its own public origin cannot be configured for Clerk; refuse instead of running half-set-up.
     expect(() => clerkRuntime({ AI_BILLS_CLERK_PRIMARY_ORIGIN: 'https://zecori.befeast.com' })).toThrow(/AI_BILLS_PUBLIC_ORIGIN/);
     expect(() => clerkRuntime({ AI_BILLS_PUBLIC_ORIGIN: 'not a url', AI_BILLS_CLERK_PRIMARY_ORIGIN: 'https://zecori.befeast.com' })).toThrow(/AI_BILLS_PUBLIC_ORIGIN/);
+    expect(() => clerkRuntime({ AI_BILLS_PUBLIC_ORIGIN: 'http://zecori-demo.befeast.com', AI_BILLS_CLERK_PRIMARY_ORIGIN: 'https://zecori.befeast.com' })).toThrow(/AI_BILLS_PUBLIC_ORIGIN/);
   });
 });

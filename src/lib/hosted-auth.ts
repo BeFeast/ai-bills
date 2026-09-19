@@ -30,7 +30,8 @@ export function clerkRuntime(env: Record<string, string | undefined> = process.e
   const publicOrigin = (env.AI_BILLS_PUBLIC_ORIGIN || '').replace(/\/$/, '');
   const primary = (env.AI_BILLS_CLERK_PRIMARY_ORIGIN || '').replace(/\/$/, '');
   const isSatellite = Boolean(primary) && primary !== publicOrigin;
-  const domain = (() => { try { return publicOrigin ? new URL(publicOrigin).host : undefined; } catch { return undefined; } })();
+  // Cross-domain Clerk sessions need https on both sides; an http origin is treated as no domain.
+  const domain = (() => { try { const url = publicOrigin ? new URL(publicOrigin) : null; return url?.protocol === 'https:' ? url.host : undefined; } catch { return undefined; } })();
   // Clerk needs the satellite's own domain; a satellite without one fails on every sign-in, so refuse to start half-configured.
   if (isSatellite && !domain) throw new Error('AI_BILLS_CLERK_PRIMARY_ORIGIN is set, so AI_BILLS_PUBLIC_ORIGIN must be this instance\'s absolute https origin');
   const allowed = (env.AI_BILLS_CLERK_ALLOWED_REDIRECT_ORIGINS || '').split(/[,\s]+/).map(v => v.trim()).filter(Boolean);
