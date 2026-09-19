@@ -30,6 +30,10 @@ Before any live rollout: record the currently running image/source, back up prot
 config and persistent data, preserve ledger cursors and dedup state, and prepare exact
 restore commands. Only one proxy usage queue consumer and one OAuth refresh owner may
 run. A successful health response does not prove snapshot/card freshness or complete usage.
+`/api/health` reports each collector-observed quota source at the observation time recorded in
+the snapshot itself, so an instance nobody is looking at still reports honestly; a source ageing
+past ten minutes is a collector or delivery problem, not an idle dashboard. The quota cards read
+the snapshot again whenever the file on disk changes, within the configured refresh interval.
 
 Rollback source independently from append-only records. Do not restore old OAuth tokens
 blindly or run a second collector against the same consumptive queue.
