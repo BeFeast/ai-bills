@@ -1,0 +1,13 @@
+# Example only. Copy to a private operator file (default ~/.config/ai-bills/alerts.yml,
+# or set AI_BILLS_ALERTS_CONFIG) on the collector host. Values here are illustrative.
+snapshot: /path/to/snapshot.json          # the collector's local snapshot copy (or AI_BILLS_SNAPSHOT)
+state_dir: ~/.local/state/ai-bills-alerts # per-condition state, alerts-YYYY-MM.jsonl history, alerts.json
+ntfy:
+  topics:                                  # every topic receives every notification; keep them private
+    - https://ntfy.example.invalid/ai-billing
+rules:
+  quota: { warn_percent_left: 25, bad_percent_left: 10 }   # same thresholds as the dashboard
+  rate_limited: { min_requests: 1 }                         # HTTP 429 in the rolling 24h window
+  source: { stale_minutes: 20 }                             # snapshot older than this is an alert
+  renewal: { days: 3 }                                      # subscriptions renewing or ending within N days
+  balance: { openrouter_min_usd: 5 }

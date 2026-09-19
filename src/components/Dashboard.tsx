@@ -10,6 +10,8 @@ import type { ProductOverview } from '@/lib/overview';
 import { UsageCard } from './UsageCard';
 import { BillingSection } from './BillingSection';
 import { AccountOverview } from './AccountOverview';
+import { AlertsSection } from './AlertsSection';
+import type { AlertsReport } from '@/lib/alerts';
 import { RoutingSection } from './RoutingSection';
 import type { AccountRegistry } from '@/lib/accounts';
 import { AppShell, useTheme } from './shell/AppShell';
@@ -20,13 +22,14 @@ import pkg from '../../package.json';
 const AUTO_REFRESH_MS = 60_000;
 
 type StatusTone = '' | 'ok' | 'warn' | 'danger';
-type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'routing' | 'details';
+type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'alerts' | 'routing' | 'details';
 
 const VIEWS: Record<View, { label: string; subtitle: string }> = {
   overview: { label: 'Overview', subtitle: 'Where you stand against your limits' },
   subscriptions: { label: 'Subscriptions', subtitle: 'What you pay, when it renews, and where to manage it' },
   accounts: { label: 'Accounts & sign-in', subtitle: 'Connect an account, renew access or check its remaining allowance' },
   usage: { label: 'Usage', subtitle: 'Where your usage goes this month' },
+  alerts: { label: 'Alerts', subtitle: 'What Zecori would tell you about, and what it already has' },
   routing: { label: 'Models & routing', subtitle: 'Request routing policy and daily allowance' },
   details: { label: 'Accounting details', subtitle: 'Month overview, records and billing snapshot' },
 };
@@ -37,6 +40,7 @@ export function Dashboard() {
   const [view, setView] = useState<View>('overview');
   const [overview, setOverview] = useState<ProductOverview | null>(null);
   const [overviewError, setOverviewError] = useState('');
+  const [alerts, setAlerts] = useState<AlertsReport | null>(null);
   const [registry, setRegistry] = useState<AccountRegistry | null>(null);
   const [registryError, setRegistryError] = useState('');
   const [usage, setUsage] = useState<UsageResponseBody | null>(null);
@@ -75,6 +79,7 @@ export function Dashboard() {
     const billingRefresh = (async () => {
       // Start billing immediately, independently of provider quota latency.
       try {
+        fetch('/api/alerts', { cache: 'no-store' }).then(async r => { if (r.ok) setAlerts((await r.json()) as AlertsReport); }).catch(() => { /* alerts stay as last seen */ });
         const bres = await fetch('/api/billing', { cache: 'no-store' });
         setBilling((await bres.json()) as BillingSnapshot);
       } catch (error) {
@@ -139,7 +144,7 @@ export function Dashboard() {
       id,
       label: VIEWS[id].label,
       icon: navIcons[id],
-      count: id === 'subscriptions' ? activeSubscriptions : id === 'accounts' ? usage?.accounts.length : undefined,
+      count: id === 'subscriptions' ? activeSubscriptions : id === 'accounts' ? usage?.accounts.length : id === 'alerts' && alerts?.active.length ? alerts.active.length : undefined,
     }));
   const attention = status.tone === 'warn' || status.tone === 'danger';
 
@@ -165,7 +170,9 @@ export function Dashboard() {
       {registryError ? <Notice tone="warn" role="status">{registryError}</Notice> : null}
       {overview?.links?.proxyManagementUrl && view === 'accounts' ? <div className="toolbar"><ButtonLink size="sm" href={overview.links.proxyManagementUrl} target="_blank" rel="noreferrer">CLIProxyAPI ↗</ButtonLink></div> : null}
 
-      {view !== 'accounts' ? <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} /> : null}
+      {view === 'overview' && alerts?.active.length ? <Notice tone={alerts.active.some(c => c.state === 'bad') ? 'bad' : 'warn'} role="status">{alerts.active.length} alert{alerts.active.length === 1 ? '' : 's'} active: {alerts.active.slice(0, 3).map(c => c.title).join(' · ')}{alerts.active.length > 3 ? ' · …' : ''} <button type="button" className="text-link" onClick={() => setView('alerts')}>Open alerts →</button></Notice> : null}
+      {view === 'alerts' ? <AlertsSection report={alerts} now={now} tz={tz} /> : null}
+      {view !== 'accounts' && view !== 'alerts' ? <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} /> : null}
 
       {view === 'accounts' ? <>
         {attention ? <Notice tone="warn" role="status">Some quota connections need attention. Use the controls below to reconnect.</Notice> : null}

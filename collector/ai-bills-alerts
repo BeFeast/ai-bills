@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""ai-bills-alerts — turn the collector snapshot into edge-triggered notifications.
+
+Runs beside ai-bill-collect.sh on the collector host. It never queries a provider:
+every rule reads the snapshot the collector already produced, so alerting adds no
+second source of truth. A condition is notified once when it enters a non-ok
+state (or escalates) and once when it recovers; nothing repeats while it holds.
+State lives in files per condition, history is an append-only JSONL, and the
+current picture is written to alerts.json for the collector to ship in the
+snapshot so the dashboard can show it. Unknown is not ok: a failing or stale
+source is itself an alert.
+
+Modes:
+  ai-bills-alerts            evaluate, notify on edges, write outputs
+  ai-bills-alerts --summary  additionally send one digest of the current state
+  ai-bills-alerts --dry-run  evaluate and print; no notification, no state change
+"""
+import argparse, hashlib, json, os, re, sys, urllib.parse, urllib.request
+from datetime import datetime, timedelta, timezone, date
+from pathlib import Path
+
+CONFIG = os.environ.get("AI_BILLS_ALERTS_CONFIG", os.path.expanduser("~/.config/ai-bills/alerts.yml"))
+DEFAULT_RULES = {
+    "quota": {"warn_percent_left": 25, "bad_percent_left": 10},
+    "rate_limited": {"min_requests": 1},
+    "source": {"stale_minutes": 20},
+    "renewal": {"days": 3},
+    "balance": {"openrouter_min_usd": 5},
+}
+PRIORITY = {"P5": "urgent", "P4": "high", "P3": "default"}
+HISTORY_KEEP = 50
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+def parse_ts(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+def load_config(path=CONFIG):
+    import yaml
+    try:
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        doc = {}
+    rules = {name: {**defaults, **(doc.get("rules", {}).get(name) or {})} for name, defaults in DEFAULT_RULES.items()}
+    return {
+        "snapshot": os.path.expanduser(os.environ.get("AI_BILLS_SNAPSHOT") or doc.get("snapshot") or ""),
+        "state_dir": os.path.expanduser(os.environ.get("AI_BILLS_ALERTS_STATE") or doc.get("state_dir") or "~/.local/state/ai-bills-alerts"),
+        "topics": [t for t in (doc.get("ntfy") or {}).get("topics", []) if isinstance(t, str) and t.startswith("http")],
+        "rules": rules,
+    }
+
+def condition(key, severity, state, title, message, value=None):
+    return {"key": key, "severity": severity, "state": state, "title": title, "message": message, "value": value}
+
+def claude_limiting(data):
+    windows = [w for w in (data.get("limits") or []) if isinstance(w, dict) and isinstance(w.get("percent"), (int, float))]
+    if not windows:
+        for kind, label in (("five_hour", "session"), ("seven_day", "weekly_all")):
+            window = data.get(kind) or {}
+            if isinstance(window.get("utilization"), (int, float)):
+                windows.append({"kind": label, "percent": window["utilization"], "resets_at": window.get("resets_at"), "is_active": False})
+    if not windows:
+        return None
+    active = [w for w in windows if w.get("is_active") is True]
+    return max(active or windows, key=lambda w: w["percent"])
+
+def window_label(window):
+    kind = window.get("kind")
+    if kind == "weekly_scoped":
+        scope = window.get("scope")
+        name = ((scope.get("model") or {}).get("display_name") if isinstance(scope.get("model"), (dict, type(None))) else None) if isinstance(scope, dict) else scope
+        return f"{name or 'Scoped'} weekly"
+    return {"session": "Session", "weekly_all": "Weekly all models"}.get(kind, kind or "window")
+
+def upstream_label(name):
+    """Emails identify accounts; anything else is a key and is reduced to a stable fingerprint
+    before it reaches condition keys, state files, history or the snapshot."""
+    name = str(name)
+    if "@" in name:
+        return name
+    return f"{name[:8]}…{hashlib.sha256(name.encode()).hexdigest()[:6]}"
+
+def quota_state(remaining, exhausted, rules):
+    if exhausted:
+        return "bad"
+    if remaining < rules["bad_percent_left"]:
+        return "bad"
+    if remaining < rules["warn_percent_left"]:
+        return "warn"
+    return "ok"
+
+def evaluate(snapshot, rules, now):
+    """Pure: snapshot + rules -> list of conditions with their current state."""
+    out = []
+    quota = rules["quota"]
+    for email, entry in sorted((snapshot.get("claude_usage") or {}).items()):
+        if "@" not in email or not isinstance(entry, dict):
+            continue
+        if not entry.get("ok"):
+            out.append(condition(f"source:claude:{email}", "P5", "bad", f"Claude quota source failed · {email}", entry.get("error") or "The quota request failed; remaining allowance is unknown."))
+            continue
+        out.append(condition(f"source:claude:{email}", "P5", "ok", f"Claude quota source · {email}", "Quota observation available"))
+        window = claude_limiting(entry.get("data") or {})
+        if not window:
+            continue
+        remaining = max(0, 100 - window["percent"])
+        exhausted = window["percent"] >= 100
+        state = quota_state(remaining, exhausted, quota)
+        sev = "P5" if exhausted else "P4"
+        reset = window.get("resets_at")
+        out.append(condition(f"quota:claude:{email}", sev, state, f"Claude · {email}: {'limit reached' if exhausted else f'{remaining:g}% left'} on {window_label(window)}",
+                             f"{window_label(window)} {window['percent']:g}% used" + (f", resets {reset[:16].replace('T', ' ')} UTC" if isinstance(reset, str) else ""), remaining))
+    for email, entry in sorted((snapshot.get("codex_usage") or {}).items()):
+        if "@" not in email or not isinstance(entry, dict):
+            continue
+        if not entry.get("ok"):
+            out.append(condition(f"source:codex:{email}", "P5", "bad", f"Codex quota source failed · {email}", entry.get("error") or "The quota request failed; remaining allowance is unknown."))
+            continue
+        out.append(condition(f"source:codex:{email}", "P5", "ok", f"Codex quota source · {email}", "Quota observation available"))
+        limit = (entry.get("data") or {}).get("rate_limit") or {}
+        window = limit.get("primary_window") or {}
+        if not isinstance(window.get("used_percent"), (int, float)):
+            continue
+        exhausted = limit.get("limit_reached") is True or limit.get("allowed") is False or window["used_percent"] >= 100
+        remaining = max(0, 100 - window["used_percent"])
+        state = quota_state(remaining, exhausted, quota)
+        reset = window.get("reset_at")
+        reset_text = datetime.fromtimestamp(reset, timezone.utc).strftime(", resets %Y-%m-%d %H:%M UTC") if isinstance(reset, (int, float)) else ""
+        out.append(condition(f"quota:codex:{email}", "P5" if exhausted else "P4", state, f"Codex · {email}: {'limit reached' if exhausted else f'{remaining:g}% left'} on the weekly window",
+                             f"Weekly window {window['used_percent']:g}% used{reset_text}", remaining))
+    # Source freshness: the snapshot itself and each receipt the collector reports.
+    generated = parse_ts(snapshot.get("generated"))
+    stale_after = timedelta(minutes=rules["source"]["stale_minutes"])
+    if generated is None:
+        out.append(condition("source:snapshot", "P5", "bad", "Snapshot missing or unreadable", "No collector snapshot; every figure is unknown."))
+    else:
+        age = now - generated
+        out.append(condition("source:snapshot", "P5", "bad" if age > stale_after else "ok", "Collector snapshot stale" if age > stale_after else "Collector snapshot fresh",
+                             f"Last snapshot {int(age.total_seconds() // 60)} min ago (limit {rules['source']['stale_minutes']} min)", int(age.total_seconds())))
+    for receipt in snapshot.get("source_receipts") or []:
+        if not isinstance(receipt, dict) or not receipt.get("id"):
+            continue
+        ok = receipt.get("status") == "fresh"
+        out.append(condition(f"source:{receipt['id']}", "P5", "ok" if ok else "bad", f"Source {receipt['id']} {'fresh' if ok else 'failed'}", f"Collector reports status {receipt.get('status')}"))
+    # Rate limiting in the rolling window.
+    rolling = (snapshot.get("usage_ledger") or {}).get("last_24h") or {}
+    if rolling.get("period") == "rolling_24h":
+        for row in rolling.get("by_upstream") or []:
+            if not isinstance(row, dict) or not row.get("name"):
+                continue
+            hits = row.get("rate_limited") or 0
+            name = upstream_label(row["name"])
+            out.append(condition(f"ratelimit:{row.get('provider')}:{name}", "P4", "warn" if hits >= rules["rate_limited"]["min_requests"] else "ok",
+                                 f"{row.get('provider')} · {name}: {hits} rate-limited in 24h", f"{row.get('requests', 0)} requests, {hits} answered HTTP 429", hits))
+    # Renewals ahead (a reset window is not a renewal; this reads subscriptions only).
+    today = now.date(); horizon = today + timedelta(days=rules["renewal"]["days"])
+    for sub in snapshot.get("subscriptions") or []:
+        if not isinstance(sub, dict) or sub.get("status") not in (None, "active"):
+            continue
+        for field in ("renews_at", "ends_at"):
+            value = sub.get(field)
+            try:
+                due = date.fromisoformat(str(value)[:10]) if value else None
+            except ValueError:
+                due = None
+            if due is None:
+                continue
+            soon = today <= due <= horizon
+            amount = sub.get("amount"); cur = sub.get("currency") or "USD"
+            label = sub.get("label") or sub.get("provider") or sub.get("id")
+            days = (due - today).days; noun = "Renewal" if field == "renews_at" else "End"
+            when = f"{noun} in {days} day(s)" if days >= 0 else f"{'Renewed' if field == 'renews_at' else 'Ended'} {-days} day(s) ago (recorded date; check billing)"
+            out.append(condition(f"renewal:{sub.get('id')}:{field}", "P3", "warn" if soon else "ok",
+                                 f"{label}: {'renews' if field == 'renews_at' else 'ends'} {due.isoformat()}",
+                                 when + (f", {amount} {cur}" if isinstance(amount, (int, float)) else ""), days))
+    # Prepaid balance.
+    credits = ((snapshot.get("openrouter") or {}).get("credits") or {})
+    balance = credits.get("balanceUsd")
+    if isinstance(balance, (int, float)):
+        floor = rules["balance"]["openrouter_min_usd"]
+        out.append(condition("balance:openrouter", "P4", "warn" if balance < floor else "ok", f"OpenRouter balance ${balance:.2f}", f"Prepaid credits {'below' if balance < floor else 'above'} ${floor:g}", round(balance, 2)))
+    return out
+
+def apply_edges(conditions, state_dir, now):
+    """Compare each condition with its stored state; return the events to notify."""
+    root = Path(state_dir); root.mkdir(parents=True, exist_ok=True)
+    events = []
+    for cond in conditions:
+        path = root / (re.sub(r"[^A-Za-z0-9._@-]", "_", cond["key"]) + ".state")
+        previous = {"state": "ok", "severity": None, "since": None}
+        if path.exists():
+            try:
+                previous = json.loads(path.read_text())
+            except ValueError:
+                pass
+        # Level = (state rank, severity): exhausted (bad/P5) after low (bad/P4) is a real escalation.
+        rank = {"ok": 0, "warn": 1, "bad": 2}
+        level = lambda state, severity: (rank.get(state, 0), 0 if rank.get(state, 0) == 0 else int(str(severity or "P3")[1]))
+        before = level(previous.get("state"), previous.get("severity")); after = level(cond["state"], cond["severity"])
+        if after != before:
+            kind = "recovered" if after[0] == 0 else "raised" if before[0] == 0 else "escalated" if after > before else "eased"
+            events.append({"at": now.isoformat(timespec="seconds"), "kind": kind, "key": cond["key"], "severity": cond["severity"], "state": cond["state"], "title": cond["title"], "message": cond["message"], "value": cond["value"]})
+            # `since` is when the condition became non-ok; escalations and easing keep it.
+            cond["since"] = None if after[0] == 0 else now.isoformat(timespec="seconds") if before[0] == 0 else (previous.get("since") or now.isoformat(timespec="seconds"))
+            path.write_text(json.dumps({"state": cond["state"], "severity": cond["severity"], "since": cond["since"]}))
+        else:
+            cond["since"] = previous.get("since")
+    return events
+
+NTFY_PRIORITY = {"urgent": 5, "high": 4, "default": 3}
+
+def ntfy_request(topic_url, priority, title, message, tags):
+    """ntfy JSON publish: the topic moves from the path into the body, so title and
+    message travel as UTF-8 JSON instead of latin-1 HTTP headers (an em dash or a
+    Cyrillic label in a header would raise before the request is sent)."""
+    parts = urllib.parse.urlsplit(topic_url)
+    topic = parts.path.strip("/").split("/")[-1]
+    if not topic:
+        raise ValueError(f"no topic in {topic_url}")
+    body = json.dumps({"topic": topic, "title": title, "message": message, "priority": NTFY_PRIORITY.get(priority, 3), "tags": [tags]}, ensure_ascii=False).encode()
+    base = urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/", "", ""))
+    return urllib.request.Request(base, data=body, method="POST", headers={"Content-Type": "application/json; charset=utf-8"})
+
+def notify(topics, priority, title, message, tags="moneybag"):
+    for topic in topics:
+        try:
+            urllib.request.urlopen(ntfy_request(topic, priority, title, message, tags), timeout=10).read()
+        except Exception as exc:  # delivery failure must not stop state bookkeeping
+            print(f"notify failed for {topic}: {exc}", file=sys.stderr)
+
+def write_outputs(state_dir, conditions, events, now):
+    root = Path(state_dir); root.mkdir(parents=True, exist_ok=True)
+    history = root / f"alerts-{now.strftime('%Y-%m')}.jsonl"
+    with open(history, "a") as fh:
+        for event in events:
+            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+    recent = []
+    for path in sorted(root.glob("alerts-*.jsonl"))[-2:]:
+        for line in path.read_text().splitlines():
+            try:
+                recent.append(json.loads(line))
+            except ValueError:
+                continue
+    report = {"generated": now.isoformat(timespec="seconds"), "conditions": conditions, "events": recent[-HISTORY_KEEP:]}
+    tmp = root / "alerts.json.tmp"
+    tmp.write_text(json.dumps(report, ensure_ascii=False))
+    os.replace(tmp, root / "alerts.json")
+    return report
+
+def summary_text(conditions):
+    active = [c for c in conditions if c["state"] != "ok"]
+    quotas = [f"{c['key'].split(':', 1)[1]} {c['value']:g}%" for c in conditions if c["key"].startswith("quota:") and isinstance(c.get("value"), (int, float))]
+    head = f"{len(active)} active alert(s)" if active else "no active alerts"
+    return f"{head} · left: {', '.join(quotas) or 'n/a'}"
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--summary", action="store_true"); ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+    cfg = load_config()
+    now = utc_now()
+    try:
+        with open(cfg["snapshot"]) as fh:
+            snapshot = json.load(fh)
+    except (OSError, ValueError):
+        snapshot = {}
+    conditions = evaluate(snapshot, cfg["rules"], now)
+    if args.dry_run:
+        for c in conditions:
+            print(f"{c['state']:<5} {c['severity']} {c['key']:<48} {c['title']}")
+        return 0
+    events = apply_edges(conditions, cfg["state_dir"], now)
+    for event in events:
+        calmer = event["kind"] in ("recovered", "eased")
+        title = event["title"] + {"recovered": " — recovered", "eased": " — eased"}.get(event["kind"], "")
+        notify(cfg["topics"], "default" if calmer else PRIORITY[event["severity"]], title, event["message"], "white_check_mark" if calmer else "moneybag")
+    if args.summary:
+        notify(cfg["topics"], "default", "Zecori daily", summary_text(conditions), "ledger")
+    write_outputs(cfg["state_dir"], conditions, events, now)
+    print(f"{len(conditions)} conditions, {len(events)} event(s) notified")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -96,3 +96,19 @@ and evidence. The collector only projects allowed metadata fields. Optionally se
 records; these travel with the snapshot and survive later collection. Explicit
 `[[subscriptions]]` in app config override source records for that provider.
 Unknown renewal dates stay null; quota reset times are never renewal dates.
+
+## Alerts
+
+`ai-bills-alerts` turns the snapshot into edge-triggered notifications without a
+second source of truth: it reads the snapshot the collector just produced, never a
+provider. Rules (thresholds match the dashboard): remaining allowance on the limiting
+window per Claude/Codex account (warn below 25 % left, bad below 10 % or exhausted),
+HTTP 429 counts in the rolling 24h window, failed or stale sources including the
+snapshot itself, subscriptions renewing or ending within a few days, and the OpenRouter
+prepaid balance. A condition is notified once when it enters a non-ok state or
+escalates and once when it recovers. Per-condition state lives in the state directory,
+history in `alerts-YYYY-MM.jsonl`, and `alerts.json` is included in the next snapshot
+under `alerts` so the dashboard shows current conditions and recent events. Delivery is
+ntfy topics from the private config (`config/alerts.example.yml`); with none configured
+the process still records state and history. Run it after each collect and once a day
+with `--summary`; `--dry-run` prints the evaluation without side effects.
