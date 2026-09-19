@@ -6,8 +6,14 @@ const isPublic = createRouteMatcher(PUBLIC_PATHS);
 const isApi = createRouteMatcher(['/api/(.*)']);
 let warnedAboutClaim = false;
 /** The public URL of a request: configured origin plus the request path, or the request URL when no origin is configured. */
+let warnedAboutOrigin = false;
 export function publicUrl(request: { nextUrl: { pathname: string; search: string }; url: string }, origin = process.env.AI_BILLS_PUBLIC_ORIGIN): string {
-  try { return origin ? new URL(request.nextUrl.pathname + request.nextUrl.search, origin).toString() : request.url; } catch { return request.url; }
+  if (!origin) return request.url;
+  try { return new URL(request.nextUrl.pathname + request.nextUrl.search, origin).toString(); }
+  catch {
+    if (!warnedAboutOrigin) { warnedAboutOrigin = true; console.warn(`[zecori] AI_BILLS_PUBLIC_ORIGIN is not an absolute URL (${origin}); sign-in return addresses fall back to the request URL.`); }
+    return request.url;
+  }
 }
 
 /** Order: public paths → Clerk session (redirect to sign-in / 401 for API) → this instance's own allow list (403 by name). */
