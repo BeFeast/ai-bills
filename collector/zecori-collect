@@ -45,7 +45,7 @@ if [ -n "${OPENROUTER_API_KEY:-}" ]; then OPENROUTER=$(printf '%s' "$OPENROUTER_
 ALERTS='{}'
 if [ -n "${ZECORI_ALERTS_CONFIG:-}" ] && [ -f "$state/alerts/alerts.json" ]; then ALERTS=$(cat "$state/alerts/alerts.json"); printf '%s' "$ALERTS" | jq -e 'type=="object"' >/dev/null 2>&1 || ALERTS='{}'; fi
 
-OUT=$(mktemp "$state/.snapshot.XXXXXX.json")
+OUT=$(mktemp "$state/.snapshot.XXXXXX.json"); trap 'rm -f "$OUT"' EXIT
 jq -n --arg now "$now" --arg ledger_status "$LEDGER_STATUS" --arg subs_status "$SUBS_STATUS" \
   --argjson claude_usage "$CLAUDE_USAGE" --argjson codex_usage "$CODEX_USAGE" --argjson ledger "$LEDGER" \
   --argjson subscriptions "$SUBSCRIPTIONS" --argjson openrouter "$OPENROUTER" --argjson alerts "$ALERTS" --argjson shim "$shim" \
@@ -58,10 +58,12 @@ cp "$OUT" "$state/snapshot.json"
 # 4. alerts, evaluated on the snapshot just produced (picked up by the next run)
 if [ -n "${ZECORI_ALERTS_CONFIG:-}" ]; then AI_BILLS_SNAPSHOT="$state/snapshot.json" AI_BILLS_ALERTS_STATE="$state/alerts" AI_BILLS_ALERTS_CONFIG="$ZECORI_ALERTS_CONFIG" "${py[@]}" "$here/ai-bills-alerts" >/dev/null 2>&1 || echo "alerts evaluation failed" >&2; fi
 # 5. deliver
-if [ "${ZECORI_DRY_RUN:-}" = 1 ]; then jq -c '{generated, accounts: .collector.accounts, claude: (.claude_usage|keys), codex: (.codex_usage|keys), ledger: .usage_ledger.last_24h.period, sources: .source_receipts}' "$OUT"; rm -f "$OUT"; exit 0; fi
-if curl -fsS -m 60 -X PUT "$ZECORI_SNAPSHOT_URL" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' --data-binary "@$OUT" -o "$state/last-delivery.json"; then
+if [ "${ZECORI_DRY_RUN:-}" = 1 ]; then jq -c '{generated, accounts: .collector.accounts, claude: (.claude_usage|keys), codex: (.codex_usage|keys), ledger: .usage_ledger.last_24h.period, sources: .source_receipts}' "$OUT"; exit 0; fi
+# The bearer header goes through a private curl config file, never through argv (visible to other local users in ps).
+HDR=$(mktemp "$state/.header.XXXXXX"); trap 'rm -f "$OUT" "$HDR"' EXIT
+printf 'header = "Authorization: Bearer %s"\n' "$token" > "$HDR"
+if curl -fsS -m 60 -X PUT "$ZECORI_SNAPSHOT_URL" -K "$HDR" -H 'Content-Type: application/json' --data-binary "@$OUT" -o "$state/last-delivery.json"; then
   jq -c '{delivered: .generated, bytes}' "$state/last-delivery.json"
 else
-  echo "delivery failed: $ZECORI_SNAPSHOT_URL (see $state/last-delivery.json)" >&2; rm -f "$OUT"; exit 1
+  echo "delivery failed: $ZECORI_SNAPSHOT_URL (see $state/last-delivery.json)" >&2; exit 1
 fi
-rm -f "$OUT"
