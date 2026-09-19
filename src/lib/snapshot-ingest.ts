@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdir, open, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
@@ -28,7 +28,7 @@ export function validateSnapshot(raw: string): { ok: true; generated: string } |
 /** Write next to the destination, fsync, then rename: readers see either the previous or the complete new snapshot. */
 export async function writeSnapshotAtomically(destination: string, raw: string): Promise<void> {
   await mkdir(dirname(destination), { recursive: true });
-  const temporary = join(dirname(destination), `.snapshot-${process.pid}-${Date.now()}.tmp`);
+  const temporary = join(dirname(destination), `.snapshot-${randomUUID()}.tmp`);
   const handle = await open(temporary, 'w', 0o640);
   try { await handle.writeFile(raw, 'utf8'); await handle.sync(); } finally { await handle.close(); }
   await rename(temporary, destination);
