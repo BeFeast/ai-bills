@@ -16,7 +16,8 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 : "${ZECORI_SNAPSHOT_URL:?Set ZECORI_SNAPSHOT_URL to https://<instance>/api/snapshot}"
-[[ "$ZECORI_SNAPSHOT_URL" =~ ^https://[a-zA-Z0-9.:/_-]+$ ]] || { echo "ZECORI_SNAPSHOT_URL must be a plain https URL" >&2; exit 2; }
+# https anywhere; plain http only to this machine (self-host quickstart), never to a remote host.
+[[ "$ZECORI_SNAPSHOT_URL" =~ ^https://[a-zA-Z0-9.:/_-]+$ || "$ZECORI_SNAPSHOT_URL" =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?/[a-zA-Z0-9./_-]*$ ]] || { echo "ZECORI_SNAPSHOT_URL must be an https URL, or http on 127.0.0.1/localhost" >&2; exit 2; }
 token="${ZECORI_INGEST_TOKEN:-}"; [ -z "$token" ] && [ -n "${ZECORI_INGEST_TOKEN_FILE:-}" ] && token=$(tr -d '\r\n' < "$ZECORI_INGEST_TOKEN_FILE")
 [ -n "$token" ] || [ "${ZECORI_DRY_RUN:-}" = 1 ] || { echo "Set ZECORI_INGEST_TOKEN or ZECORI_INGEST_TOKEN_FILE" >&2; exit 2; }
 state=$(python3 -c 'import os,sys; print(os.path.expanduser(sys.argv[1]))' "${ZECORI_STATE:-~/.local/state/zecori}")

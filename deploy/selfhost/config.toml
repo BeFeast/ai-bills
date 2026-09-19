@@ -1,0 +1,15 @@
+# Self-host config. Accounts are listed from the collector's snapshot (collector.accounts), so this
+# file usually needs no edits. Copy config/default.toml here instead if you declare accounts by hand.
+accounts = []
+
+[server]
+port = 18088
+host = "0.0.0.0"
+timezone = "UTC"
+usage_refresh_seconds = 60
+billing_fetch_timeout_ms = 1500
+idle_timeout_seconds = 60
+
+[billing]
+snapshot_path = "/data/snapshot.json"
+history_path = "/data/history.jsonl"
