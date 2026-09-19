@@ -30,8 +30,9 @@ concurrency:
 env:
   REGISTRY: git.oklabs.uk
   IMAGE: git.oklabs.uk/befeast/ai-bills
-  STACK: ai-bills
-  STACK_SOURCE: https://git.oklabs.uk/BeFeast/infra-stacks/raw/branch/main/devbox/ai-bills/compose.yaml
+  # Two stacks run this image on the app host: the LAN dashboard and the hosted Zecori instance.
+  STACKS: ai-bills zecori
+  STACK_SOURCE_BASE: https://git.oklabs.uk/BeFeast/infra-stacks/raw/branch/main/devbox
   INFISICAL_SERVICES: 5b5038c7-46d5-496f-bfa6-6184cb41e143
 
 jobs:
@@ -57,7 +58,8 @@ jobs:
           }
           bot_pat=$(get OKLABS_BOT_PAT /forgejo); dh_pass=$(get DOCKHAND_ADMIN_PASSWORD /dockhand)
           dockhand=$(get AI_BILLS_DOCKHAND_URL /ai-bills); app_url=$(get AI_BILLS_APP_URL /ai-bills); ntfy=$(get AI_BILLS_NTFY_URL /ai-bills)
-          for v in "$bot_pat" "$dh_pass" "$dockhand" "$app_url" "$ntfy"; do echo "::add-mask::$v"; done
+          hosted_url=$(get ZECORI_APP_URL /ai-bills); clerk_pk=$(get ZECORI_CLERK_PUBLISHABLE_KEY /ai-bills)
+          for v in "$bot_pat" "$dh_pass" "$dockhand" "$app_url" "$ntfy" "$hosted_url"; do echo "::add-mask::$v"; done
           {
             echo "BOT_USER=$(get OKLABS_BOT_USERNAME /forgejo)"
             echo "BOT_PAT=$bot_pat"
@@ -65,6 +67,8 @@ jobs:
             echo "DH_PASS=$dh_pass"
             echo "DOCKHAND=$dockhand"
             echo "APP_URL=$app_url"
+            echo "HOSTED_URL=$hosted_url"
+            echo "CLERK_PK=$clerk_pk"
             echo "NTFY=$ntfy"
             echo "TAG=${GITHUB_SHA:0:12}"
           } >> "$GITHUB_ENV"
@@ -81,19 +85,21 @@ jobs:
         run: |
           set -euo pipefail
           # jq -j, not -r: -r appends its own newline and every diff fails on that byte.
-          curl -fsS -b "$RUNNER_TEMP/dockhand.jar" -H "Origin: $DOCKHAND" "$DOCKHAND/api/stacks/$STACK/compose?env=1" | jq -j '.content' > "$RUNNER_TEMP/deployed-compose.yaml"
-          curl -fsS "$STACK_SOURCE" > "$RUNNER_TEMP/source-compose.yaml"
-          if ! diff -u "$RUNNER_TEMP/source-compose.yaml" "$RUNNER_TEMP/deployed-compose.yaml"; then
-            echo "FATAL: the deployed stack file differs from infra-stacks devbox/$STACK/compose.yaml" >&2
-            exit 1
-          fi
-          grep -q "image: $IMAGE:latest" "$RUNNER_TEMP/source-compose.yaml" || { echo "FATAL: the stack file does not run $IMAGE:latest" >&2; exit 1; }
-          echo "stack file matches the repository"
+          for stack in $STACKS; do
+            curl -fsS -b "$RUNNER_TEMP/dockhand.jar" -H "Origin: $DOCKHAND" "$DOCKHAND/api/stacks/$stack/compose?env=1" | jq -j '.content' > "$RUNNER_TEMP/deployed-$stack.yaml"
+            curl -fsS "$STACK_SOURCE_BASE/$stack/compose.yaml" > "$RUNNER_TEMP/source-$stack.yaml"
+            if ! diff -u "$RUNNER_TEMP/source-$stack.yaml" "$RUNNER_TEMP/deployed-$stack.yaml"; then
+              echo "FATAL: the deployed stack file for $stack differs from infra-stacks devbox/$stack/compose.yaml" >&2
+              exit 1
+            fi
+            grep -q "image: $IMAGE:latest" "$RUNNER_TEMP/source-$stack.yaml" || { echo "FATAL: $stack does not run $IMAGE:latest" >&2; exit 1; }
+            echo "stack file for $stack matches the repository"
+          done
 
       - name: Build
         run: |
           set -euo pipefail
-          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
+          docker build --build-arg "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$CLERK_PK" -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
 
       - name: Push to the OK Forge registry
         run: |
@@ -126,15 +132,15 @@ jobs:
           # what makes the health check meaningful. Volumes survive (no -v).
           # Dockhand answers only if the operation finishes within ~10 s; past that
           # it drops the connection (curl 52) while the operation completes anyway.
-          for op in down start; do
+          for stack in $STACKS; do for op in down start; do
             if out=$(curl -sS --max-time 300 -b "$RUNNER_TEMP/dockhand.jar" -H 'Content-Type: application/json' -H "Origin: $DOCKHAND" \
-                       -X POST "$DOCKHAND/api/stacks/$STACK/$op?env=1" -d '{}' 2>&1); then rc=0; else rc=$?; fi
+                       -X POST "$DOCKHAND/api/stacks/$stack/$op?env=1" -d '{}' 2>&1); then rc=0; else rc=$?; fi
             case "$rc" in
-              0) printf '%s\n' "$out" | jq -e '.success == true' >/dev/null || { echo "Dockhand refused to $op the stack: $out" >&2; exit 1; }; echo "stack $op: ok" ;;
-              52) echo "stack $op: Dockhand dropped the response; the operation completes anyway" ;;
+              0) printf '%s\n' "$out" | jq -e '.success == true' >/dev/null || { echo "Dockhand refused to $op $stack: $out" >&2; exit 1; }; echo "$stack $op: ok" ;;
+              52) echo "$stack $op: Dockhand dropped the response; the operation completes anyway" ;;
               *) echo "could not reach Dockhand (curl $rc): $out" >&2; exit 1 ;;
             esac
-          done
+          done; done
 
       - name: Verify the running instance
         run: |
@@ -142,15 +148,14 @@ jobs:
           # The containers were recreated from the image pulled above, so a healthy
           # answer here comes from the new image. Health does not prove snapshot or
           # quota freshness; those are evidence the app reports separately.
+          ok=0
           for i in $(seq 1 30); do
-            if curl -fsS -m 5 "$APP_URL/api/health" >/dev/null && curl -fsS -m 10 "$APP_URL/" | grep -q '<title>Zecori'; then
-              echo "OK: $STACK is serving $IMAGE:$TAG"
-              exit 0
-            fi
+            # The hosted instance answers / with a redirect to sign-in; its liveness is the public health endpoint.
+            if curl -fsS -m 5 "$APP_URL/api/health" >/dev/null && curl -fsS -m 10 "$APP_URL/" | grep -q '<title>Zecori' && curl -fsS -m 5 "$HOSTED_URL/api/health" >/dev/null; then ok=1; break; fi
             sleep 5
           done
-          echo "FATAL: the stack did not answer within 150s after redeploy" >&2
-          exit 1
+          [ "$ok" = 1 ] || { echo "FATAL: a stack did not answer within 150s after redeploy" >&2; exit 1; }
+          echo "OK: $STACKS are serving $IMAGE:$TAG"
 
       - name: Alert on failure
         if: failure()
