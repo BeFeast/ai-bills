@@ -80,7 +80,8 @@ export async function fetchUsageThroughCdp(account: ProviderConfig, options: Cdp
       ok: Boolean(result.ok),
       status: result.status,
       statusText: result.statusText,
-      data: normalizePayload(account, result.data),
+      // A provider error body is kept as it came, so the message reaches the card instead of a parse failure.
+      data: result.ok ? normalizePayload(account, result.data) : result.data,
       error: result.ok ? undefined : extractError(result.data) ?? `HTTP ${result.status}`,
       fetchedAt,
       sourceUrl,
@@ -309,12 +310,25 @@ async function joinSessionStart(flight: SessionStart, signal: AbortSignal | unde
 async function evaluateKimiFetch(session: CdpSession, url: string) {
   return evaluateInPage(session, `
     (async () => {
-      // kimi.ai keeps the session token in localStorage (access_token, refreshed by the page); the older kimi.com cookie is the fallback.
-      const stored = (() => { try { return localStorage.getItem('access_token'); } catch (_) { return null; } })();
+      // kimi.ai keeps the session token in localStorage (access_token, a short-lived JWT the page renews a few
+      // seconds after it loads); the older kimi.com cookie is the fallback. Reading the token straight after
+      // navigation returns the previous, often expired one, so wait for a token that is still valid.
+      const expiresAt = (token) => { try { return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp * 1000; } catch (_) { return null; } };
+      const stored = async () => {
+        const deadline = Date.now() + 12000;
+        let token = null;
+        while (Date.now() < deadline) {
+          try { token = localStorage.getItem('access_token'); } catch (_) { token = null; }
+          const exp = token ? expiresAt(token) : null;
+          if (token && (exp === null || exp > Date.now() + 30000)) return token;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        return token;
+      };
       const authCookie = document.cookie
         .split('; ')
         .find((part) => part.startsWith('kimi-auth='));
-      const authValue = stored || (authCookie ? decodeURIComponent(authCookie.slice('kimi-auth='.length)) : '');
+      const authValue = (await stored()) || (authCookie ? decodeURIComponent(authCookie.slice('kimi-auth='.length)) : '');
       if (!authValue) throw new Error('Missing Kimi access token: the browser profile is not signed in to kimi.ai');
       const response = await fetch(${JSON.stringify(url)}, {
         method: 'POST',
