@@ -2,6 +2,8 @@ import { AccountBrowserAccess } from '@/components/AccountBrowserAccess';
 import { parseAccountBrowserInput, resolveBrowserBinding } from '@/lib/account-browser';
 import type { AccountBrowserSelector } from '@/lib/account-browser-types';
 import { loadConfig } from '@/lib/config';
+import { ForbiddenNotice } from '@/components/ForbiddenNotice';
+import { isDenied, resolveTenant } from '@/lib/tenant';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -9,6 +11,8 @@ export const dynamic = 'force-dynamic';
 type SearchParams = Record<string, string | string[] | undefined>;
 
 export default async function AccountBrowserPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
+  const tenant = await resolveTenant();
+  if (isDenied(tenant)) return <ForbiddenNotice email={tenant.email} />;
   let selector: AccountBrowserSelector;
   let resolved: ReturnType<typeof resolveBrowserBinding>;
   try {

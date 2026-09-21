@@ -4,6 +4,7 @@ import { loadConfig } from '@/lib/config';
 import { AccountingConflictError, AccountingInputError, appendFinancialRecords } from '@/lib/accounting';
 import { MAX_STATEMENT_BYTES, StatementImportError, importStatement, type StatementImportInput } from '@/lib/statement-import';
 import { readBounded } from '@/lib/snapshot-ingest';
+import { requireTenant } from '@/lib/tenant';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +13,7 @@ const DATE_FORMATS = new Set(['iso', 'mdy', 'dmy']);
 
 /** CSV statement → financial records. `dryRun: true` previews the parse and writes nothing. */
 export async function POST(request: Request) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   if (!hasAllowedOrigin(request)) return NextResponse.json({ error: 'Cross-origin accounting changes are not allowed' }, { status: 403 });
   try {
     const path = loadConfig().accounting?.journal_path;

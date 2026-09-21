@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { hasAllowedOrigin } from '@/lib/request-origin';
+import { requireTenant } from '@/lib/tenant';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -8,6 +9,7 @@ const allowed = (method: string, path: string) => method === 'GET' ? path === 's
 type Context = { params: Promise<{ path: string[] }> };
 
 async function forward(request: Request, context: Context) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   const path = (await context.params).path.join('/');
   if (!allowed(request.method, path)) return NextResponse.json({ error: 'Unknown routing operation' }, { status: 404, headers });
   const base = process.env.AI_BILLS_ROUTING_URL;

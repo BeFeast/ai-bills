@@ -9,6 +9,12 @@ export function parseTokenDigests(value: string | undefined): string[] {
   return (value ?? '').split(/[,\s]+/).map(entry => entry.trim().toLowerCase().replace(/^sha256:/, '')).filter(entry => /^[0-9a-f]{64}$/.test(entry));
 }
 
+/** The SHA-256 hex digest of a presented bearer token, or null when the header is not a bearer. */
+export function bearerDigest(header: string | null): string | null {
+  const match = /^Bearer\s+(\S+)$/i.exec(header ?? '');
+  return match ? createHash('sha256').update(match[1]).digest('hex') : null;
+}
+
 export function bearerAccepted(header: string | null, digests: string[]): boolean {
   const match = /^Bearer\s+(\S+)$/i.exec(header ?? '');
   if (!match || !digests.length) return false;

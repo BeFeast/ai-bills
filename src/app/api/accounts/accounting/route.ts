@@ -4,9 +4,11 @@ import { reconcileMonth } from '@/lib/reconciliation';
 import { hasAllowedOrigin } from '@/lib/request-origin';
 import { loadConfig } from '@/lib/config';
 import { accountingOverview, appendFinancialRecords, AccountingConflictError, AccountingInputError, currentMonth, fxRates } from '@/lib/accounting';
+import { requireTenant } from '@/lib/tenant';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   try {
     const config = loadConfig();
     const month = new URL(request.url).searchParams.get('month') ?? currentMonth(config.server.timezone);
@@ -18,6 +20,7 @@ export async function GET(request: Request) {
   } catch (error) { return failure(error); }
 }
 export async function POST(request: Request) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   if (!hasAllowedOrigin(request)) return NextResponse.json({ error: 'Cross-origin accounting changes are not allowed' }, { status: 403 });
   try {
     const path = loadConfig().accounting?.journal_path;

@@ -1,6 +1,6 @@
 import { NextResponse, type NextFetchEvent, type NextRequest } from 'next/server';
 import { clerkClient, clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
-import { PUBLIC_PATHS, authMode, authorizeEmail, clerkRuntime, parseEmailList } from '@/lib/hosted-auth';
+import { DENIED_EMAIL_HEADER, IDENTITY_HEADERS, PUBLIC_PATHS, authMode, authorizeEmail, clerkRuntime, membershipMode, parseEmailList, stripIdentityHeaders } from '@/lib/hosted-auth';
 
 const isPublic = createRouteMatcher(PUBLIC_PATHS);
 const isApi = createRouteMatcher(['/api/(.*)']);
@@ -16,12 +16,16 @@ export function publicUrl(request: { nextUrl: { pathname: string; search: string
   }
 }
 
-/** Order: public paths → Clerk session (redirect to sign-in / 401 for API) → this instance's own allow list (403 by name). */
+/** Order: public paths → Clerk session (redirect to sign-in / 401 for API) → who may use this instance.
+ * With a database (membership mode) the middleware forwards the identity and the Node side decides by membership,
+ * because the edge runtime cannot reach Postgres; without one, this instance's own allow list decides here (403 by name). */
 // Only evaluated in Clerk mode: a half-configured satellite must not take a local instance down with it.
 // allowedRedirectOrigins is a ClerkProvider (browser) option only; the server-side AuthenticateRequestOptions has no such field.
 const clerkOptions = (() => { if (authMode() !== 'clerk') return {}; const c = clerkRuntime(); return { publishableKey: c.publishableKey, signInUrl: c.signInUrl, isSatellite: c.isSatellite, domain: c.domain }; })();
 const withClerk = clerkMiddleware(async (auth, request) => {
-  if (isPublic(request)) return NextResponse.next();
+  // A caller must never be able to present an identity of its own choosing to the handlers.
+  const headers = stripIdentityHeaders(request.headers);
+  if (isPublic(request)) return NextResponse.next({ request: { headers } });
   const session = await auth();
   if (!session.userId) {
     if (isApi(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -37,15 +41,21 @@ const withClerk = clerkMiddleware(async (auth, request) => {
     catch { email = null; }
     if (!warnedAboutClaim) { warnedAboutClaim = true; console.warn('[zecori] session token carries no email claim; falling back to the Clerk Backend API per request. Add {"email": "{{user.primary_email_address}}"} to the instance session claims.'); }
   }
+  if (membershipMode()) {
+    headers.set(IDENTITY_HEADERS.userId, session.userId);
+    if (email) headers.set(IDENTITY_HEADERS.email, email);
+    return NextResponse.next({ request: { headers } });
+  }
   const verdict = authorizeEmail(email, parseEmailList(process.env.AI_BILLS_ALLOWED_EMAILS), parseEmailList(process.env.AI_BILLS_ADMIN_EMAILS));
-  if (verdict.allowed) return NextResponse.next();
+  if (verdict.allowed) return NextResponse.next({ request: { headers } });
   if (isApi(request)) return NextResponse.json({ error: 'Forbidden', account: email ?? undefined }, { status: 403 });
   const url = request.nextUrl.clone(); url.pathname = '/forbidden'; url.search = '';
-  return NextResponse.rewrite(url, { request: { headers: new Headers({ ...Object.fromEntries(request.headers), 'x-zecori-denied-email': email ?? 'unknown account' }) } });
+  headers.set(DENIED_EMAIL_HEADER, email ?? 'unknown account');
+  return NextResponse.rewrite(url, { request: { headers } });
 }, clerkOptions);
 
 export default function middleware(request: NextRequest, event: NextFetchEvent) {
-  if (authMode() !== 'clerk') return NextResponse.next();
+  if (authMode() !== 'clerk') return NextResponse.next({ request: { headers: stripIdentityHeaders(request.headers) } });
   return withClerk(request, event);
 }
 

@@ -4,6 +4,7 @@ import { fetchLiveBalances } from '@/lib/balances';
 import { readSeries, recordHistory } from '@/lib/history';
 import { loadConfig } from '@/lib/config';
 import { accountingOverview, currentMonth, freshness } from '@/lib/accounting';
+import { requireTenant } from '@/lib/tenant';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,6 +12,7 @@ export const dynamic = 'force-dynamic';
 const NO_STORE = { 'cache-control': 'no-store' };
 
 export async function GET() {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   try {
     const snapshot = await fetchBillingSnapshot();
     const config = loadConfig();

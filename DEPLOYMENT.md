@@ -41,10 +41,16 @@ blindly or run a second collector against the same consumptive queue.
 ## Hosted mode (Clerk sign-in)
 
 Set `AI_BILLS_AUTH=clerk` and the instance requires a Clerk session for every page and
-API except `/api/health`, `/api/snapshot`, brand assets and the auth pages. The signed-in
-address must also appear in `AI_BILLS_ALLOWED_EMAILS` (comma-separated; `AI_BILLS_ADMIN_EMAILS`
-marks admins) — a second list independent of Clerk's own allowlist, so removing an address
-revokes access on the next request; an empty list keeps the instance open and is logged.
+API except `/api/health`, `/api/snapshot`, brand assets and the auth pages. Who may use the
+instance is then decided in one of two ways. **With a database** (`DATABASE_URL`, tenancy
+phase 2) the `memberships` table decides: the middleware proves the session and forwards the
+identity, every API route resolves the tenant by membership before handling, and a signed-in
+account without a membership gets 403 by name. An address named in `AI_BILLS_ALLOWED_EMAILS`
+(admin if also in `AI_BILLS_ADMIN_EMAILS`) is adopted into the default tenant (`AI_BILLS_TENANT`)
+on its first sign-in, so the lists migrate themselves; an existing membership always wins over
+the lists, and an empty allow list stays open. **Without a database** the lists decide directly,
+as before: a second list independent of Clerk's own allowlist, so removing an address revokes
+access on the next request; an empty list keeps the instance open and is logged.
 Denied accounts see a page naming the account with a sign-out button. Runtime configuration:
 `CLERK_SECRET_KEY` and `CLERK_PUBLISHABLE_KEY` (read per request; the build-time
 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is only a fallback), `AI_BILLS_PUBLIC_ORIGIN`. A partner
@@ -55,8 +61,11 @@ allowed). The Clerk session token must carry an `email` claim. Self-hosted insta
 `AI_BILLS_AUTH` unset and never load Clerk.
 
 A hosted instance receives its data through `PUT /api/snapshot` with
-`Authorization: Bearer <token>`; the instance stores only `AI_BILLS_INGEST_TOKEN_SHA256`
-(hex digests, comma-separated). The collector sends with `AI_BILLS_SNAPSHOT_URL` and reads
+`Authorization: Bearer <token>`; the instance stores only digests. With a database the token
+names the tenant through `ingest_tokens` (digests from `AI_BILLS_INGEST_TOKEN_SHA256` are
+adopted for the default tenant at boot, so the collector keeps working; a revoked row stops
+working at once); without one `AI_BILLS_INGEST_TOKEN_SHA256` (hex digests, comma-separated)
+decides. The collector sends with `AI_BILLS_SNAPSHOT_URL` and reads
 the token from the secret manager (`AI_BILLS_SNAPSHOT_TOKEN_SECRET`, path
 `AI_BILLS_SNAPSHOT_TOKEN_PATH`, default `/ai-bills`; workspace `AI_BILLS_SNAPSHOT_TOKEN_WORKSPACE`,
 default the collector's own project).

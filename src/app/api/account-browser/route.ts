@@ -2,16 +2,19 @@ import { NextResponse } from 'next/server';
 import { loadConfig } from '@/lib/config';
 import { hasAllowedOrigin } from '@/lib/request-origin';
 import { accountBrowser, AccountBrowserInputError, parseAccountBrowserInput } from '@/lib/account-browser';
+import { requireTenant } from '@/lib/tenant';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'no-store' };
 export async function GET(request: Request) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   try {
     const { selector } = parseAccountBrowserInput(Object.fromEntries(new URL(request.url).searchParams));
     return NextResponse.json(await accountBrowser(loadConfig(), selector), { headers });
   } catch (error) { return failure(error); }
 }
 export async function POST(request: Request) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   if (!hasAllowedOrigin(request)) return NextResponse.json({ error: 'Cross-origin account browser actions are not allowed' }, { status: 403, headers });
   try {
     const body = await request.text();
