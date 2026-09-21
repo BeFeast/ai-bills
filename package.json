@@ -14,7 +14,9 @@
   "dependencies": {
     "@clerk/nextjs": "^7.9.4",
     "@openai/codex": "0.144.6",
+    "drizzle-orm": "^0.45.3",
     "next": "^15.4.0",
+    "postgres": "^3.4.9",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "smol-toml": "^1.3.1",
@@ -22,10 +24,12 @@
     "yaml": "^2.8.2"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@types/ws": "8.18.1",
+    "drizzle-kit": "^0.31.11",
     "typescript": "^5.8.3",
     "vitest": "^3.2.0"
   }
