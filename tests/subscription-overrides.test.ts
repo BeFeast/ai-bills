@@ -8,7 +8,7 @@ import type { AppConfig } from '../src/lib/config';
 import { productOverview } from '../src/lib/overview';
 import { storeSnapshot } from '../src/lib/snapshot-store';
 import { dbOverridesStore } from '../src/lib/storage';
-import { saveSubscriptionOverride, validateSubscriptionPatch } from '../src/lib/subscription-overrides';
+import { saveSubscriptionOverride, SubscriptionStoreError, validateSubscriptionPatch } from '../src/lib/subscription-overrides';
 
 let pg: PGlite; let db: Db; let n = 0;
 vi.mock('../src/lib/db', async importOriginal => ({ ...(await importOriginal<typeof import('../src/lib/db')>()), getDb: () => db }));
@@ -49,6 +49,6 @@ describe('subscription metadata overrides', () => {
     const { config, scope, store } = await fixture();
     await expect(saveSubscriptionOverride(config, { id: 'invented', amount: 1 }, await productOverview(config, scope), store)).rejects.toThrow('no longer exists');
     const before = await productOverview(config, scope);
-    await expect(saveSubscriptionOverride(config, { id: before.subscriptions[0].id, amount: 1 }, before, null)).rejects.toThrow('need the database');
+    await expect(saveSubscriptionOverride(config, { id: before.subscriptions[0].id, amount: 1 }, before, null)).rejects.toThrow(SubscriptionStoreError);
   });
 });

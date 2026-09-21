@@ -4,6 +4,8 @@ import type { ProductOverview, ProductSubscription } from './overview';
 export type SubscriptionOverride = Partial<Pick<ProductSubscription, 'amount' | 'currency' | 'period' | 'renewsAt' | 'endsAt' | 'status'>> & { updatedAt: string; costEvidence?: ProductSubscription['costEvidence'] };
 export class SubscriptionInputError extends Error {}
 export class SubscriptionBusyError extends Error {}
+/** No store for this tenant (no database): a configuration state, not something to retry. */
+export class SubscriptionStoreError extends Error {}
 /** Where the pre-database file lived; read once by the boot import, never written. */
 export function subscriptionOverridesPath(config: AppConfig): string {
   return join(dirname(config.accounting?.journal_path || '/data/accounting.jsonl'), 'subscription-overrides.json');
@@ -36,7 +38,7 @@ export async function saveSubscriptionOverride(config: AppConfig, input: unknown
   const { id, changes } = validateSubscriptionPatch(input);
   const existing = current.subscriptions.find(value => value.id === id);
   if (!existing) throw new SubscriptionInputError('Subscription no longer exists in the current inventory');
-  if (!store) throw new SubscriptionBusyError('Subscription edits need the database; none is configured for this tenant');
+  if (!store) throw new SubscriptionStoreError('Subscription edits need the database; none is configured for this tenant');
   const previous = (await store.read())[id] as SubscriptionOverride | undefined;
   const priceChanged = (['amount', 'currency', 'period'] as const).some(field => field in changes && changes[field] !== existing[field]);
   await store.write(id, { ...previous, ...changes, ...(priceChanged ? { costEvidence: 'declared' as const } : {}), updatedAt: new Date().toISOString() });
