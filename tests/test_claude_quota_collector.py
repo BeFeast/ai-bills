@@ -119,11 +119,43 @@ class QuotaFallbackTests(unittest.TestCase):
         self.assertTrue(3 <= slept[0] <= 6 and 8 <= slept[1] <= 14)
         self.assertNotIn('direct', entry)
 
-    def test_unauthorized_is_not_retried(self):
+    def test_unauthorized_is_neither_retried_nor_hidden_behind_a_fallback(self):
         module = load('ai-claude-quotas')
-        request, calls = self.rejecting([401])
-        entry, slept = self.collect(module, request)
-        self.assertEqual((entry['ok'], entry['status'], len(calls), slept), (False, 401, 1, []))
+        identity = hashlib.sha256(b'oauth:claude-a.json').hexdigest()[:24]
+        previous = {identity: {'ok': True, 'fetched_at': '2026-09-21T08:30:04+00:00', 'data': {'five_hour': {'utilization': 12, 'resets_at': None}}}}
+        proxy = {'a@example.invalid': {'observed_at': '2026-09-21T08:34:00Z', 'signals': {'Anthropic-Ratelimit-Unified-5h-Utilization': '0.5', 'Anthropic-Ratelimit-Unified-5h-Reset': '1789997400'}}}
+        for code in (401, 403, 404):
+            with self.subTest(code=code):
+                request, calls = self.rejecting([code])
+                entry, slept = self.collect(module, request, previous=previous, proxy_quota=proxy)
+                self.assertEqual((entry['ok'], entry['status'], len(calls), slept), (False, code, 1, []))
+                self.assertNotIn('data', entry); self.assertNotIn('source', entry)
+        # A network failure has no status and is transient: the fallback applies.
+        def failing(req, timeout):
+            raise OSError('connection reset')
+        entry, slept = self.collect(module, failing, previous=previous, proxy_quota=proxy)
+        self.assertEqual((entry['ok'], entry['source'], entry['direct']['status'], len(slept)), (True, 'proxy_headers', None, 2))
+
+    def test_proxy_quota_file_matches_the_management_api_shape(self):
+        """The wrapper extracts {type, email, quota} from /v0/management/auth-files; both providers must parse a real row."""
+        module = load('ai-claude-quotas')
+        rows = [{'type': 'claude', 'provider': 'claude', 'email': 'a@example.invalid', 'quota': {'observed_at': '2026-09-21T08:49:46.15436605Z', 'signals': {
+                    'Anthropic-Ratelimit-Unified-5h-Reset': '1789997400', 'Anthropic-Ratelimit-Unified-5h-Status': 'allowed', 'Anthropic-Ratelimit-Unified-5h-Utilization': '0.01',
+                    'Anthropic-Ratelimit-Unified-7d-Reset': '1790582400', 'Anthropic-Ratelimit-Unified-7d-Status': 'allowed', 'Anthropic-Ratelimit-Unified-7d-Utilization': '0.0',
+                    'Anthropic-Ratelimit-Unified-7d_oi-Utilization': '0.0', 'Anthropic-Ratelimit-Unified-Representative-Claim': 'five_hour'}}},
+                {'type': 'codex', 'provider': 'codex', 'email': 'a@example.invalid', 'quota': {'observed_at': '2026-09-21T08:51:58.347083579Z', 'signals': {
+                    'X-Codex-Active-Limit': 'premium', 'X-Codex-Plan-Type': 'pro', 'X-Codex-Primary-Reset-After-Seconds': '433217', 'X-Codex-Primary-Reset-At': '1790413926',
+                    'X-Codex-Primary-Used-Percent': '5', 'X-Codex-Primary-Window-Minutes': '10080', 'X-Codex-Secondary-Used-Percent': '0', 'X-Codex-Secondary-Window-Minutes': '0'}}},
+                {'type': 'antigravity', 'provider': 'antigravity', 'email': 'a@example.invalid', 'quota': {'observed_at': '2026-09-21T08:00:00Z', 'signals': {}}}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'quota.json'; path.write_text(json.dumps(rows))
+            claude = module.load_proxy_quota(str(path), 'claude')
+            self.assertEqual(module.proxy_quota_payload(claude['a@example.invalid']['signals']), {
+                'five_hour': {'utilization': 1.0, 'resets_at': '2026-09-21T13:30:00+00:00'}, 'seven_day': {'utilization': 0.0, 'resets_at': '2026-09-28T08:00:00+00:00'}})
+            codex_module = load('ai-codex-quotas')
+            codex = codex_module.load_proxy_quota(str(path), 'codex')
+            self.assertEqual(codex_module.proxy_quota_payload(codex['a@example.invalid']['signals'])['rate_limit']['primary_window']['used_percent'], 5.0)
+            self.assertIsNone(module.proxy_quota_payload(module.load_proxy_quota(str(path), 'antigravity')['a@example.invalid']['signals']))
 
     def test_exhausted_retries_fall_back_to_the_proxy_header_quota(self):
         module = load('ai-claude-quotas')

@@ -45,8 +45,10 @@ the wrapper through `AI_BILLS_PROXY_QUOTA_FILE`, no extra provider request), or
 and `data` with the fallback's own `fetched_at`, has `status: null`, and records how the
 direct request ended under `direct` (`status`, `error`, `attempted_at`). The dashboard
 shows the number with a "Check rate-limited" or "Check failed" badge and the fallback's
-observation time; alerts report the source as degraded, not failed. Only when no
-alternative exists does the entry become `ok: false` with the direct status and error.
+observation time; alerts report the source as degraded, not failed. Only transient
+failures fall back: a definite rejection such as HTTP 401 or 403 means the credential is
+the problem and the entry stays `ok: false` with the direct status and error, as it does
+when no alternative exists.
 `AI_USAGE_REPORT_BIN` overrides the report executable for staged deployments.
 
 An app account may set `quota_snapshot_key` to its opaque proxy registry ID. This

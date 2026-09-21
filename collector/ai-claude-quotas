@@ -95,7 +95,12 @@ def load_previous(path, bucket):
 
 
 def fallback(entry, identity, email, previous, proxy_quota, now, to_payload):
-    """Replace a failed direct observation with the newest honest alternative, if any."""
+    """Replace a transiently failed direct observation with the newest honest alternative, if any.
+
+    A definite rejection (401/403 and other non-retryable statuses) means the credential itself is
+    the problem; no fallback may hide that behind a number, so the entry stays failed."""
+    if entry.get('status') is not None and entry['status'] not in RETRYABLE:
+        return
     direct = {'status': entry.get('status'), 'error': entry.get('error'), 'attempted_at': entry['fetched_at']}
     candidates = []
     row = proxy_quota.get(email) if email else None
