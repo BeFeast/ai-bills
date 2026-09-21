@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { loadConfig } from '@/lib/config';
+import { defaultTenantSlug, ensureTenant, getDb } from '@/lib/db';
 import { MAX_SNAPSHOT_BYTES, bearerAccepted, parseTokenDigests, readBounded, validateSnapshot, writeSnapshotAtomically } from '@/lib/snapshot-ingest';
+import { storeSnapshot } from '@/lib/snapshot-store';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'no-store' };
@@ -18,5 +20,21 @@ export async function PUT(request: Request) {
   try {
     await writeSnapshotAtomically(loadConfig().billing.snapshot_path, raw);
   } catch { return NextResponse.json({ error: 'Snapshot could not be stored' }, { status: 503, headers }); }
-  return NextResponse.json({ ok: true, generated: verdict.generated, bytes: raw.length }, { headers });
+  // Tenancy phase 1: the file stays the source the dashboard reads; the database receives the same
+  // snapshot for the default tenant. A database failure is reported, never turned into a failed ingest.
+  const stored = await storeInDatabase(raw, verdict.generated);
+  return NextResponse.json({ ok: true, generated: verdict.generated, bytes: raw.length, stored }, { headers });
+}
+
+async function storeInDatabase(raw: string, generated: string): Promise<{ file: true; database: 'stored' | 'disabled' | 'failed'; observations?: number }> {
+  const db = getDb();
+  if (!db) return { file: true, database: 'disabled' };
+  try {
+    const tenant = await ensureTenant(db, defaultTenantSlug());
+    const result = await storeSnapshot(db, tenant.id, raw, generated);
+    return { file: true, database: 'stored', observations: result.observations };
+  } catch (error) {
+    console.error('[zecori] snapshot stored on disk but not in the database', error instanceof Error ? error.message : error);
+    return { file: true, database: 'failed' };
+  }
 }

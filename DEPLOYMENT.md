@@ -61,6 +61,21 @@ the token from the secret manager (`AI_BILLS_SNAPSHOT_TOKEN_SECRET`, path
 `AI_BILLS_SNAPSHOT_TOKEN_PATH`, default `/ai-bills`; workspace `AI_BILLS_SNAPSHOT_TOKEN_WORKSPACE`,
 default the collector's own project).
 
+## Database (tenancy phase 1)
+
+The instance can run with a Postgres database beside the snapshot file
+(spec: `Dev/Areas/ai-bills/specs/2026-09-21-multi-tenancy.md`). Set `DATABASE_URL`
+(application role `zecori_app`, no BYPASSRLS) and optionally `DATABASE_ADMIN_URL` (table
+owner) and the instance applies the SQL migrations in `drizzle/` at boot, creates the default
+tenant (`AI_BILLS_TENANT`, default `default`) and, on every `PUT /api/snapshot`, stores the
+snapshot body and its quota observations for that tenant in addition to writing the file. The
+file remains what the dashboard reads in this phase; the ingest response reports
+`stored.database` as `stored`, `disabled` (no `DATABASE_URL`) or `failed` (logged, ingest still
+succeeds). Every tenant table is under row-level security keyed by `app.tenant_id`, which the
+application sets per transaction; a connection without a tenant context sees no tenant data.
+Without `DATABASE_URL` nothing changes. Retention: the last 48 snapshot bodies per tenant;
+observations are kept.
+
 ## Partner instances fed by the portable collector
 
 An instance whose config declares no `[[accounts]]` lists its Claude/Codex accounts from the

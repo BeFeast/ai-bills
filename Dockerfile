@@ -30,6 +30,8 @@ RUN apt-get update \
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
+# SQL migrations are applied at boot (src/instrumentation.ts); Next's standalone tracing does not see them.
+COPY --from=build /app/drizzle ./drizzle
 # Codex CLI (device-auth flow) is spawned at runtime, outside Next's tracing.
 # @openai/codex is only a JS launcher — the native binary ships in the platform
 # package (@openai/codex-linux-x64), so the whole scope has to come along.
