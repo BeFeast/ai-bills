@@ -558,20 +558,29 @@ const CLAUDE_SNAPSHOT_SOURCE = 'https://api.anthropic.com/api/oauth/usage (maest
 /** Claude usage comes from snapshot.json, fetched on the collector host by ai-bill-collect.sh with
  *  cliproxy-refreshed OAuth tokens. The browser/CDP transport died with the example-host
  *  workstation (2026-08-20); the endpoint returns the same shape as the old claude.ai one. */
+type SnapshotQuotaEntry<T> = { ok?: boolean; status?: number | null; fetched_at?: string; error?: string; data?: T;
+  source?: string; direct?: { status?: number | null; error?: string; attempted_at?: string } };
+
+/** A collector entry whose data came from the proxy's header-observed quota or the last success says so; its status is then null. */
+function snapshotObservationFields(entry: SnapshotQuotaEntry<unknown>): Pick<ProviderUsage, 'status' | 'source' | 'direct'> {
+  const status = typeof entry.status === 'number' ? entry.status : undefined;
+  if (entry.source !== 'proxy_headers' && entry.source !== 'retained') return { status };
+  return { status, source: entry.source, direct: { status: typeof entry.direct?.status === 'number' ? entry.direct.status : null,
+    error: entry.direct?.error || 'The direct quota request failed', attemptedAt: entry.direct?.attempted_at || null } };
+}
+
 function fetchClaudeFromSnapshot(account: ProviderConfig): ProviderUsage {
   const fetchedAt = ""; // Missing observation time is unknown, never a fresh fetch.
   const sourceUrl = CLAUDE_SNAPSHOT_SOURCE;
   try {
     const raw = readFileSync(loadConfig().billing.snapshot_path, 'utf8');
-    const snapshot = JSON.parse(raw) as {
-      claude_usage?: Record<string, { ok?: boolean; fetched_at?: string; error?: string; data?: ClaudeUsagePayload }>;
-    };
+    const snapshot = JSON.parse(raw) as { claude_usage?: Record<string, SnapshotQuotaEntry<ClaudeUsagePayload>> };
     const entry = snapshot.claude_usage?.[account.email ?? ''];
     if (!entry) return { account, ok: false, error: 'no claude_usage entry in snapshot', fetchedAt, sourceUrl };
     if (!entry.ok || !entry.data) {
-      return { account, ok: false, error: entry.error ?? 'collector fetch failed', fetchedAt: entry.fetched_at ?? fetchedAt, sourceUrl };
+      return { account, ok: false, status: typeof entry.status === 'number' ? entry.status : undefined, error: entry.error ?? 'collector fetch failed', fetchedAt: entry.fetched_at ?? fetchedAt, sourceUrl };
     }
-    return { account, ok: true, status: 200, data: entry.data, fetchedAt: entry.fetched_at ?? fetchedAt, sourceUrl };
+    return { account, ok: true, ...snapshotObservationFields(entry), data: entry.data, fetchedAt: entry.fetched_at ?? fetchedAt, sourceUrl };
   } catch (error) {
     return { account, ok: false, error: error instanceof Error ? error.message : String(error), fetchedAt, sourceUrl };
   }
@@ -583,12 +592,10 @@ export function fetchCodexFromSnapshot(account: ProviderConfig): ProviderUsage |
   const sourceUrl = 'proxy-collector:codex-quota';
   const missing = (): ProviderUsage => ({ account, ok: false, error: 'Configured proxy quota observation is missing', fetchedAt: '', sourceUrl });
   try {
-    const snapshot = JSON.parse(readFileSync(loadConfig().billing.snapshot_path, 'utf8')) as {
-      codex_usage?: Record<string, { ok?: boolean; status?: number; fetched_at?: string; error?: string; data?: CodexUsagePayload }>;
-    };
+    const snapshot = JSON.parse(readFileSync(loadConfig().billing.snapshot_path, 'utf8')) as { codex_usage?: Record<string, SnapshotQuotaEntry<CodexUsagePayload>> };
     const entry = snapshot.codex_usage?.[account.quota_snapshot_key || account.email];
     if (!entry) return account.quota_snapshot_key ? missing() : null;
-    return { account, ok: entry.ok === true && !!entry.data, status: entry.status, data: entry.ok ? entry.data : undefined,
+    return { account, ok: entry.ok === true && !!entry.data, ...snapshotObservationFields(entry), data: entry.ok ? entry.data : undefined,
       error: entry.ok && entry.data ? undefined : entry.error || 'Proxy quota collector failed', fetchedAt: entry.fetched_at || '', sourceUrl };
   } catch { return account.quota_snapshot_key ? missing() : null; }
 }

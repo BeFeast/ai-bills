@@ -33,6 +33,7 @@ import {
   type KimiQuotaDetail,
   type KimiUsagePayload,
   type ProviderUsage,
+  type UsageFallbackSource,
   quotaTone,
 } from '@/lib/usage';
 import { fmtDate, fmtNumber, fmtPct, normalizePct, pickPct, refillLabel, resetLabel } from './format';
@@ -44,6 +45,7 @@ import { Button, ButtonLink, Notice, Pill, type PillTone } from './ui';
 type CardProps = { result: ProviderUsage; now: number; tz: string; onAuthorized: () => void };
 
 import { usageEvidence, type UsageEvidence } from '@/lib/usage-evidence';
+import { accountWindows } from '@/lib/limits-hero';
 export { usageEvidence, type UsageEvidence };
 
 const providerNames: Record<string, string> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', cursor: 'Cursor' };
@@ -143,8 +145,19 @@ function KvCard({ title, rows }: { title: string; rows: KvRows }) {
   return <div className="bf-card acct-kv-card"><h3 className="t-h3">{title}</h3><KvStrip rows={rows} flat /></div>;
 }
 
+const fallbackSource: Record<UsageFallbackSource, string> = { proxy_headers: "quota read by the proxy from the account's own traffic", retained: 'the last successful observation' };
+
 function Meta({ result, tz, prefix }: { result: ProviderUsage; tz: string; prefix?: string }) {
-  return <>{prefix}HTTP {result.status ?? 'n/a'} · fetched {fmtDate(result.fetchedAt, tz)}</>;
+  const fallback = result.source === 'proxy_headers' || result.source === 'retained' ? result.source : null;
+  return <>{prefix}HTTP {result.status ?? 'n/a'} · {fallback ? 'observed' : 'fetched'} {fmtDate(result.fetchedAt, tz)}{fallback ? ` · ${result.direct?.error ?? 'The direct quota request failed'}; showing ${fallbackSource[fallback]}` : ''}</>;
+}
+
+/** The last known limiting window of a stale observation, so the card keeps a number with its age instead of only "Unknown". */
+function lastKnownRow(result: ProviderUsage, tz: string): [string, ReactNode] | null {
+  const { limiting } = accountWindows(result);
+  if (!limiting) return null;
+  const remaining = limiting.exhausted ? 'Exhausted' : limiting.unit === 'requests' ? `${limiting.remaining?.toLocaleString() ?? 'n/a'} requests left` : `${limiting.remainingPercent === null ? 'n/a' : Number(limiting.remainingPercent.toFixed(1))}% left`;
+  return ['Last known', `${remaining} · ${limiting.label} · observed ${fmtDate(result.fetchedAt, tz)}`];
 }
 
 function UnknownCard({ result, tz, evidence }: { result: ProviderUsage; tz: string; evidence: UsageEvidence }) {
@@ -155,7 +168,7 @@ function UnknownCard({ result, tz, evidence }: { result: ProviderUsage; tz: stri
         <Pill tone={evidence.state === 'error' ? 'bad' : 'warn'}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</Pill>
       </div>
       <span className="t-small">{evidence.message}</span>
-      <KvStrip flat rows={[['Quota remaining', 'Unknown'], ['Last observation', fmtDate(result.fetchedAt, tz)], ['HTTP status', result.status ?? 'Unknown']]} />
+      <KvStrip flat rows={[['Quota remaining', 'Unknown'], ...(evidence.state === 'stale' ? [lastKnownRow(result, tz)].filter((row): row is [string, ReactNode] => row !== null) : []), ['Last observation', fmtDate(result.fetchedAt, tz)], ['HTTP status', result.status ?? 'Unknown']]} />
     </div>
   );
 }

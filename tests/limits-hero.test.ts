@@ -94,6 +94,27 @@ describe('limits hero', () => {
     expect(mixed.loading).toBe(false);
     expect(mixed.cards.map((card) => [card.kind, card.id])).toEqual([['quota', 'claude-personal']]);
   });
+  it('keeps the number when the direct check failed and a fallback observation exists, naming the fallback', () => {
+    const limited = { ...claude('claude-work', 'work@example.invalid', 7, 43, 83), status: undefined, source: 'proxy_headers' as const,
+      direct: { status: 429, error: 'Proxy quota request rejected (HTTP 429)', attemptedAt: fetchedAt } };
+    const retained = { ...codex('codex-work', 'work@example.invalid', 60), status: undefined, source: 'retained' as const, direct: { status: null, error: 'Proxy quota request failed; credentials were not refreshed', attemptedAt: null } };
+    const hero = buildLimitsHero({ usage: [limited, retained, claude('claude-personal', 'personal@example.invalid', 1, 2, 3)], registry: [], last24h, now });
+    const byId = Object.fromEntries(hero.cards.map((card) => [card.id, card]));
+    expect(byId['claude-work'].kind).toBe('quota');
+    expect((byId['claude-work'] as { fallback: unknown }).fallback).toEqual({ kind: 'proxy_headers', status: 429, error: 'Proxy quota request rejected (HTTP 429)' });
+    expect((byId['claude-work'] as { limiting: { remainingPercent: number } }).limiting.remainingPercent).toBe(17);
+    expect((byId['codex-work'] as { fallback: unknown }).fallback).toEqual({ kind: 'retained', status: null, error: 'Proxy quota request failed; credentials were not refreshed' });
+    expect((byId['claude-personal'] as { fallback: unknown }).fallback).toBeNull();
+  });
+  it('shows the last known limiting window on a stale card instead of forgetting it', () => {
+    const stale = { ...claude('claude-work', 'work@example.invalid', 7, 43, 83), fetchedAt: new Date(now - 45 * 60_000).toISOString() };
+    const hero = buildLimitsHero({ usage: [stale, kimiError], registry: [], last24h, now });
+    const [card, kimi] = hero.cards;
+    expect(card.kind).toBe('error');
+    expect((card as { state: string; lastKnown: { label: string; remainingPercent: number } | null }).state).toBe('stale');
+    expect((card as { lastKnown: { label: string; remainingPercent: number } | null }).lastKnown).toMatchObject({ label: 'Fable weekly', remainingPercent: 17 });
+    expect((kimi as { lastKnown: unknown }).lastKnown).toBeNull();
+  });
   it('enumerates Codex windows with the blocked flag', () => {
     const blocked = codex('codex-work', 'work@example.invalid', 60);
     (blocked.data as { rate_limit: { limit_reached: boolean; secondary_window: unknown } }).rate_limit.limit_reached = true;

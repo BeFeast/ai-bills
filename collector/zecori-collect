@@ -28,8 +28,10 @@ export AI_USAGE_PRICING="${AI_USAGE_PRICING:-$here/pricing.default.yml}"
 py=(python3)
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# 1. credentials the CLIs already hold -> quota observations (percentages only)
+# 1. credentials the CLIs already hold -> quota observations (percentages only). The previous
+#    snapshot lets a rejected request keep the last successful observation instead of forgetting it.
 shim=$(ZECORI_STATE="$state" "${py[@]}" "$here/zecori-auth-shim")
+[ -r "$state/snapshot.json" ] && export AI_BILLS_PREVIOUS_SNAPSHOT="$state/snapshot.json"
 CLAUDE_USAGE=$(AI_BILLS_CLIPROXY_AUTH_DIR="$state/auths" "${py[@]}" "$here/ai-claude-quotas" 2>/dev/null) || CLAUDE_USAGE='{}'
 CODEX_USAGE=$(AI_BILLS_CLIPROXY_AUTH_DIR="$state/auths" "${py[@]}" "$here/ai-codex-quotas" 2>/dev/null) || CODEX_USAGE='{}'
 [ -n "$CLAUDE_USAGE" ] || CLAUDE_USAGE='{}'; [ -n "$CODEX_USAGE" ] || CODEX_USAGE='{}'

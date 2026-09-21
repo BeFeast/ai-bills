@@ -20,7 +20,9 @@ CLIPROXY_MGMT_URL="${AI_BILLS_CLIPROXY_MGMT_URL:-http://127.0.0.1:23020/v0/manag
 export AI_BILLS_CLIPROXY_AUTH_DIR="$CLIPROXY_AUTH_DIR"
 COLLECTOR_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 OUT=$(mktemp /tmp/ai-bill-snapshot.XXXXXX.json)
-trap 'rm -f "$OUT"' EXIT
+AUTH_FILES=$(mktemp /tmp/ai-bill-auth-files.XXXXXX.json)
+PROXY_QUOTA=$(mktemp /tmp/ai-bill-proxy-quota.XXXXXX.json)
+trap 'rm -f "$OUT" "$AUTH_FILES" "$PROXY_QUOTA"' EXIT
 
 source "${AI_BILLS_INFISICAL_ENV:-$HOME/.config/infisical/machine.env}"
 TOKEN=$(infisical login --method=universal-auth \
@@ -52,10 +54,17 @@ if [ -n "${AI_BILLS_OPENROUTER_SECRET_NAME:-}" ]; then
 fi
 
 # --- proxy: auth-file (subscription) health + upstream request counters ---
-AUTHS=$(curl -sf -m 10 "$CLIPROXY_MGMT_URL/auth-files" -H "Authorization: Bearer $MGMT" \
-  | jq '[.files[] | {provider, email, status,
+curl -sf -m 10 "$CLIPROXY_MGMT_URL/auth-files" -H "Authorization: Bearer $MGMT" > "$AUTH_FILES" || echo '{"files":[]}' > "$AUTH_FILES"
+AUTHS=$(jq '[.files[] | {provider, email, status,
         today_success: ([.recent_requests[]?.success] | add // 0),
-        today_failed:  ([.recent_requests[]?.failed]  | add // 0)}]') || AUTHS='[]'
+        today_failed:  ([.recent_requests[]?.failed]  | add // 0)}]' "$AUTH_FILES") || AUTHS='[]'
+# Quota the proxy read from response headers of each credential's own traffic: the quota
+# collectors fall back to it when the provider rejects the direct request, with no extra call.
+jq '[.files[] | {type, email, quota}]' "$AUTH_FILES" > "$PROXY_QUOTA" 2>/dev/null || echo '[]' > "$PROXY_QUOTA"
+export AI_BILLS_PROXY_QUOTA_FILE="$PROXY_QUOTA"
+# The previous snapshot lets a failed request keep the last successful observation instead of forgetting it.
+PREVIOUS_SNAPSHOT="${AI_BILLS_PREVIOUS_SNAPSHOT:-${AI_BILLS_SNAPSHOT_TARGET:-}}"
+if [ -n "$PREVIOUS_SNAPSHOT" ] && [ -r "$PREVIOUS_SNAPSHOT" ]; then export AI_BILLS_PREVIOUS_SNAPSHOT="$PREVIOUS_SNAPSHOT"; fi
 USAGE=$(curl -sf -m 10 "$CLIPROXY_MGMT_URL/api-key-usage" -H "Authorization: Bearer $MGMT" \
   | jq 'to_entries | map({upstream: .key,
         success: ([.value[]?.success] | add // 0),
