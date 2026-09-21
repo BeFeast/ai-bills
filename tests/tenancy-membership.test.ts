@@ -5,7 +5,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { schema, memberships, ingestTokens } from '../src/db/schema';
 import { APP_ROLE, MIGRATIONS_FOLDER, ensureTenant, withTenant, type Db } from '../src/lib/db';
-import { ensureIngestTokens, isDenied, membershipCacheSize, membershipFor, resetTenantCache, resolveTenant, tenantForIngestDigest } from '../src/lib/tenant';
+import { ensureIngestTokens, isDenied, membershipCacheSize, membershipFor, requireTenant, resetTenantCache, resolveTenant, tenantForIngestDigest } from '../src/lib/tenant';
 import { IDENTITY_HEADERS, membershipMode, stripIdentityHeaders } from '../src/lib/hosted-auth';
 
 let requestHeaders = new Headers();
@@ -90,6 +90,21 @@ describe('resolveTenant through the forwarded identity', () => {
       await resolveTenant(env);
     }
     expect(membershipCacheSize()).toBeLessThanOrEqual(1000);
+  });
+  it("lets a machine client in with the tenant's live ingest token and answers 401 to anything else", async () => {
+    resetTenantCache();
+    const tenant = await ensureTenant(db, 'oleg');
+    await ensureIngestTokens(db, tenant.id, [createHash('sha256').update('zk_machine').digest('hex')]);
+    requestHeaders = new Headers({ authorization: 'Bearer zk_machine' });
+    expect(await resolveTenant(env)).toMatchObject({ id: tenant.id, slug: 'oleg', role: 'member', userId: null });
+    requestHeaders = new Headers({ authorization: 'Bearer zk_wrong', [IDENTITY_HEADERS.userId]: 'user_owner', [IDENTITY_HEADERS.email]: 'owner@example.test' });
+    // A presented bearer decides on its own; a forged identity header beside a bad token does not rescue the request.
+    expect(await resolveTenant(env)).toEqual({ denied: true, reason: 'no-identity', email: null });
+    // requireTenant reads process.env; give it the same membership-mode environment for this call only.
+    const saved = { AI_BILLS_AUTH: process.env.AI_BILLS_AUTH, DATABASE_URL: process.env.DATABASE_URL, AI_BILLS_TENANT: process.env.AI_BILLS_TENANT };
+    Object.assign(process.env, { AI_BILLS_AUTH: 'clerk', DATABASE_URL: 'postgres://mocked', AI_BILLS_TENANT: 'oleg' });
+    try { const { forbidden } = await requireTenant(); expect(forbidden?.status).toBe(401); expect(forbidden?.headers.get('www-authenticate')).toBe('Bearer'); }
+    finally { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
   });
   it('serves one configured tenant when Clerk is off, whoever asks', async () => {
     requestHeaders = new Headers();

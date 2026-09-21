@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { ingestTokens, memberships } from '@/db/schema';
 import { defaultTenant, defaultTenantSlug, ensureTenant, getDb, withTenant, type Db } from './db';
 import { IDENTITY_HEADERS, authMode, authorizeEmail, membershipMode, normalizeEmail, parseEmailList } from './hosted-auth';
+import { bearerDigest } from './snapshot-ingest';
 
 /**
  * Who the request is for. `id` is the tenant row when a database is configured; `null` keeps the
@@ -56,6 +57,12 @@ export async function resolveTenant(env: Record<string, string | undefined> = pr
     return { id: tenant?.id ?? null, slug, role: 'admin', userId: null, email: null };
   }
   const incoming = await headers();
+  const bearer = bearerDigest(incoming.get('authorization'));
+  if (bearer) {
+    // Machine access with the tenant's ingest token: same credential the collector already holds, same tenant it feeds.
+    const tenant = await tenantForIngestDigest(db, bearer).catch(() => null);
+    return tenant ? { id: tenant.id, slug: tenant.slug, role: 'member', userId: null, email: null } : { denied: true, reason: 'no-identity', email: null };
+  }
   const userId = incoming.get(IDENTITY_HEADERS.userId);
   const email = incoming.get(IDENTITY_HEADERS.email);
   if (!userId) return { denied: true, reason: 'no-identity', email };
@@ -71,7 +78,7 @@ export const isDenied = (value: TenantContext | TenantDenied): value is TenantDe
 /** For API routes: the tenant, or the 403 to return. Every non-public route calls this first (tests/tenancy-routes.test.ts enforces it). */
 export async function requireTenant(): Promise<{ tenant: TenantContext; forbidden: null } | { tenant: null; forbidden: NextResponse }> {
   const resolved = await resolveTenant();
-  if (isDenied(resolved)) return { tenant: null, forbidden: NextResponse.json({ error: 'Forbidden', account: resolved.email ?? undefined }, { status: 403, headers: { 'cache-control': 'no-store' } }) };
+  if (isDenied(resolved)) return { tenant: null, forbidden: NextResponse.json({ error: resolved.reason === 'no-identity' ? 'Unauthorized' : 'Forbidden', account: resolved.email ?? undefined }, { status: resolved.reason === 'no-identity' ? 401 : 403, headers: { 'cache-control': 'no-store', ...(resolved.reason === 'no-identity' ? { 'www-authenticate': 'Bearer' } : {}) } }) };
   return { tenant: resolved, forbidden: null };
 }
 
