@@ -26,6 +26,7 @@ import {
   kimiWindow,
   parseCursorUsagePayload,
   parseKimiUsagePayload,
+  kimiCodingUsage,
   scopedModelLimits,
   claudeWindows,
   claudeLimitingWindow,
@@ -45,6 +46,12 @@ resetConfigCache();
 const account = (key: string): AccountConfig => loadConfig().accounts.find((item) => item.key === key)!;
 
 describe('usage helpers', () => {
+  test('reads the kimi.ai total-only answer as the coding quota and still rejects an empty payload', () => {
+    const payload = parseKimiUsagePayload({ totalQuota: { limit: '100', remaining: '96' } });
+    expect(payload.usages).toEqual([{ scope: 'FEATURE_CODING', detail: { limit: 100, used: 4, remaining: 96, resetTime: null }, limits: [] }]);
+    expect(kimiCodingUsage(payload)?.detail.remaining).toBe(96);
+    expect(() => parseKimiUsagePayload({ totalQuota: {} })).toThrow(/missing usages array and total quota/);
+  });
   test('takes utilization as whole percents, without fraction rescaling', () => {
     expect(windowUtilization({ utilization: 42 })).toBe(42);
     // Regression: 1 % used to be rescaled to 100 % by the fraction heuristic.
