@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { sourceHealth } from '@/lib/source-health';
 import { loadConfig } from '@/lib/config';
-import { defaultTenantSlug, ensureTenant, getDb } from '@/lib/db';
+import { defaultTenant, getDb } from '@/lib/db';
 import { readSnapshot, storageMode } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -11,7 +11,7 @@ export async function GET() {
   let snapshot: unknown | undefined;
   if (storageMode() === 'db') {
     const db = getDb();
-    if (db) { try { snapshot = (await readSnapshot(loadConfig(), { id: (await ensureTenant(db, defaultTenantSlug())).id })).body; } catch { snapshot = undefined; } }
+    if (db) { try { snapshot = (await readSnapshot(loadConfig(), { id: (await defaultTenant(db)).id })).body; } catch { snapshot = undefined; } }
   }
   return NextResponse.json(sourceHealth(Date.now(), snapshot), { headers: { 'cache-control': 'no-store' } });
 }

@@ -68,3 +68,15 @@ export async function ensureTenant(database: Db, slug: string, name = slug): Pro
 }
 
 export const defaultTenantSlug = (env: Record<string, string | undefined> = process.env) => (env.AI_BILLS_TENANT || 'default').trim().toLowerCase();
+
+let defaultTenantCache: { slug: string; id: string } | null = null;
+/** The default tenant, ensured once per process: read paths such as the liveness probe must not write on every call. */
+export async function defaultTenant(database: Db, env: Record<string, string | undefined> = process.env): Promise<{ id: string; slug: string }> {
+  const slug = defaultTenantSlug(env);
+  if (defaultTenantCache?.slug === slug) return defaultTenantCache;
+  const tenant = await ensureTenant(database, slug);
+  defaultTenantCache = tenant;
+  return tenant;
+}
+/** Test hook. */
+export const resetDefaultTenantCache = () => { defaultTenantCache = null; };

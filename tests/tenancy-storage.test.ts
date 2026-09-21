@@ -116,6 +116,12 @@ describe('operator context', () => {
     await storeSnapshot(db, b.id, JSON.stringify({ generated: '2026-09-21T11:01:30Z', claude_usage: { 'b@example.test': { ...obs, ok: false, status: 429, error: 'rate limited' } } }), '2026-09-21T11:01:30Z');
     const overview = await operatorOverview(db, new Date('2026-09-21T11:05:00Z'));
     const rows = new Map(overview.tenants.map(row => [row.slug, row]));
+    // memberships and ingest_tokens are readable without a context by policy (0001_rls); the counts must come through.
+    await withTenant(db, a.id, tx => tx.insert(schema.memberships).values({ tenantId: a.id, clerkUserId: 'user_op_a', email: 'a@example.test', role: 'admin' }));
+    await withTenant(db, a.id, tx => tx.insert(schema.ingestTokens).values([{ tenantId: a.id, sha256: 'a'.repeat(64), label: 'live' }, { tenantId: a.id, sha256: 'b'.repeat(64), label: 'old', revokedAt: new Date() }]));
+    const counted = new Map((await operatorOverview(db, new Date('2026-09-21T11:05:00Z'))).tenants.map(row => [row.slug, row]));
+    expect(counted.get('op-a')).toMatchObject({ members: 1, liveTokens: 1 });
+    expect(counted.get('op-b')).toMatchObject({ members: 0, liveTokens: 0 });
     expect(rows.get('op-a')).toMatchObject({ snapshots: 1, sources: [{ provider: 'claude', accountKey: 'a@example.test', ok: true }] });
     expect(rows.get('op-b')).toMatchObject({ snapshots: 1, sources: [{ provider: 'claude', accountKey: 'b@example.test', ok: false, status: 429, error: 'rate limited' }] });
     // The operator context is read-only: a write under it is still refused by the tenant policies.
