@@ -5,10 +5,15 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { schema, memberships, ingestTokens } from '../src/db/schema';
 import { APP_ROLE, MIGRATIONS_FOLDER, ensureTenant, withTenant, type Db } from '../src/lib/db';
-import { ensureIngestTokens, isDenied, membershipFor, tenantForIngestDigest } from '../src/lib/tenant';
+import { ensureIngestTokens, isDenied, membershipCacheSize, membershipFor, resetTenantCache, resolveTenant, tenantForIngestDigest } from '../src/lib/tenant';
 import { IDENTITY_HEADERS, membershipMode, stripIdentityHeaders } from '../src/lib/hosted-auth';
 
-vi.mock('next/headers', () => ({ headers: async () => new Headers() }));
+let requestHeaders = new Headers();
+vi.mock('next/headers', () => ({ headers: async () => requestHeaders }));
+vi.mock('../src/lib/db', async importOriginal => {
+  const original = await importOriginal<typeof import('../src/lib/db')>();
+  return { ...original, getDb: () => db };
+});
 
 let pg: PGlite; let db: Db;
 beforeAll(async () => {
@@ -69,6 +74,26 @@ describe('membership decides the tenant', () => {
   it('keeps an empty allow list open, as the allow list always did', async () => {
     const open = await membershipFor(db, 'user_open', 'anyone@example.test', { AI_BILLS_TENANT: 'oleg' });
     expect(open).toMatchObject({ slug: 'oleg', role: 'member' });
+  });
+});
+
+describe('resolveTenant through the forwarded identity', () => {
+  const env = { AI_BILLS_AUTH: 'clerk', DATABASE_URL: 'postgres://mocked', AI_BILLS_TENANT: 'oleg', AI_BILLS_ALLOWED_EMAILS: 'owner@example.test' };
+  it('reads the identity the middleware forwarded, caches per user and keeps the cache bounded', async () => {
+    resetTenantCache();
+    requestHeaders = new Headers({ [IDENTITY_HEADERS.userId]: 'user_owner', [IDENTITY_HEADERS.email]: 'owner@example.test' });
+    expect(await resolveTenant(env)).toMatchObject({ slug: 'oleg', userId: 'user_owner' });
+    requestHeaders = new Headers();
+    expect(await resolveTenant(env)).toEqual({ denied: true, reason: 'no-identity', email: null });
+    for (let i = 0; i < 1200; i++) {
+      requestHeaders = new Headers({ [IDENTITY_HEADERS.userId]: `user_bulk_${i}`, [IDENTITY_HEADERS.email]: `bulk${i}@example.test` });
+      await resolveTenant(env);
+    }
+    expect(membershipCacheSize()).toBeLessThanOrEqual(1000);
+  });
+  it('serves one configured tenant when Clerk is off, whoever asks', async () => {
+    requestHeaders = new Headers();
+    expect(await resolveTenant({ AI_BILLS_TENANT: 'oleg', DATABASE_URL: 'postgres://mocked' })).toMatchObject({ slug: 'oleg', role: 'admin', userId: null });
   });
 });
 

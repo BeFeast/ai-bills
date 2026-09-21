@@ -13,9 +13,19 @@ export type TenantContext = { id: string | null; slug: string; role: 'admin' | '
 export type TenantDenied = { denied: true; reason: 'no-identity' | 'not-a-member'; email: string | null };
 
 const MEMBERSHIP_TTL_MS = 60_000;
+/** Above this many distinct users in one TTL window the oldest entries go first; the map never grows past it. */
+const MEMBERSHIP_CACHE_MAX = 1000;
 const membershipCache = new Map<string, { at: number; value: TenantContext | TenantDenied }>();
 /** Test hook. */
 export const resetTenantCache = () => membershipCache.clear();
+export const membershipCacheSize = () => membershipCache.size;
+/** Insert order is age order (a re-cached user is deleted first), so expiry and the size cap both walk from the front. */
+function rememberMembership(userId: string, value: TenantContext | TenantDenied, now = Date.now()) {
+  for (const [key, entry] of membershipCache) { if (now - entry.at >= MEMBERSHIP_TTL_MS) membershipCache.delete(key); else break; }
+  membershipCache.delete(userId);
+  membershipCache.set(userId, { at: now, value });
+  while (membershipCache.size > MEMBERSHIP_CACHE_MAX) membershipCache.delete(membershipCache.keys().next().value!);
+}
 
 /**
  * Membership for a Clerk user: the row in `memberships`, or — for an address the instance's allow
@@ -52,7 +62,7 @@ export async function resolveTenant(env: Record<string, string | undefined> = pr
   const cached = membershipCache.get(userId);
   if (cached && Date.now() - cached.at < MEMBERSHIP_TTL_MS) return cached.value;
   const value = await membershipFor(db, userId, email, env);
-  membershipCache.set(userId, { at: Date.now(), value });
+  rememberMembership(userId, value);
   return value;
 }
 
