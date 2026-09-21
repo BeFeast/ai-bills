@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, open, readFile, rmdir, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { resolveSecret } from './infisical';
 import type { SecretRef } from './config';
 
@@ -61,35 +60,6 @@ export async function readFinancialJournal(path: string): Promise<FinancialRecor
   return deduplicateRecords(text.split('\n').filter(Boolean).map(line => {
     const raw = JSON.parse(line); return validateRecord(raw, typeof raw.observedAt === 'string' ? raw.observedAt : new Date(0).toISOString());
   }));
-}
-
-/** Cross-process exclusive lock; never reclaim an uncertain owner automatically. */
-export async function appendFinancialRecords(path: string, inputs: unknown[]): Promise<{ inserted: number; duplicates: number }> {
-  if (!inputs.length || inputs.length > 1000) throw new AccountingInputError('Import must contain 1–1000 records');
-  const now = new Date().toISOString();
-  const requested = inputs.map(row => validateRecord(row, now));
-  const unique = deduplicateRecords(requested);
-  await mkdir(dirname(path), { recursive: true });
-  const lock = `${path}.lock`;
-  let acquired = false;
-  for (let n = 0; n < 50; n++) {
-    try { await mkdir(lock); acquired = true; break; } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-  }
-  if (!acquired) throw new AccountingConflictError('Accounting journal is busy; retry after the writer completes');
-  try {
-    const existing = await readFinancialJournal(path);
-    const combined = deduplicateRecords([...existing, ...unique]);
-    const known = new Set(existing.map(row => row.id));
-    const added = combined.filter(row => !known.has(row.id));
-    if (added.length) {
-      const file = await open(path, 'a', 0o600);
-      try { await file.writeFile(added.map(row => JSON.stringify(row)).join('\n') + '\n'); await file.sync(); } finally { await file.close(); }
-    }
-    return { inserted: added.length, duplicates: requested.length - added.length };
-  } finally { await rmdir(lock); }
 }
 
 export function freshness(id: string, observedAt: string | null, maxAgeSeconds = 300, now = Date.now()): Freshness {
@@ -177,11 +147,7 @@ export async function accountingOverview(config: AccountingConfig = {}, month = 
     journal = journalInput.records;
     coverage.push({ id: 'manual-journal', status: 'fresh', observedAt: journalInput.observedAt, maxAgeSeconds: 0, message: 'Journal readable; entries are not proof of complete provider history' });
   } else if (config.journal_path) {
-    try {
-      journal = await readFinancialJournal(config.journal_path);
-      const observedAt = (await stat(config.journal_path)).mtime.toISOString();
-      coverage.push({ id: 'manual-journal', status: 'fresh', observedAt, maxAgeSeconds: 0, message: 'Journal readable; entries are not proof of complete provider history' });
-    } catch (error) { coverage.push({ id: 'manual-journal', status: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'error', observedAt: null, maxAgeSeconds: 0, message: 'Journal unavailable or invalid' }); }
+    coverage.push({ id: 'manual-journal', status: 'missing', observedAt: null, maxAgeSeconds: 0, message: 'Journal is kept in the database; none was read for this tenant' });
   }
   const collected = [...journal, ...results.flatMap(result => result.records)];
   let records: FinancialRecord[];

@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs';
 import WebSocket from 'ws';
 import { readCodexAccessToken, refreshCodexAuth } from './codex-auth';
-import { loadConfig } from './config';
 import { acquireBrowserLease, releaseBrowserLease, type BrowserLease } from './browser-lease';
 import {
   CdpStartupBudget,
@@ -571,11 +569,8 @@ function snapshotObservationFields(entry: SnapshotQuotaEntry<unknown>): Pick<Pro
     error: entry.direct?.error || 'The direct quota request failed', attemptedAt: entry.direct?.attempted_at || null } };
 }
 
-/** The snapshot handed in by the caller, or the file when none was. */
-function snapshotBody(provided: unknown): unknown {
-  if (provided !== undefined) return provided;
-  return JSON.parse(readFileSync(loadConfig().billing.snapshot_path, 'utf8'));
-}
+/** The snapshot handed in by the caller (the tenant's newest stored one); nothing else is read here. */
+const snapshotBody = (provided: unknown): unknown => provided ?? {};
 
 function fetchClaudeFromSnapshot(account: ProviderConfig, provided?: unknown): ProviderUsage {
   const fetchedAt = ""; // Missing observation time is unknown, never a fresh fetch.

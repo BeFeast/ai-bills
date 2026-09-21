@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest';
-vi.mock('../src/lib/config', () => ({ loadConfig: () => ({ accounts: [{ key: 'browser', provider: 'kimi' }], accounting: { declared_accounts: [{ id: 'meta', provider: 'meta' }] } }) }));
+vi.mock('../src/lib/config', () => ({ tenantAccounts: (config: { accounts: unknown[] }) => config.accounts, loadConfig: () => ({ accounts: [{ key: 'browser', provider: 'kimi' }], accounting: { declared_accounts: [{ id: 'meta', provider: 'meta' }] } }) }));
 import { sourceHealth } from '../src/lib/source-health';
 import { rememberUsageObservations } from '../src/lib/usage-observations';
 afterEach(() => rememberUsageObservations([]));

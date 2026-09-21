@@ -1,16 +1,7 @@
-import { mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { accountsFromSnapshot, loadConfig, resetConfigCache } from '@/lib/config';
+import { describe, expect, it } from 'vitest';
+import { accountsFromSnapshot, tenantAccounts } from '@/lib/config';
 
-const dir = mkdtempSync(join(tmpdir(), 'zecori-config-'));
-const snapshotPath = join(dir, 'snapshot.json');
-const configPath = join(dir, 'config.toml');
 const collector = (accounts: unknown[]) => JSON.stringify({ generated: '2026-09-19T09:00:00Z', collector: { kind: 'zecori-collect', accounts } });
-function writeSnapshot(body: string, seconds: number) { writeFileSync(snapshotPath, body); utimesSync(snapshotPath, seconds, seconds); }
-
-afterEach(() => resetConfigCache());
 
 describe('accountsFromSnapshot', () => {
   it('accepts claude and codex rows with a valid address, once each, and ignores the rest', () => {
@@ -27,21 +18,17 @@ describe('accountsFromSnapshot', () => {
   });
 });
 
-describe('loadConfig without declared accounts', () => {
-  it('takes the accounts from the snapshot and follows the file as it changes', () => {
-    writeFileSync(configPath, `[billing]\nsnapshot_path = "${snapshotPath}"\n`);
-    writeSnapshot(collector([{ type: 'codex', email: 'dev@example.com' }]), 1_700_000_000);
-    expect(loadConfig(configPath).accounts.map(a => a.key)).toEqual(['codex-dev@example.com']);
-    writeSnapshot(collector([{ type: 'codex', email: 'dev@example.com' }, { type: 'claude', email: 'dev@example.com' }]), 1_700_000_060);
-    expect(loadConfig(configPath).accounts.map(a => a.key)).toEqual(['codex-dev@example.com', 'claude-dev@example.com']);
-    // An unreadable or malformed snapshot yields no accounts rather than a crash.
-    writeSnapshot('{not json', 1_700_000_120);
-    expect(loadConfig(configPath).accounts).toEqual([]);
+describe('tenantAccounts', () => {
+  const config = (accounts: unknown[] = []) => ({ accounts } as unknown as import('@/lib/config').AppConfig);
+  it('takes the accounts from the tenant snapshot when the operator declared none, and follows each delivery', () => {
+    expect(tenantAccounts(config(), JSON.parse(collector([{ type: 'codex', email: 'dev@example.com' }]))).map(a => a.key)).toEqual(['codex-dev@example.com']);
+    expect(tenantAccounts(config(), JSON.parse(collector([{ type: 'codex', email: 'dev@example.com' }, { type: 'claude', email: 'dev@example.com' }]))).map(a => a.key)).toEqual(['codex-dev@example.com', 'claude-dev@example.com']);
+    // An empty or malformed snapshot yields no accounts rather than a crash.
+    expect(tenantAccounts(config(), {})).toEqual([]);
+    expect(tenantAccounts(config(), null)).toEqual([]);
   });
-
   it('never overrides accounts the operator declared', () => {
-    writeFileSync(configPath, `[[accounts]]\nkey = "work"\nprovider = "claude"\nlabel = "Work"\nemail = "ops@example.com"\n\n[billing]\nsnapshot_path = "${snapshotPath}"\n`);
-    writeSnapshot(collector([{ type: 'codex', email: 'dev@example.com' }]), 1_700_000_200);
-    expect(loadConfig(configPath).accounts.map(a => a.key)).toEqual(['work']);
+    const declared = [{ key: 'work', provider: 'claude', label: 'Work', email: 'ops@example.com' }];
+    expect(tenantAccounts(config(declared), JSON.parse(collector([{ type: 'codex', email: 'dev@example.com' }]))).map(a => a.key)).toEqual(['work']);
   });
 });

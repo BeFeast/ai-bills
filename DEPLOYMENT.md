@@ -33,7 +33,7 @@ run. A successful health response does not prove snapshot/card freshness or comp
 `/api/health` reports each collector-observed quota source at the observation time recorded in
 the snapshot itself, so an instance nobody is looking at still reports honestly; a source ageing
 past ten minutes is a collector or delivery problem, not an idle dashboard. The quota cards read
-the snapshot again whenever the file on disk changes, within the configured refresh interval.
+the snapshot again whenever a newer one is stored, within the configured refresh interval.
 
 Rollback source independently from append-only records. Do not restore old OAuth tokens
 blindly or run a second collector against the same consumptive queue.
@@ -75,30 +75,22 @@ Machine clients (the collector's browser-quota refresh, `ai-browser-refresh`) ca
 on the collector host); with a database the token names the tenant, without one there is no
 sign-in to pass.
 
-## Database (tenancy phase 1)
+## Database
 
-The instance can run with a Postgres database beside the snapshot file
-(spec: `Dev/Areas/ai-bills/specs/2026-09-21-multi-tenancy.md`). Set `DATABASE_URL`
-(application role `zecori_app`, no BYPASSRLS) and optionally `DATABASE_ADMIN_URL` (table
-owner) and the instance applies the SQL migrations in `drizzle/` at boot, creates the default
-tenant (`AI_BILLS_TENANT`, default `default`) and, on every `PUT /api/snapshot`, stores the
-snapshot body and its quota observations for that tenant in addition to writing the file. The
-file remains what the dashboard reads in this phase; the ingest response reports
-`stored.database` as `stored`, `disabled` (no `DATABASE_URL`) or `failed` (logged, ingest still
-succeeds). Every tenant table is under row-level security keyed by `app.tenant_id`, which the
-application sets per transaction; a connection without a tenant context sees no tenant data.
-Without `DATABASE_URL` nothing changes. Retention: the last 48 snapshot bodies per tenant;
-observations are kept.
+The instance keeps its state in Postgres (spec: `Dev/Areas/ai-bills/specs/2026-09-21-multi-tenancy.md`).
+`DATABASE_URL` (application role `zecori_app`, no BYPASSRLS) is required; `DATABASE_ADMIN_URL`
+(table owner) is used at boot to apply the SQL migrations in `drizzle/`. Every tenant table is
+under row-level security keyed by `app.tenant_id`, set per transaction; a connection without a
+tenant context sees no tenant data. The instance's default tenant is `AI_BILLS_TENANT` (default
+`default`); ingest digests from `AI_BILLS_INGEST_TOKEN_SHA256` become that tenant's rows at boot.
 
-**Reading from the database (phase 3)** is switched with `AI_BILLS_STORAGE=db`. Every reader —
-usage cards, accounts, overview, accounting, alerts, billing history, the usage export — then
-reads the requesting tenant's rows (`snapshots`, `journal_records`, `subscription_overrides`,
-`history_points`) instead of the files; the collector's file is still written, so setting the
-variable back to `file` (or unsetting it) restores the previous behaviour without a deploy. At
-the first boot in `db` mode the operator-entered files are imported once for the default tenant
-while their tables are empty: the accounting journal (`accounting.journal_path`) and
-`subscription-overrides.json`; balance history and alert state start fresh. `/api/health`
-reports the default tenant's snapshot in this mode.
+`PUT /api/snapshot` stores the snapshot body (the last 48 per tenant) and one row per quota
+observation (kept), for the tenant the token names. Every reader — usage cards, accounts, overview,
+accounting, alerts, billing history, the usage export — reads the requesting tenant's rows; there
+is no snapshot file, journal file, overrides file or history file any more. The first boot against
+a database that still has an operator-entered `accounting.journal_path` file or a
+`subscription-overrides.json` beside it imports them once for the default tenant while their tables
+are empty. `/api/health` reports the default tenant's snapshot.
 
 The platform operator — addresses in `AI_BILLS_OPERATOR_EMAILS`, or the single admin of a
 non-Clerk instance — gets `/operator` and `GET /api/operator`: every tenant with ingest

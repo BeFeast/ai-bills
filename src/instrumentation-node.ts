@@ -3,7 +3,7 @@ import { loadConfig } from '@/lib/config';
 import { defaultTenantSlug, ensureTenant, getDb, runMigrations, type Db } from '@/lib/db';
 import { readFinancialJournal } from '@/lib/accounting';
 import { parseTokenDigests } from '@/lib/snapshot-ingest';
-import { dbJournalStore, dbOverridesStore, storageMode } from '@/lib/storage';
+import { dbJournalStore, dbOverridesStore } from '@/lib/storage';
 import { subscriptionOverridesPath } from '@/lib/subscription-overrides';
 import { ensureIngestTokens } from '@/lib/tenant';
 
@@ -23,7 +23,7 @@ export async function initialiseDatabase(): Promise<void> {
     if (db) {
       const tenant = await ensureTenant(db, defaultTenantSlug());
       const adopted = await ensureIngestTokens(db, tenant.id, parseTokenDigests(process.env.AI_BILLS_INGEST_TOKEN_SHA256));
-      const imported = storageMode() === 'db' ? await importFilesOnce(db, tenant.id) : '';
+      const imported = await importFilesOnce(db, tenant.id);
       console.info(`[zecori] database ready; default tenant ${tenant.slug} (${tenant.id})${adopted ? `; ${adopted} ingest token(s) adopted from the environment` : ''}${imported}`);
     }
   } catch (error) {

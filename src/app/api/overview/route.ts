@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { productOverview } from '@/lib/overview';
 import { loadConfig } from '@/lib/config';
 import { hasAllowedOrigin } from '@/lib/request-origin';
-import { saveSubscriptionOverride, SubscriptionInputError, SubscriptionBusyError } from '@/lib/subscription-overrides';
+import { saveSubscriptionOverride, SubscriptionInputError, SubscriptionBusyError, SubscriptionStoreError } from '@/lib/subscription-overrides';
 import { requireTenant } from '@/lib/tenant';
 import { overridesStoreFor } from '@/lib/storage';
 export const runtime = 'nodejs';
@@ -24,6 +24,7 @@ export async function PATCH(request: Request) {
   } catch (error) {
     const input = error instanceof SubscriptionInputError || error instanceof SyntaxError;
     const conflict = error instanceof SubscriptionBusyError;
-    return NextResponse.json({ error: input || conflict ? (error as Error).message : 'Subscription update could not be saved' }, { status: input ? 400 : conflict ? 409 : 503, headers });
+    const unconfigured = error instanceof SubscriptionStoreError;
+    return NextResponse.json({ error: input || conflict || unconfigured ? (error as Error).message : 'Subscription update could not be saved' }, { status: input ? 400 : conflict ? 409 : 503, headers });
   }
 }

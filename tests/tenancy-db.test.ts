@@ -48,10 +48,11 @@ describe('tenancy database', () => {
 
   it('stores a snapshot with its observations, deduplicates unchanged observations and prunes to the retention', async () => {
     const tenant = await ensureTenant(db, 'store-test');
-    const first = await storeSnapshot(db, tenant.id, snapshot('2026-09-21T08:35:30Z', '2026-09-21T08:35:04+00:00'), '2026-09-21T08:35:30Z');
+    // Receipt times are fixed so the ordering assertions below do not depend on the wall clock.
+    const first = await storeSnapshot(db, tenant.id, snapshot('2026-09-21T08:35:30Z', '2026-09-21T08:35:04+00:00'), '2026-09-21T08:35:30Z', new Date('2026-09-21T08:35:31Z'));
     expect(first.observations).toBe(1);
     // The collector re-sends an unchanged observation with the next snapshot: same observation time, nothing new to record.
-    const second = await storeSnapshot(db, tenant.id, snapshot('2026-09-21T08:40:30Z', '2026-09-21T08:35:04+00:00'), '2026-09-21T08:40:30Z');
+    const second = await storeSnapshot(db, tenant.id, snapshot('2026-09-21T08:40:30Z', '2026-09-21T08:35:04+00:00'), '2026-09-21T08:40:30Z', new Date('2026-09-21T08:40:31Z'));
     expect(second.observations).toBe(0);
     expect(await countSnapshots(db, tenant.id)).toBe(2);
     for (let i = 0; i < SNAPSHOT_RETENTION + 3; i++) {

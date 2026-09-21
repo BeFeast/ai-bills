@@ -1,8 +1,24 @@
-import { afterEach, describe, expect, test } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { accountingOverview, appendFinancialRecords, currentMonth, freshness, opaqueId, readFinancialSource, validateRecord } from '../src/lib/accounting';
+import { PGlite } from '@electric-sql/pglite';
+import { drizzle } from 'drizzle-orm/pglite';
+import { migrate } from 'drizzle-orm/pglite/migrator';
+import { schema } from '../src/db/schema';
+import { APP_ROLE, MIGRATIONS_FOLDER, ensureTenant, type Db } from '../src/lib/db';
+import { dbJournalStore, type JournalStore } from '../src/lib/storage';
+import { accountingOverview, appendFinancialRecordsTo, currentMonth, freshness, journalRecordsFromRows, opaqueId, readFinancialSource, validateRecord } from '../src/lib/accounting';
+
+// The registry reads the tenant snapshot through the storage layer; here it is whatever the test last set.
+let registrySnapshot: unknown = {};
+vi.mock('../src/lib/storage', async importOriginal => ({ ...(await importOriginal<typeof import('../src/lib/storage')>()), readSnapshot: async () => ({ body: registrySnapshot, version: 'test' }) }));
+let pg: PGlite; let db: Db; let journalNo = 0;
+beforeAll(async () => { pg = new PGlite(); const owner = drizzle(pg, { schema }); await migrate(owner, { migrationsFolder: MIGRATIONS_FOLDER }); await pg.exec(`SET ROLE ${APP_ROLE}`); db = owner as unknown as Db; }, 60_000);
+afterAll(async () => { await pg.close(); });
+/** A fresh tenant's journal store, and the overview input built from it. */
+async function journal(): Promise<JournalStore> { return dbJournalStore(db, (await ensureTenant(db, `journal-${++journalNo}`)).id); }
+async function overviewOf(store: JournalStore, config: Parameters<typeof accountingOverview>[0], month: string) { const read = await store.read(); return accountingOverview(config, month, { records: journalRecordsFromRows(read.rows), observedAt: read.observedAt }); }
 import { accountRegistry, discoverConfiguredAccounts } from '../src/lib/accounts';
 import { loadConfig, resetConfigCache } from '../src/lib/config';
 const directories: string[] = [];
@@ -12,26 +28,26 @@ const record = { sourceId: 'invoice', sourceRecordId: 'payment-1', accountId: 't
 
 describe('financial journal', () => {
   test('concurrent imports are durable and idempotent; conflicting corrections never overwrite', async () => {
-    const path = join(await directory(), 'payments.jsonl');
-    const results = await Promise.all([appendFinancialRecords(path, [record]), appendFinancialRecords(path, [record])]);
+    const store = await journal();
+    const results = await Promise.all([appendFinancialRecordsTo(store, [record]), appendFinancialRecordsTo(store, [record])]);
     expect(results.reduce((n, r) => n + r.inserted, 0)).toBe(1);
-    const before = await readFile(path, 'utf8');
-    await expect(appendFinancialRecords(path, [{ ...record, amount: 30 }])).rejects.toThrow('Conflicting');
-    expect(await readFile(path, 'utf8')).toBe(before);
+    const before = journalRecordsFromRows((await store.read()).rows);
+    await expect(appendFinancialRecordsTo(store, [{ ...record, amount: 30 }])).rejects.toThrow('Conflicting');
+    expect(journalRecordsFromRows((await store.read()).rows)).toEqual(before);
   });
   test('payments, accruals and estimates stay separate and foreign currency is not silently converted', async () => {
-    const path = join(await directory(), 'payments.jsonl');
-    await appendFinancialRecords(path, [record, { ...record, sourceRecordId: 'usage-1', kind: 'accrual', amount: 4 }, { ...record, sourceRecordId: 'equivalent-1', kind: 'api-equivalent', amount: 100 }, { ...record, sourceRecordId: 'eur', currency: 'EUR', amount: 50 }]);
-    const view = await accountingOverview({ journal_path: path }, '2026-09');
+    const store = await journal();
+    await appendFinancialRecordsTo(store, [record, { ...record, sourceRecordId: 'usage-1', kind: 'accrual', amount: 4 }, { ...record, sourceRecordId: 'equivalent-1', kind: 'api-equivalent', amount: 100 }, { ...record, sourceRecordId: 'eur', currency: 'EUR', amount: 50 }]);
+    const view = await overviewOf(store, {}, '2026-09');
     expect([view.paymentsUsd, view.accruedUsd, view.apiEquivalentUsd]).toEqual([20, 4, 100]);
     expect(view.complete).toBe(false);
     expect(view.diagnostics.join(' ')).toContain('EUR');
-    expect((await accountingOverview({ journal_path: path }, '2026-08')).paymentsUsd).toBeNull();
+    expect((await overviewOf(store, {}, '2026-08')).paymentsUsd).toBeNull();
   });
   test('declared conversion rates bring foreign records into the USD totals; undeclared ones stay out', async () => {
-    const path = join(await directory(), 'payments.jsonl');
-    await appendFinancialRecords(path, [record, { ...record, sourceRecordId: 'eur-1', amount: 10, currency: 'EUR' }, { ...record, sourceRecordId: 'gbp-1', amount: 10, currency: 'GBP' }]);
-    const view = await accountingOverview({ journal_path: path, fx_rates: [{ currency: 'EUR', rate_to_usd: 1.1, as_of: '2026-09-01' }, { currency: 'USD', rate_to_usd: 2, as_of: '2026-09-01' }, { currency: 'GBP', rate_to_usd: -1, as_of: '2026-09-01' }] }, '2026-09');
+    const store = await journal();
+    await appendFinancialRecordsTo(store, [record, { ...record, sourceRecordId: 'eur-1', amount: 10, currency: 'EUR' }, { ...record, sourceRecordId: 'gbp-1', amount: 10, currency: 'GBP' }]);
+    const view = await overviewOf(store, { fx_rates: [{ currency: 'EUR', rate_to_usd: 1.1, as_of: '2026-09-01' }, { currency: 'USD', rate_to_usd: 2, as_of: '2026-09-01' }, { currency: 'GBP', rate_to_usd: -1, as_of: '2026-09-01' }] }, '2026-09');
     expect(view.paymentsUsd).toBeCloseTo(31, 6);
     expect(view.diagnostics.find(d => d.startsWith('Converted'))).toContain('EUR 1.1 (as of 2026-09-01)');
     expect(view.diagnostics.find(d => d.startsWith('Not included'))).toContain('GBP');
@@ -81,19 +97,17 @@ describe('source adapters and inventory', () => {
       { id: 'openrouter-main', provider: 'openrouter', label: 'OpenRouter main' },
       { id: 'openrouter-other', provider: 'openrouter', label: 'Other OpenRouter account' },
     ] };
-    config.billing.snapshot_path = join(await directory(), 'snapshot.json');
     const observedAt = new Date().toISOString();
-    await writeFile(config.billing.snapshot_path, JSON.stringify({ openrouter: {
+    registrySnapshot = { openrouter: {
       credits: { ok: true, observedAt, balanceUsd: 10, totalUsageUsd: 1 },
       key: { ok: true, observedAt, usageUsd: 0, limitUsd: null },
-    } }));
-    let view = await accountRegistry(config);
+    } };
+    let view = await accountRegistry(config, { id: 'registry-test' });
     expect(view.accounts.find(row => row.label === 'OpenRouter main')?.proxyConfigured).toBe(false);
-    const snapshot = JSON.parse(await readFile(config.billing.snapshot_path, 'utf8'));
+    const snapshot = registrySnapshot as Record<string, unknown>;
     snapshot.account_registry = { generatedAt: observedAt, accounts: [{ id: 'a'.repeat(24), provider: 'OpenRouter', label: 'Proxy credential', origin: 'configured' }] };
-    await writeFile(config.billing.snapshot_path, JSON.stringify(snapshot));
     config.accounting.account_bindings = [{ id: opaqueId('declared:openrouter-main'), members: [opaqueId('declared:openrouter-main'), 'a'.repeat(24)], label: 'OpenRouter main' }];
-    view = await accountRegistry(config);
+    view = await accountRegistry(config, { id: 'registry-test' });
     expect(view.accounts.find(row => row.funds)?.proxyConfigured).toBe(true);
     expect(view.accounts.find(row => row.funds)?.routingEnrolled).not.toBe(true);
     expect(view.accounts.find(row => row.label === 'OpenRouter main')?.funds?.accountBalance.usd).toBe(10);
@@ -101,23 +115,21 @@ describe('source adapters and inventory', () => {
     expect(view.sources.find(row => row.id === 'openrouter-key-usage')?.status).toBe('fresh');
   });
   test('remote sanitized collector inventory works without access to the OAuth directory', async () => {
-    const path = join(await directory(), 'snapshot.json');
-    await writeFile(path, JSON.stringify({ account_registry: { generatedAt: '2020-01-01T00:00:00Z', accounts: [{ id: 'a'.repeat(24), provider: 'test', label: 'Remote OAuth', origin: 'oauth', access_token: 'never-output', routingEnrolled: true }], sources: [] } }));
-    const config = loadConfig('tests/fixtures/accounts.toml'); config.billing.snapshot_path = path;
-    const view = await accountRegistry(config);
+    registrySnapshot = { account_registry: { generatedAt: '2020-01-01T00:00:00Z', accounts: [{ id: 'a'.repeat(24), provider: 'test', label: 'Remote OAuth', origin: 'oauth', access_token: 'never-output', routingEnrolled: true }], sources: [] } };
+    const config = loadConfig('tests/fixtures/accounts.toml');
+    const view = await accountRegistry(config, { id: 'registry-test' });
     expect(view.accounts.some(row => row.label === 'Remote OAuth' && !row.routingEnrolled)).toBe(true);
     expect(view.sources.find(row => row.id === 'collector-account-registry')?.status).toBe('stale');
     expect(JSON.stringify(view)).not.toContain('never-output');
   });
   test('proxy credential state attaches to OAuth and upstream-key inventory rows without inference', async () => {
-    const path = join(await directory(), 'snapshot.json');
     const oauthId = 'b'.repeat(24); const keyId = 'c'.repeat(24);
-    await writeFile(path, JSON.stringify({ generated: '2026-09-13T08:00:00Z', account_registry: { generatedAt: new Date().toISOString(), accounts: [
+    registrySnapshot = { generated: '2026-09-13T08:00:00Z', account_registry: { generatedAt: new Date().toISOString(), accounts: [
       { id: oauthId, provider: 'xai', label: 'xai OAuth', origin: 'oauth' }, { id: keyId, provider: 'OpenCode Go', label: 'OpenCode Go API 1', origin: 'configured' }], sources: [] },
       proxy_auths: [{ provider: 'xai', email: 'x@example.test', status: 'active', today_success: 5, today_failed: 1 }, { provider: 'claude', email: 'a@example.test', status: 'active', today_success: 9, today_failed: 0 }],
-      proxy_usage: [{ upstream: 'opencode go', success: 3, failed: 2, last_hour: 1 }] }));
-    const config = loadConfig('tests/fixtures/accounts.toml'); config.billing.snapshot_path = path;
-    const view = await accountRegistry(config);
+      proxy_usage: [{ upstream: 'opencode go', success: 3, failed: 2, last_hour: 1 }] };
+    const config = loadConfig('tests/fixtures/accounts.toml');
+    const view = await accountRegistry(config, { id: 'registry-test' });
     expect(view.accounts.find(row => row.id === oauthId)?.proxyCredential).toMatchObject({ kind: 'oauth', status: 'active', successToday: 5, failedToday: 1, email: 'x@example.test', observedAt: '2026-09-13T08:00:00Z' });
     expect(view.accounts.find(row => row.id === keyId)?.proxyCredential).toMatchObject({ kind: 'upstream-key', successToday: 3, failedToday: 2 });
     expect(view.accounts.filter(row => row.origin === 'declared' || row.origin === 'external').every(row => !row.proxyCredential)).toBe(true);

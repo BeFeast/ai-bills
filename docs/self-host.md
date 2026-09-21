@@ -21,9 +21,9 @@ proxy credentials, providers without a usage API. The dashboard says so instead 
 
 ```bash
 git clone https://git.oklabs.uk/BeFeast/ai-bills.git zecori && cd zecori/deploy/selfhost
-./new-token.sh                     # prints ZECORI_INGEST_TOKEN=… and AI_BILLS_INGEST_TOKEN_SHA256=…
-cp .env.example .env               # paste the SHA-256 line into .env
-mkdir -p data && docker compose up -d --build
+./new-token.sh                     # prints ZECORI_INGEST_TOKEN=… plus the three lines .env needs
+cp .env.example .env               # paste AI_BILLS_INGEST_TOKEN_SHA256 and the two POSTGRES_* lines into .env
+docker compose up -d --build       # dashboard + its Postgres; migrations run at boot
 curl -fsS http://127.0.0.1:13180/api/health
 ```
 
@@ -65,5 +65,6 @@ use `https`. Options (timezone, pricing, subscriptions file, OpenRouter key, ale
 cd zecori && git pull && cd deploy/selfhost && docker compose up -d --build
 ```
 
-The state directory (`~/.local/state/zecori`) and `deploy/selfhost/data/` hold the ledger and the
-snapshot; both survive updates. Neither is read by git.
+The collector's state directory (`~/.local/state/zecori`) holds the ledger; `deploy/selfhost/data/postgres`
+holds the dashboard's database (snapshots, quota history, accounting, edits). Both survive updates;
+neither is read by git. Back the database up with `docker compose exec db pg_dump -U zecori zecori`.

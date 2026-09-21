@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { parse } from 'smol-toml';
 import type { AccountingConfig } from './accounting';
 import type { SubscriptionConfig } from './overview';
@@ -47,10 +47,8 @@ export type AppConfig = {
     environment: string;
   };
   secrets: Record<string, SecretRef>;
-  billing: {
-    snapshot_path: string;
-    history_path: string;
-  };
+  /** Legacy block: tolerated in existing config files, no longer read (tenancy phase 5 — the database is the store). */
+  billing: Record<string, unknown>;
   accounts: AccountConfig[];
   accounting?: AccountingConfig;
   subscriptions?: SubscriptionConfig[];
@@ -72,10 +70,7 @@ const DEFAULTS: AppConfig = {
     environment: 'prod',
   },
   secrets: {},
-  billing: {
-    snapshot_path: '/data/snapshot.json',
-    history_path: '/data/history.jsonl',
-  },
+  billing: {},
   accounts: [],
 };
 
@@ -106,22 +101,13 @@ export function accountsFromSnapshot(snapshot: unknown): AccountConfig[] {
   return result;
 }
 
-let derived: { path: string; mtimeMs: number; accounts: AccountConfig[] } | null = null;
-/** Re-read the declared accounts only when the snapshot file changes; a stat per call is the whole cost. */
-function deriveAccounts(snapshotPath: string): AccountConfig[] {
-  let mtimeMs: number;
-  try { mtimeMs = statSync(snapshotPath).mtimeMs; } catch { return []; }
-  if (derived && derived.path === snapshotPath && derived.mtimeMs === mtimeMs) return derived.accounts;
-  let accounts: AccountConfig[] = [];
-  try { accounts = accountsFromSnapshot(JSON.parse(readFileSync(snapshotPath, 'utf8'))); } catch { accounts = []; }
-  derived = { path: snapshotPath, mtimeMs, accounts };
-  return accounts;
+/** The accounts a tenant is served with: the operator's declaration, or — when none — the ones the collector declares in the tenant's snapshot. */
+export function tenantAccounts(config: AppConfig, snapshot: unknown): AccountConfig[] {
+  return config.accounts.length ? config.accounts : accountsFromSnapshot(snapshot);
 }
 
-let accountsDeclared = true;
 export function loadConfig(path = configPath()): AppConfig {
-  // A config without accounts (hosted partner instance) takes them from the snapshot the collector delivers.
-  if (cached) return accountsDeclared ? cached : { ...cached, accounts: deriveAccounts(cached.billing.snapshot_path) };
+  if (cached) return cached;
   let raw: Record<string, unknown> = {};
   try {
     raw = parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
@@ -137,12 +123,11 @@ export function loadConfig(path = configPath()): AppConfig {
   const accounting = raw.accounting as AccountingConfig | undefined;
   const subscriptions = Array.isArray(raw.subscriptions) ? raw.subscriptions as SubscriptionConfig[] : [];
   const account_browsers = Array.isArray(raw.account_browsers) ? raw.account_browsers as AccountBrowserConfig[] : [];
-  accountsDeclared = accounts.length > 0;
   cached = { server, infisical, billing, secrets, accounts, accounting, subscriptions, account_browsers };
-  return loadConfig(path);
+  return cached;
 }
 
 /** Test hook: reset the cached config. */
 export function resetConfigCache() {
-  cached = null; derived = null; accountsDeclared = true;
+  cached = null;
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderUsage } from '../src/lib/usage';
 
-vi.mock('../src/lib/config', () => ({ loadConfig: () => ({
+vi.mock('../src/lib/config', () => ({ tenantAccounts: (config: { accounts: unknown[] }) => config.accounts, loadConfig: () => ({
   server: { timezone: 'UTC', usage_refresh_seconds: 300 },
   accounts: [
     { key: 'api', provider: 'claude', label: 'API account', email: 'api@example.test' },

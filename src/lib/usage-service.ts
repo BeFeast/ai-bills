@@ -1,6 +1,6 @@
 import { fetchUsageThroughCdp } from './cdp';
 import { rememberUsageObservations } from './usage-observations';
-import { loadConfig } from './config';
+import { loadConfig, tenantAccounts } from './config';
 import { publicUsageAccount } from './account-auth';
 import { readSnapshot, type Scope } from './storage';
 import { apiShapeSummary, combinedOverview, type ProviderUsage, PENDING_OBSERVATION } from './usage';
@@ -28,18 +28,19 @@ export async function refreshUsage(scope?: Scope): Promise<UsageCache> {
     // Read before the first observation: a snapshot that lands mid-refresh belongs to the next one.
     const snapshot = await readSnapshot(config, scope);
     const cache = slot.cache;
+    const accounts = tenantAccounts(config, snapshot.body);
     const previous = new Map(cache?.results.map(result => [result.account.key, result]) ?? []);
-    const results: ProviderUsage[] = config.accounts.map(account => previous.get(account.key) ?? ({
+    const results: ProviderUsage[] = accounts.map(account => previous.get(account.key) ?? ({
       account: publicUsageAccount(account, config.server.codex_proxy_management_url),
       ok: false, fetchedAt: '', sourceUrl: '', error: PENDING_OBSERVATION,
     }));
     slot.cache = { results, generatedAt: new Date().toISOString() };
-    const update = async (account: typeof config.accounts[number], index: number) => {
+    const update = async (account: typeof accounts[number], index: number) => {
       results[index] = { ...await fetchUsageThroughCdp(account, { snapshot: snapshot.body }),
         account: publicUsageAccount(account, config.server.codex_proxy_management_url) };
       rememberUsageObservations([...results]);
     };
-    const indexed = config.accounts.map((account, index) => ({ account, index }));
+    const indexed = accounts.map((account, index) => ({ account, index }));
     const browserSources = indexed.filter(({ account }) => ['kimi', 'cursor'].includes(account.provider));
     await Promise.all([
       ...indexed.filter(({ account }) => !['kimi', 'cursor'].includes(account.provider)).map(({ account, index }) => update(account, index)),

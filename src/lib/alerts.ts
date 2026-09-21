@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { readSnapshot, type Scope } from './storage';
 import { loadConfig, type AppConfig } from './config';
 
