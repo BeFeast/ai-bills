@@ -1,17 +1,137 @@
 #!/usr/bin/env python3
-"""Read Codex quotas with proxy-owned access tokens. Never refresh credentials."""
+"""Read Codex quotas with proxy-owned access tokens. Never refresh credentials.
+
+The direct usage endpoint is the primary source. When it rejects or fails the request after
+retries, the observation falls back to the newer of: the quota the proxy read from response
+headers of the account's own traffic (no extra provider request), and the last successful
+observation, kept for at most RETAIN_SECONDS. A fallback entry keeps `ok` and `data` so
+consumers show a number with its age instead of forgetting it, and records under `direct`
+how the direct request ended so nothing pretends the check succeeded."""
 import hashlib
 import json
 import os
+import random
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+# Uniform jitter inside each band: a second poller on the same account must not collide again on retry.
+RETRY_DELAYS = ((3, 6), (8, 14))
+RETRYABLE = {429, 500, 502, 503, 504}
+RETAIN_SECONDS = 6 * 3600
 
-def collect(auth_dir, open_url=urlopen):
+
+def parse_time(value):
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return parsed if parsed.tzinfo else None
+    except (AttributeError, ValueError, TypeError):
+        return None
+
+
+def request_quota(request, open_url, sleep, validate, error_text):
+    """One direct request with bounded retries. Returns (ok, status, data_or_error)."""
+    for delay in RETRY_DELAYS + (None,):
+        try:
+            with open_url(request, timeout=15) as response:
+                data = json.load(response)
+                validate(data)
+                return True, 200, data
+        except HTTPError as error:
+            code = error.code
+            error.close()
+            if code not in RETRYABLE or delay is None:
+                return False, code, 'Proxy quota request rejected (HTTP %s)' % code
+        except ValueError:
+            return False, None, error_text
+        except Exception:
+            if delay is None:
+                return False, None, error_text
+        sleep(random.uniform(*delay))
+
+
+def proxy_quota_payload(signals):
+    """Codex rate-limit headers, as the proxy stored them, in the usage endpoint's shape."""
+    if not isinstance(signals, dict):
+        return None
+    lower = {str(k).lower(): v for k, v in signals.items()}
+    limit = {}
+    for key, prefix in (('primary_window', 'primary'), ('secondary_window', 'secondary')):
+        try:
+            minutes = int(lower.get('x-codex-%s-window-minutes' % prefix, 0))
+            used = float(lower['x-codex-%s-used-percent' % prefix])
+            reset_at = int(lower['x-codex-%s-reset-at' % prefix])
+        except (KeyError, ValueError, TypeError):
+            continue
+        # A zero-minute window is the header's way of saying there is no such window.
+        if minutes > 0 and 0 <= used <= 100:
+            limit[key] = {'used_percent': used, 'limit_window_seconds': minutes * 60, 'reset_at': reset_at,
+                          'reset_after_seconds': int(lower.get('x-codex-%s-reset-after-seconds' % prefix, 0) or 0)}
+    if 'primary_window' not in limit:
+        return None
+    payload = {'rate_limit': {'allowed': limit['primary_window']['used_percent'] < 100, 'limit_reached': limit['primary_window']['used_percent'] >= 100, **limit}}
+    if lower.get('x-codex-plan-type'):
+        payload['plan_type'] = str(lower['x-codex-plan-type'])
+    return payload
+
+
+def load_proxy_quota(path, kind):
+    """{email: {observed_at, signals}} for credentials of one provider type; ambiguous emails are dropped."""
+    if not path:
+        return {}
+    try:
+        rows = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    seen = {}
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get('type') == kind and row.get('email'):
+            seen.setdefault(row['email'], []).append(row.get('quota'))
+    return {email: quotas[0] for email, quotas in seen.items() if len(quotas) == 1 and isinstance(quotas[0], dict)}
+
+
+def load_previous(path, bucket):
+    if not path:
+        return {}
+    try:
+        rows = json.loads(Path(path).read_text()).get(bucket)
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return rows if isinstance(rows, dict) else {}
+
+
+def fallback(entry, identity, email, previous, proxy_quota, now, to_payload):
+    """Replace a failed direct observation with the newest honest alternative, if any."""
+    direct = {'status': entry.get('status'), 'error': entry.get('error'), 'attempted_at': entry['fetched_at']}
+    candidates = []
+    row = proxy_quota.get(email) if email else None
+    if isinstance(row, dict):
+        observed, data = parse_time(row.get('observed_at')), to_payload(row.get('signals'))
+        if observed and data and observed <= now:
+            candidates.append((observed, 'proxy_headers', data))
+    prior = previous.get(identity)
+    if isinstance(prior, dict) and prior.get('ok') and isinstance(prior.get('data'), dict):
+        observed = parse_time(prior.get('fetched_at'))
+        if observed and 0 <= (now - observed).total_seconds() <= RETAIN_SECONDS:
+            candidates.append((observed, 'retained', prior['data']))
+    if not candidates:
+        return
+    observed, source, data = max(candidates, key=lambda item: item[0])
+    entry.pop('error', None)
+    entry.update(ok=True, status=None, fetched_at=observed.isoformat(), data=data, source=source, direct=direct)
+
+
+def validate(data):
+    if not isinstance(data, dict) or not isinstance(data.get('rate_limit'), dict):
+        raise ValueError('Missing quota payload')
+
+
+def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=time.sleep, now=None):
     if not Path(auth_dir).is_dir():
         raise FileNotFoundError("Proxy auth inventory is unavailable")
+    previous, proxy_quota = previous or {}, proxy_quota or {}
     result = {}
     emails = {}
     for path in sorted(Path(auth_dir).glob('*.json')):
@@ -22,11 +142,11 @@ def collect(auth_dir, open_url=urlopen):
         if not isinstance(auth, dict) or auth.get('type') != 'codex':
             continue
         identity = hashlib.sha256(('oauth:' + path.name).encode()).hexdigest()[:24]
-        observed = datetime.now(timezone.utc).isoformat()
+        attempted = now or datetime.now(timezone.utc)
         token = auth.get('access_token')
         account_id = auth.get('account_id')
         email = auth.get('email')
-        entry = {'ok': False, 'fetched_at': observed, 'status': None}
+        entry = {'ok': False, 'fetched_at': attempted.isoformat(), 'status': None}
         if auth.get('disabled'):
             entry['error'] = 'Proxy account is disabled; quota was not queried'
         elif not token or not account_id:
@@ -35,17 +155,12 @@ def collect(auth_dir, open_url=urlopen):
             request = Request('https://chatgpt.com/backend-api/wham/usage', headers={
                 'Authorization': 'Bearer ' + token, 'ChatGPT-Account-ID': account_id,
                 'Accept': 'application/json', 'User-Agent': 'ai-bills-quota-collector'})
-            try:
-                with open_url(request, timeout=15) as response:
-                    data = json.load(response)
-                    if not isinstance(data, dict) or not isinstance(data.get('rate_limit'), dict):
-                        raise ValueError('Missing quota payload')
-                    entry.update(ok=True, status=200, data=data)
-            except HTTPError as error:
-                entry.update(status=error.code, error='Proxy quota request rejected (HTTP %s)' % error.code)
-                error.close()
-            except Exception:
-                entry['error'] = 'Proxy quota request failed; credentials were not refreshed'
+            ok, status, payload = request_quota(request, open_url, sleep, validate, 'Proxy quota request failed; credentials were not refreshed')
+            if ok:
+                entry.update(ok=True, status=status, data=payload, source='direct')
+            else:
+                entry.update(status=status, error=payload)
+                fallback(entry, identity, email, previous, proxy_quota, attempted, proxy_quota_payload)
         result[identity] = entry
         if email:
             emails.setdefault(email, []).append(entry)
@@ -57,4 +172,6 @@ def collect(auth_dir, open_url=urlopen):
 
 
 if __name__ == '__main__':
-    print(json.dumps(collect(os.environ['AI_BILLS_CLIPROXY_AUTH_DIR'])))
+    print(json.dumps(collect(os.environ['AI_BILLS_CLIPROXY_AUTH_DIR'],
+                             previous=load_previous(os.environ.get('AI_BILLS_PREVIOUS_SNAPSHOT'), 'codex_usage'),
+                             proxy_quota=load_proxy_quota(os.environ.get('AI_BILLS_PROXY_QUOTA_FILE'), 'codex'))))

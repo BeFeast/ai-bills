@@ -11,7 +11,15 @@ describe('quota evidence shown to users', () => {
     const item = result(); item.fetchedAt = '2026-01-01T00:00:00Z';
     const html = render(item);
     expect(html).toContain('Stale observation'); expect(html).toContain('Availability unknown');
+    expect(html).toContain('Last known'); expect(html).toContain('Exhausted · Session · observed 1 Jan 2026, 0:00');
     expect(html).not.toContain('Currently limiting'); expect(html).not.toContain('No models available'); expect(html).not.toContain('>Live<');
+  });
+  it('names the fallback and how the direct check ended when the number is not the provider\'s own answer', () => {
+    const item = result(); item.status = undefined; item.source = 'retained'; item.direct = { status: 429, error: 'Proxy quota request rejected (HTTP 429)', attemptedAt: '2026-01-10T11:59:30Z' };
+    const html = render(item);
+    expect(html).toContain('100.0%');
+    expect(html).toContain('observed 10 Jan 2026, 11:59 · Proxy quota request rejected (HTTP 429); showing the last successful observation');
+    expect(html).not.toContain('Source error');
   });
   it('never renders Allowed or zero utilization when Codex authentication fails', () => {
     const item = result(); item.account.provider = 'codex'; item.ok = false; item.status = 401; item.data = undefined;

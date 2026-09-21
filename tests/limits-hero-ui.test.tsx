@@ -44,3 +44,27 @@ test('overview opens with the Limits now hero and moves money tiles to accountin
   expect(details).toContain('Active subscriptions');
   expect(details).not.toContain('Limits now');
 });
+
+test('a rate-limited direct check keeps the number, badges the check and names where the number comes from', () => {
+  const limited: ProviderUsage = { ...work, status: undefined, source: 'proxy_headers', direct: { status: 429, error: 'Proxy quota request rejected (HTTP 429)', attemptedAt: fetchedAt } };
+  const data = buildProductOverview(config, snapshot, '2026-09');
+  const html = renderToStaticMarkup(<ProductOverviewPanel data={data} accounts={[limited]} registry={[]} view="overview" onView={() => {}} now={now} />);
+  expect(html).toContain('>17%<');
+  expect(html).toContain('>Check rate-limited<');
+  expect(html).toContain('Proxy quota request rejected (HTTP 429). Showing the quota read by the proxy from the account');
+  expect(html).toContain('own traffic · observed 18 Sept 2026, 23:19');
+  expect(html).not.toContain('Source error');
+  expect(html).not.toContain('Unknown');
+});
+
+test('a stale observation shows the last known value labelled as such, never as current', () => {
+  const stale: ProviderUsage = { ...work, fetchedAt: new Date(now - 45 * 60_000).toISOString() };
+  const data = buildProductOverview(config, snapshot, '2026-09');
+  const html = renderToStaticMarkup(<ProductOverviewPanel data={data} accounts={[stale]} registry={[]} view="overview" onView={() => {}} now={now} />);
+  expect(html).toContain('Stale observation');
+  expect(html).toContain('>17%<');
+  expect(html).toContain('last known');
+  expect(html).toContain('Fable weekly');
+  expect(html).not.toContain('>Unknown<');
+  expect(html).not.toContain('Running low');
+});

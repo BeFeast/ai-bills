@@ -107,7 +107,12 @@ def evaluate(snapshot, rules, now):
         if not entry.get("ok"):
             out.append(condition(f"source:claude:{email}", "P5", "bad", f"Claude quota source failed · {email}", entry.get("error") or "The quota request failed; remaining allowance is unknown."))
             continue
-        out.append(condition(f"source:claude:{email}", "P5", "ok", f"Claude quota source · {email}", "Quota observation available"))
+        if entry.get("source") in ("proxy_headers", "retained"):
+            # The direct check failed; the number shown comes from the proxy's own traffic or the last success.
+            shown = "the quota the proxy observed on the account's own traffic" if entry["source"] == "proxy_headers" else "the last successful observation"
+            out.append(condition(f"source:claude:{email}", "P5", "warn", f"Claude quota source degraded · {email}", f"{(entry.get('direct') or {}).get('error') or 'The direct quota request failed'}; showing {shown}"))
+        else:
+            out.append(condition(f"source:claude:{email}", "P5", "ok", f"Claude quota source · {email}", "Quota observation available"))
         window = claude_limiting(entry.get("data") or {})
         if not window:
             continue
@@ -124,7 +129,12 @@ def evaluate(snapshot, rules, now):
         if not entry.get("ok"):
             out.append(condition(f"source:codex:{email}", "P5", "bad", f"Codex quota source failed · {email}", entry.get("error") or "The quota request failed; remaining allowance is unknown."))
             continue
-        out.append(condition(f"source:codex:{email}", "P5", "ok", f"Codex quota source · {email}", "Quota observation available"))
+        if entry.get("source") in ("proxy_headers", "retained"):
+            # The direct check failed; the number shown comes from the proxy's own traffic or the last success.
+            shown = "the quota the proxy observed on the account's own traffic" if entry["source"] == "proxy_headers" else "the last successful observation"
+            out.append(condition(f"source:codex:{email}", "P5", "warn", f"Codex quota source degraded · {email}", f"{(entry.get('direct') or {}).get('error') or 'The direct quota request failed'}; showing {shown}"))
+        else:
+            out.append(condition(f"source:codex:{email}", "P5", "ok", f"Codex quota source · {email}", "Quota observation available"))
         limit = (entry.get("data") or {}).get("rate_limit") or {}
         window = limit.get("primary_window") or {}
         if not isinstance(window.get("used_percent"), (int, float)):

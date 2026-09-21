@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import type { HeroActivity, HeroWindow, LimitsHero as LimitsHeroData, LimitsHeroCard } from '@/lib/limits-hero';
+import type { HeroActivity, HeroFallback, HeroWindow, LimitsHero as LimitsHeroData, LimitsHeroCard } from '@/lib/limits-hero';
 import type { ProductSubscription } from '@/lib/overview';
 import { countdown, fmtDate, fmtMoney, refillLabel } from './format';
 import { ProviderIcon } from './ProviderIcon';
@@ -29,6 +29,10 @@ function activityText(activity: HeroActivity | null, recencyKnown: boolean, now:
   return `${parts.join(' · ')} · 24h${last}`;
 }
 const stateLabel: Record<'error' | 'stale' | 'unknown', string> = { error: 'Source error', stale: 'Stale observation', unknown: 'Quota unknown' };
+const fallbackSource: Record<HeroFallback['kind'], string> = { proxy_headers: "quota read by the proxy from the account's own traffic", retained: 'last successful observation' };
+function FallbackPill({ fallback }: { fallback: HeroFallback }) {
+  return <Pill tone="warn" title={`${fallback.error}. Showing the ${fallbackSource[fallback.kind]}.`}>{fallback.status === 429 ? 'Check rate-limited' : 'Check failed'}</Pill>;
+}
 
 function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHeroCard; now: number; recencyKnown: boolean; subscriptions: ProductSubscription[] }) {
   if (card.kind === 'outcomes') {
@@ -52,14 +56,16 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
   if (card.kind === 'error') {
     return <article className={`bf-card hero-card hero-card--${card.state === 'error' ? 'bad' : 'warn'}`} aria-label={`${card.account.label} · ${stateLabel[card.state]}`}>
       {head(<Pill tone={card.state === 'error' ? 'bad' : 'warn'}>{stateLabel[card.state]}</Pill>)}
-      <div className="hero-card__body"><div className="hero-card__main"><span className="hero-card__window">Remaining allowance</span><div className="hero-card__value"><span className="hero-card__num">Unknown</span></div><span className="t-small">{card.message}{card.status ? ` HTTP ${card.status}.` : ''}</span></div></div>
+      <div className="hero-card__body"><div className="hero-card__main"><span className="hero-card__window">{card.lastKnown ? card.lastKnown.label : 'Remaining allowance'}</span>
+        <div className="hero-card__value">{card.lastKnown ? <><span className="hero-card__num tabular">{remainingText(card.lastKnown)}</span><span className="t-small">last known</span></> : <span className="hero-card__num">Unknown</span>}</div>
+        <span className="t-small">{card.message}{card.status ? ` HTTP ${card.status}.` : ''}</span></div></div>
       <div className="hero-card__foot"><span className="t-small">{activityText(card.activity, recencyKnown, now)}{Number.isFinite(Date.parse(card.observedAt)) ? ` · observed ${fmtDate(card.observedAt, TZ)}` : ''}</span>{access}</div>
     </article>;
   }
   const others = card.windows.filter((window) => window !== card.limiting);
   const badge = card.limiting.exhausted ? <Pill tone="bad">Limit reached</Pill> : card.tone === 'warn' ? <Pill tone="warn">Running low</Pill> : null;
   return <article className={`bf-card hero-card${card.tone ? ` hero-card--${card.tone}` : ''}`} aria-label={`${card.account.label} · ${remainingText(card.limiting)} left · ${card.limiting.label}`}>
-    {head(badge)}
+    {head(<>{badge}{card.fallback ? <FallbackPill fallback={card.fallback} /> : null}</>)}
     <div className="hero-card__body">
       <div className="hero-card__main">
         <span className="hero-card__window" title="The window currently constraining this account">{card.limiting.label}</span>
@@ -73,7 +79,7 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
         <span className="hero-window__reset">{refillLabel(window.resetsAt, now) ? `↻ ${refillLabel(window.resetsAt, now)}` : 'refill time unknown'}</span>
       </li>)}</ul> : null}
     </div>
-    <div className="hero-card__foot"><span className="t-small">{activityText(card.activity, recencyKnown, now)}</span>{access}</div>
+    <div className="hero-card__foot"><span className="t-small">{activityText(card.activity, recencyKnown, now)}{card.fallback ? ` · ${fallbackSource[card.fallback.kind]} · observed ${fmtDate(card.observedAt, TZ)}` : ''}</span>{access}</div>
   </article>;
 }
 

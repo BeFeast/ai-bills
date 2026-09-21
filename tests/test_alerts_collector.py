@@ -78,6 +78,18 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(stale['source:snapshot']['state'], 'bad')
         self.assertEqual(self.conditions(snapshot={})['source:snapshot']['state'], 'bad')
 
+    def test_fallback_observations_degrade_the_source_but_keep_the_quota_condition(self):
+        degraded = dict(SNAPSHOT, claude_usage=dict(SNAPSHOT['claude_usage']))
+        degraded['claude_usage']['work@example.invalid'] = dict(claude(49, 52, 99), source='proxy_headers', status=None,
+                                                                 direct={'status': 429, 'error': 'Proxy quota request rejected (HTTP 429)', 'attempted_at': '2026-09-19T00:05:00Z'})
+        c = self.conditions(snapshot=degraded)
+        source = c['source:claude:work@example.invalid']
+        self.assertEqual((source['state'], source['severity']), ('warn', 'P5'))
+        self.assertIn('HTTP 429', source['message']); self.assertIn("proxy observed", source['message'])
+        self.assertEqual(c['quota:claude:work@example.invalid']['state'], self.conditions()['quota:claude:work@example.invalid']['state'])
+        degraded['claude_usage']['work@example.invalid']['source'] = 'retained'
+        self.assertIn('last successful observation', self.conditions(snapshot=degraded)['source:claude:work@example.invalid']['message'])
+
     def test_rate_limits_renewals_and_balance(self):
         c = self.conditions()
         self.assertEqual(c['ratelimit:xai:work@example.invalid']['state'], 'warn')

@@ -212,6 +212,9 @@ export type CodexUsagePayload = {
 export const PENDING_OBSERVATION = 'Waiting for the first quota observation';
 export const isPendingObservation = (result: ProviderUsage) => !result.ok && result.status === undefined && result.error === PENDING_OBSERVATION;
 
+/** Where a collector observation came from when the direct quota request did not succeed. */
+export type UsageFallbackSource = 'proxy_headers' | 'retained';
+
 export type ProviderUsage = {
   account: PublicUsageAccount;
   ok: boolean;
@@ -221,6 +224,10 @@ export type ProviderUsage = {
   error?: string;
   fetchedAt: string;
   sourceUrl: string;
+  /** Absent or `direct` when `data` is the provider's own answer to the quota request. */
+  source?: 'direct' | UsageFallbackSource;
+  /** How the direct request ended when `data` comes from a fallback; `fetchedAt` is then the fallback's own observation time. */
+  direct?: { status: number | null; error: string; attemptedAt: string | null };
 };
 
 export function usageUrl(account: ProviderConfig): string {
