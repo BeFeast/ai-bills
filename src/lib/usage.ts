@@ -390,13 +390,13 @@ export type CodingAvailability = {
 
 export function parseKimiUsagePayload(input: unknown): KimiUsagePayload {
   const record = asRecord(input, 'Kimi payload');
+  const totalQuota = parseQuotaDetail(asRecord(record.totalQuota, 'Kimi totalQuota'), false);
   const usagesRaw = record.usages;
-  if (!Array.isArray(usagesRaw)) throw new Error('Kimi payload missing usages array');
-  const usages = usagesRaw.map(parseKimiUsageEntry);
-  return {
-    usages,
-    totalQuota: parseQuotaDetail(asRecord(record.totalQuota, 'Kimi totalQuota'), false),
-  };
+  if (Array.isArray(usagesRaw)) return { usages: usagesRaw.map(parseKimiUsageEntry), totalQuota };
+  // kimi.ai (2026-09) answers GetUsages with the total quota alone; that total is the coding quota the request asked for.
+  if (totalQuota.limit === null && totalQuota.remaining === null) throw new Error('Kimi payload missing usages array and total quota');
+  const used = totalQuota.limit !== null && totalQuota.remaining !== null ? Math.max(0, totalQuota.limit - totalQuota.remaining) : null;
+  return { usages: [{ scope: 'FEATURE_CODING', detail: { limit: totalQuota.limit, used, remaining: totalQuota.remaining, resetTime: null }, limits: [] }], totalQuota };
 }
 
 function parseKimiUsageEntry(input: unknown): KimiUsageEntry {
