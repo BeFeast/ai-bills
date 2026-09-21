@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import { hasAllowedOrigin } from '@/lib/request-origin';
 import { loadConfig } from '@/lib/config';
-import { AccountingConflictError, AccountingInputError, appendFinancialRecords } from '@/lib/accounting';
+import { AccountingConflictError, AccountingInputError, appendFinancialRecords, appendFinancialRecordsTo } from '@/lib/accounting';
 import { MAX_STATEMENT_BYTES, StatementImportError, importStatement, type StatementImportInput } from '@/lib/statement-import';
 import { readBounded } from '@/lib/snapshot-ingest';
 import { requireTenant } from '@/lib/tenant';
+import { journalStoreFor } from '@/lib/storage';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -13,11 +14,12 @@ const DATE_FORMATS = new Set(['iso', 'mdy', 'dmy']);
 
 /** CSV statement → financial records. `dryRun: true` previews the parse and writes nothing. */
 export async function POST(request: Request) {
-  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
+  const { tenant, forbidden } = await requireTenant(); if (forbidden) return forbidden;
   if (!hasAllowedOrigin(request)) return NextResponse.json({ error: 'Cross-origin accounting changes are not allowed' }, { status: 403 });
   try {
+    const store = journalStoreFor(tenant);
     const path = loadConfig().accounting?.journal_path;
-    if (!path) return NextResponse.json({ error: 'Private accounting journal is not configured' }, { status: 503 });
+    if (!store && !path) return NextResponse.json({ error: 'Private accounting journal is not configured' }, { status: 503 });
     // Bounded by bytes on the wire. JSON escaping can double a quote-heavy CSV, so the wire bound is twice the
     // decoded limit plus the envelope; the decoded CSV is still held to MAX_STATEMENT_BYTES by importStatement.
     const read = await readBounded(request, MAX_STATEMENT_BYTES * 2 + 10_000);
@@ -33,7 +35,7 @@ export async function POST(request: Request) {
     const preview = { parsed: parsed.records.length, skipped: parsed.skipped, columns: parsed.columns, mapping: parsed.mapping, sample: parsed.records.slice(0, 5) };
     if (body.dryRun === true) return NextResponse.json({ ...preview, dryRun: true }, { headers: { 'cache-control': 'no-store' } });
     if (!parsed.records.length) throw new AccountingInputError('No rows could be read; nothing was imported');
-    const result = await appendFinancialRecords(path, parsed.records);
+    const result = store ? await appendFinancialRecordsTo(store, parsed.records) : await appendFinancialRecords(path!, parsed.records);
     return NextResponse.json({ ...preview, ...result, dryRun: false }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
     const input = error instanceof AccountingInputError || error instanceof StatementImportError || error instanceof SyntaxError;

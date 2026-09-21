@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { readSnapshot, type Scope } from './storage';
 import { loadConfig } from './config';
 import type { AccountingOverview, Freshness } from './accounting';
 
@@ -121,14 +122,15 @@ const SECRET_KEY_RE = /(token|secret|password|cookie|authorization|apikey|api_ke
 const SUSPICIOUS_DAILY_USD = 1_000;
 const DEFAULT_BILLING_FETCH_TIMEOUT_MS = 1_500;
 
-export async function fetchBillingSnapshot(options: { url?: string; path?: string; timeoutMs?: number } = {}): Promise<BillingSnapshot> {
+export async function fetchBillingSnapshot(options: { url?: string; path?: string; timeoutMs?: number; scope?: Scope } = {}): Promise<BillingSnapshot> {
   const config = loadConfig();
   const sourcePath = options.path ?? config.billing.snapshot_path;
   const timeoutMs = boundedTimeoutMs(options.timeoutMs ?? config.server.billing_fetch_timeout_ms);
   try {
     if (!options.url && sourcePath) {
-      const text = await readFile(sourcePath, 'utf8');
-      return parseBillingSource(text, sourcePath);
+      const read = await readSnapshot(config, options.path ? undefined : options.scope, sourcePath);
+      if (read.version === null) throw Object.assign(new Error(`ENOENT: no snapshot at ${sourcePath}`), { code: 'ENOENT' });
+      return parseBillingSource(JSON.stringify(read.body), read.source === 'db' ? `tenant snapshot (${read.version})` : sourcePath);
     }
     const sourceUrl = options.url;
     if (!sourceUrl) return malformedSnapshot(sourcePath || 'billing', 'Billing source unavailable: no snapshot path or url configured');

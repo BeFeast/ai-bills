@@ -15,6 +15,20 @@
       "when": 1789987138055,
       "tag": "0001_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789992582973,
+      "tag": "0002_tenant-stores",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789992584953,
+      "tag": "0003_stores-rls",
+      "breakpoints": true
     }
   ]
 }

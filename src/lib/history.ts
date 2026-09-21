@@ -30,21 +30,24 @@ const DEFAULT_SERIES_DAYS = 30;
  * sample is fresher than SAMPLE_INTERVAL_MS. Returns null on success (or
  * throttle skip) and a diagnostic message on failure.
  */
-export async function recordHistory(snapshot: BillingSnapshot, options: { path?: string; now?: number } = {}): Promise<string | null> {
-  const path = options.path ?? loadConfig().billing.history_path;
+/** Database-backed samples (tenancy phase 3); null keeps the JSONL file. */
+export type HistoryStoreLike = { last(): Promise<Date | null>; append(sample: { at: Date; runpod: number | null; vast: number | null; estUsdToday: number | null }): Promise<void>; since(cutoff: Date, until: Date): Promise<{ at: Date; runpod: number | null; vast: number | null; estUsdToday: number | null }[]> } | null;
+
+export async function recordHistory(snapshot: BillingSnapshot, options: { path?: string; now?: number; store?: HistoryStoreLike } = {}): Promise<string | null> {
+  const path = options.path ?? (options.store ? '' : loadConfig().billing.history_path);
   const now = options.now ?? Date.now();
   try {
-    const last = await lastEntry(path);
-    if (last) {
-      const lastTs = Date.parse(last.ts);
-      if (Number.isFinite(lastTs) && now - lastTs < SAMPLE_INTERVAL_MS) return null;
-    }
+    const lastAt = options.store ? await options.store.last() : (() => null)();
+    const last = options.store ? null : await lastEntry(path);
+    const lastTs = options.store ? (lastAt ? lastAt.getTime() : NaN) : last ? Date.parse(last.ts) : NaN;
+    if (Number.isFinite(lastTs) && now - lastTs < SAMPLE_INTERVAL_MS) return null;
     const entry: HistoryEntry = {
       ts: new Date(now).toISOString(),
       runpod: balanceOf(snapshot, 'runpod'),
       vast: balanceOf(snapshot, 'vast'),
       est_usd_today: typeof snapshot.summary.meteredSpendTodayUsd === 'number' ? snapshot.summary.meteredSpendTodayUsd : null,
     };
+    if (options.store) { await options.store.append({ at: new Date(now), runpod: entry.runpod, vast: entry.vast, estUsdToday: entry.est_usd_today }); return null; }
     await mkdir(dirname(path), { recursive: true });
     await appendFile(path, `${JSON.stringify(entry)}\n`, 'utf8');
     return null;
@@ -57,14 +60,16 @@ export async function recordHistory(snapshot: BillingSnapshot, options: { path?:
  * Daily averages for one field over the trailing `days` window, oldest first.
  * Days without samples are omitted. Returns [] on any read/parse failure.
  */
-export async function readSeries(field: HistoryField, days = DEFAULT_SERIES_DAYS, options: { path?: string; now?: number } = {}): Promise<number[]> {
-  const path = options.path ?? loadConfig().billing.history_path;
+export async function readSeries(field: HistoryField, days = DEFAULT_SERIES_DAYS, options: { path?: string; now?: number; store?: HistoryStoreLike } = {}): Promise<number[]> {
+  const path = options.path ?? (options.store ? '' : loadConfig().billing.history_path);
   const now = options.now ?? Date.now();
   try {
-    const text = await readFile(path, 'utf8');
     const cutoff = now - days * 24 * 60 * 60 * 1000;
+    const entries: HistoryEntry[] = options.store
+      ? (await options.store.since(new Date(cutoff), new Date(now + 60_000))).map(row => ({ ts: row.at.toISOString(), runpod: row.runpod, vast: row.vast, est_usd_today: row.estUsdToday }))
+      : parseEntries(await readFile(path, 'utf8'));
     const byDay = new Map<string, { sum: number; count: number }>();
-    for (const entry of parseEntries(text)) {
+    for (const entry of entries) {
       const ts = Date.parse(entry.ts);
       if (!Number.isFinite(ts) || ts < cutoff || ts > now + 60_000) continue;
       const value = entry[field];

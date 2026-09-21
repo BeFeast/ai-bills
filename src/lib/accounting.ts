@@ -145,13 +145,38 @@ export function currentMonth(timezone = 'Asia/Jerusalem', date = new Date()): st
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit' }).formatToParts(date);
   return `${parts.find(p => p.type === 'year')!.value}-${parts.find(p => p.type === 'month')!.value}`;
 }
-export async function accountingOverview(config: AccountingConfig = {}, month = currentMonth()): Promise<AccountingOverview> {
+/** A journal already read from the database (tenancy phase 3); `null` means read the configured file. */
+export type JournalInput = { records: FinancialRecord[]; observedAt: string | null } | null;
+
+/** Journal rows as stored in the database → validated records, in insertion order. */
+export function journalRecordsFromRows(rows: { record: unknown; observedAt: Date }[]): FinancialRecord[] {
+  return deduplicateRecords(rows.map(row => validateRecord(row.record, row.observedAt.toISOString())));
+}
+
+/** Database counterpart of appendFinancialRecords: same validation and conflict rules, rows keyed by the record id. */
+export async function appendFinancialRecordsTo(store: { read(): Promise<{ rows: { recordId: string; record: unknown; observedAt: Date }[] }>; add(rows: { recordId: string; record: unknown; observedAt: Date }[]): Promise<number> }, inputs: unknown[]): Promise<{ inserted: number; duplicates: number }> {
+  if (!inputs.length || inputs.length > 1000) throw new AccountingInputError('Import must contain 1–1000 records');
+  const now = new Date().toISOString();
+  const requested = inputs.map(row => validateRecord(row, now));
+  const unique = deduplicateRecords(requested);
+  const existing = journalRecordsFromRows((await store.read()).rows);
+  const combined = deduplicateRecords([...existing, ...unique]);
+  const known = new Set(existing.map(row => row.id));
+  const added = combined.filter(row => !known.has(row.id));
+  const inserted = await store.add(added.map(row => ({ recordId: row.id, record: row, observedAt: new Date(row.observedAt) })));
+  return { inserted, duplicates: requested.length - inserted };
+}
+
+export async function accountingOverview(config: AccountingConfig = {}, month = currentMonth(), journalInput: JournalInput = null): Promise<AccountingOverview> {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new AccountingInputError('Invalid month');
   const results = await Promise.all((config.sources ?? []).map(readFinancialSource));
   const coverage = results.map(result => result.freshness);
   const diagnostics: string[] = [];
   let journal: FinancialRecord[] = [];
-  if (config.journal_path) {
+  if (journalInput) {
+    journal = journalInput.records;
+    coverage.push({ id: 'manual-journal', status: 'fresh', observedAt: journalInput.observedAt, maxAgeSeconds: 0, message: 'Journal readable; entries are not proof of complete provider history' });
+  } else if (config.journal_path) {
     try {
       journal = await readFinancialJournal(config.journal_path);
       const observedAt = (await stat(config.journal_path)).mtime.toISOString();

@@ -9,7 +9,11 @@ export class SubscriptionBusyError extends Error {}
 export function subscriptionOverridesPath(config: AppConfig): string {
   return join(dirname(config.accounting?.journal_path || config.billing.snapshot_path), 'subscription-overrides.json');
 }
-export async function readSubscriptionOverrides(config: AppConfig): Promise<Record<string, SubscriptionOverride>> {
+/** Where overrides live when the database is the source (tenancy phase 3); null keeps the file. */
+export type OverridesStoreLike = { read(): Promise<Record<string, unknown>>; write(subscriptionId: string, override: unknown): Promise<void> } | null;
+
+export async function readSubscriptionOverrides(config: AppConfig, store: OverridesStoreLike = null): Promise<Record<string, SubscriptionOverride>> {
+  if (store) return (await store.read()) as Record<string, SubscriptionOverride>;
   try {
     const data = JSON.parse(await readFile(subscriptionOverridesPath(config), 'utf8'));
     if (data.version !== 1 || !data.subscriptions || typeof data.subscriptions !== 'object' || Array.isArray(data.subscriptions)) throw new Error('Invalid subscription overrides');
@@ -33,10 +37,16 @@ export function validateSubscriptionPatch(input: unknown): { id: string; changes
   return { id: body.id, changes: Object.fromEntries(fields.filter(field => field in body).map(field => [field, body[field]])) as Omit<SubscriptionOverride, 'updatedAt'> };
 }
 /** Durable local edits survive snapshots; source/config records remain unchanged. */
-export async function saveSubscriptionOverride(config: AppConfig, input: unknown, current: ProductOverview): Promise<void> {
+export async function saveSubscriptionOverride(config: AppConfig, input: unknown, current: ProductOverview, store: OverridesStoreLike = null): Promise<void> {
   const { id, changes } = validateSubscriptionPatch(input);
   const existing = current.subscriptions.find(value => value.id === id);
   if (!existing) throw new SubscriptionInputError('Subscription no longer exists in the current inventory');
+  if (store) {
+    const previous = (await store.read())[id] as SubscriptionOverride | undefined;
+    const priceChanged = (['amount', 'currency', 'period'] as const).some(field => field in changes && changes[field] !== existing[field]);
+    await store.write(id, { ...previous, ...changes, ...(priceChanged ? { costEvidence: 'declared' as const } : {}), updatedAt: new Date().toISOString() });
+    return;
+  }
   const path = subscriptionOverridesPath(config); await mkdir(dirname(path), { recursive: true });
   const lock = `${path}.lock`;
   try { await mkdir(lock); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new SubscriptionBusyError('Another subscription update is in progress; retry'); throw error; }
