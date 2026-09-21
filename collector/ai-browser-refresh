@@ -23,8 +23,11 @@ def refresh(url, request=None, clock=time.monotonic, sleep=time.sleep, deadline_
     first = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(dict(query, refresh='1'))))
     if request is None:
         opener = urllib.request.build_opener(NoRedirect)
+        # A hosted instance requires the tenant's ingest token for machine calls; a self-hosted one needs nothing.
+        token = os.environ.get('AI_BILLS_BROWSER_REFRESH_TOKEN', '').strip()
+        headers = {'Accept': 'application/json', **({'Authorization': 'Bearer ' + token} if token else {})}
         def request(target, timeout):
-            with opener.open(urllib.request.Request(target, headers={'Accept': 'application/json'}), timeout=timeout) as response:
+            with opener.open(urllib.request.Request(target, headers=headers), timeout=timeout) as response:
                 return json.load(response)
     deadline = clock() + deadline_seconds
     target = first

@@ -26,6 +26,9 @@ const withClerk = clerkMiddleware(async (auth, request) => {
   // A caller must never be able to present an identity of its own choosing to the handlers.
   const headers = stripIdentityHeaders(request.headers);
   if (isPublic(request)) return NextResponse.next({ request: { headers } });
+  // A machine client presents the tenant's ingest token instead of a session (the collector's browser-quota refresh);
+  // the Node side resolves it through ingest_tokens and answers 401 itself when it is not a live token.
+  if (membershipMode() && /^Bearer\s+\S+$/i.test(request.headers.get('authorization') ?? '')) return NextResponse.next({ request: { headers } });
   const session = await auth();
   if (!session.userId) {
     if (isApi(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

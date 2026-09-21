@@ -50,6 +50,8 @@ failures fall back: a definite rejection such as HTTP 401 or 403 means the crede
 the problem and the entry stays `ok: false` with the direct status and error, as it does
 when no alternative exists.
 `AI_USAGE_REPORT_BIN` overrides the report executable for staged deployments.
+`ai-browser-refresh` (run by the wrapper when `AI_BILLS_BROWSER_REFRESH_URL` is set) sends
+`AI_BILLS_BROWSER_REFRESH_TOKEN` as a bearer when present, which a hosted instance requires.
 
 An app account may set `quota_snapshot_key` to its opaque proxy registry ID. This
 explicit binding prefers collector evidence and prevents a fallback credential

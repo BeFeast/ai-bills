@@ -70,6 +70,11 @@ the token from the secret manager (`AI_BILLS_SNAPSHOT_TOKEN_SECRET`, path
 `AI_BILLS_SNAPSHOT_TOKEN_PATH`, default `/ai-bills`; workspace `AI_BILLS_SNAPSHOT_TOKEN_WORKSPACE`,
 default the collector's own project).
 
+Machine clients (the collector's browser-quota refresh, `ai-browser-refresh`) call
+`GET /api/usage?refresh=1` with the same ingest token as a bearer (`AI_BILLS_BROWSER_REFRESH_TOKEN`
+on the collector host); with a database the token names the tenant, without one there is no
+sign-in to pass.
+
 ## Database (tenancy phase 1)
 
 The instance can run with a Postgres database beside the snapshot file
