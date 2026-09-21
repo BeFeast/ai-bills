@@ -4,6 +4,21 @@
 export type AuthMode = 'none' | 'clerk';
 export const authMode = (env: Record<string, string | undefined> = process.env): AuthMode => env.AI_BILLS_AUTH === 'clerk' ? 'clerk' : 'none';
 
+/**
+ * Tenancy phase 2: with a database, who may use the instance is decided by `memberships`, not by the
+ * allow list. The middleware (edge) then only proves the session and forwards the identity in these
+ * headers; the Node side resolves the tenant. Incoming requests never get to set them themselves.
+ */
+export const membershipMode = (env: Record<string, string | undefined> = process.env) => authMode(env) === 'clerk' && Boolean(env.DATABASE_URL);
+export const IDENTITY_HEADERS = { userId: 'x-zecori-user-id', email: 'x-zecori-user-email' } as const;
+export const DENIED_EMAIL_HEADER = 'x-zecori-denied-email';
+/** Request headers with every identity header removed, so only the middleware's own values reach the handlers. */
+export function stripIdentityHeaders(headers: Headers): Headers {
+  const clean = new Headers(headers);
+  for (const name of [...Object.values(IDENTITY_HEADERS), DENIED_EMAIL_HEADER]) clean.delete(name);
+  return clean;
+}
+
 export const normalizeEmail = (value: string) => value.trim().toLowerCase();
 export function parseEmailList(value: string | undefined): string[] {
   return [...new Set((value ?? '').split(/[,\s]+/).map(normalizeEmail).filter(entry => entry.includes('@')))];

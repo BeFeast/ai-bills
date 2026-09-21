@@ -2,11 +2,13 @@ import { NextResponse } from 'next/server';
 import { readFile } from 'node:fs/promises';
 import { loadConfig } from '@/lib/config';
 import { EXPORT_DIMENSIONS, EXPORT_PERIODS, usageCsv, type ExportDimension } from '@/lib/usage-export';
+import { requireTenant } from '@/lib/tenant';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /** `GET /api/usage/export?period=month&by=project` → CSV of the snapshot's ledger rollup. Nothing is computed here; it is the rollup as delivered. */
 export async function GET(request: Request) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   const params = new URL(request.url).searchParams;
   const period = params.get('period') ?? 'month'; const by = params.get('by') ?? 'project';
   if (!(EXPORT_PERIODS as readonly string[]).includes(period)) return NextResponse.json({ error: `period must be one of ${EXPORT_PERIODS.join(', ')}` }, { status: 400 });

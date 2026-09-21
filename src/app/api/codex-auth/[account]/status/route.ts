@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import { codexAuthManager } from '@/lib/codex-auth';
+import { requireTenant } from '@/lib/tenant';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(_request: Request, { params }: { params: Promise<{ account: string }> }) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   const { account } = await params;
   const accountKey = decodeURIComponent(account);
   try {

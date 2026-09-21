@@ -3,13 +3,16 @@ import { productOverview } from '@/lib/overview';
 import { loadConfig } from '@/lib/config';
 import { hasAllowedOrigin } from '@/lib/request-origin';
 import { saveSubscriptionOverride, SubscriptionInputError, SubscriptionBusyError } from '@/lib/subscription-overrides';
+import { requireTenant } from '@/lib/tenant';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'no-store' };
 export async function GET() {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   return NextResponse.json(await productOverview(), { headers });
 }
 export async function PATCH(request: Request) {
+  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
   if (!hasAllowedOrigin(request)) return NextResponse.json({ error: 'Cross-origin subscription changes are not allowed' }, { status: 403, headers });
   try {
     const text = await request.text();
