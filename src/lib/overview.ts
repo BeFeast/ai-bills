@@ -45,7 +45,7 @@ const links: Record<string, [string, string]> = {
   openai: ['https://chatgpt.com/auth/login', 'https://chatgpt.com/#settings'],
   google: ['https://accounts.google.com/', 'https://one.google.com/settings'],
   ollamacloud: ['https://ollama.com/signin', 'https://ollama.com/settings'],
-  kimi: ['https://www.kimi.com/', 'https://www.kimi.com/code/console'],
+  kimi: ['https://www.kimi.ai/', 'https://www.kimi.ai/code/console'],
   xai: ['https://grok.com/', 'https://grok.com/settings'],
   opencodesst: ['https://opencode.ai/auth', 'https://opencode.ai/workspace'],
 };
