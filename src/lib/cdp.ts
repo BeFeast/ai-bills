@@ -38,6 +38,8 @@ type SessionStart = {
 
 export type CdpFetchOptions = {
   signal?: AbortSignal;
+  /** The collector snapshot already read by the caller (tenancy phase 3); without it the file is read. */
+  snapshot?: unknown;
 };
 
 const sessions = new Map<string, CdpSession>();
@@ -61,11 +63,11 @@ export async function fetchUsageThroughCdp(account: ProviderConfig, options: Cdp
   let lease: BrowserLease | null = null;
   try {
     if (account.provider === 'codex') {
-      const proxyQuota = fetchCodexFromSnapshot(account);
+      const proxyQuota = fetchCodexFromSnapshot(account, options.snapshot);
       if (proxyQuota) return proxyQuota;
       return await fetchCodexStatus(account, fetchedAt, sourceUrl);
     }
-    if (account.provider === 'claude') return fetchClaudeFromSnapshot(account);
+    if (account.provider === 'claude') return fetchClaudeFromSnapshot(account, options.snapshot);
     lease = await acquireBrowserLease(account.cdp_profile_id, 'quota');
     const session = await getSession(account, options.signal);
     throwIfCdpStartupCancelled(options.signal, cdpName(account));
@@ -569,12 +571,17 @@ function snapshotObservationFields(entry: SnapshotQuotaEntry<unknown>): Pick<Pro
     error: entry.direct?.error || 'The direct quota request failed', attemptedAt: entry.direct?.attempted_at || null } };
 }
 
-function fetchClaudeFromSnapshot(account: ProviderConfig): ProviderUsage {
+/** The snapshot handed in by the caller, or the file when none was. */
+function snapshotBody(provided: unknown): unknown {
+  if (provided !== undefined) return provided;
+  return JSON.parse(readFileSync(loadConfig().billing.snapshot_path, 'utf8'));
+}
+
+function fetchClaudeFromSnapshot(account: ProviderConfig, provided?: unknown): ProviderUsage {
   const fetchedAt = ""; // Missing observation time is unknown, never a fresh fetch.
   const sourceUrl = CLAUDE_SNAPSHOT_SOURCE;
   try {
-    const raw = readFileSync(loadConfig().billing.snapshot_path, 'utf8');
-    const snapshot = JSON.parse(raw) as { claude_usage?: Record<string, SnapshotQuotaEntry<ClaudeUsagePayload>> };
+    const snapshot = snapshotBody(provided) as { claude_usage?: Record<string, SnapshotQuotaEntry<ClaudeUsagePayload>> };
     const entry = snapshot.claude_usage?.[account.email ?? ''];
     if (!entry) return { account, ok: false, error: 'no claude_usage entry in snapshot', fetchedAt, sourceUrl };
     if (!entry.ok || !entry.data) {
@@ -588,11 +595,11 @@ function fetchClaudeFromSnapshot(account: ProviderConfig): ProviderUsage {
 
 /** Prefer proxy-owned quota observations when a matching or explicitly bound source exists.
  * An error observation must not trigger a second credential refresh owner. */
-export function fetchCodexFromSnapshot(account: ProviderConfig): ProviderUsage | null {
+export function fetchCodexFromSnapshot(account: ProviderConfig, provided?: unknown): ProviderUsage | null {
   const sourceUrl = 'proxy-collector:codex-quota';
   const missing = (): ProviderUsage => ({ account, ok: false, error: 'Configured proxy quota observation is missing', fetchedAt: '', sourceUrl });
   try {
-    const snapshot = JSON.parse(readFileSync(loadConfig().billing.snapshot_path, 'utf8')) as { codex_usage?: Record<string, SnapshotQuotaEntry<CodexUsagePayload>> };
+    const snapshot = snapshotBody(provided) as { codex_usage?: Record<string, SnapshotQuotaEntry<CodexUsagePayload>> };
     const entry = snapshot.codex_usage?.[account.quota_snapshot_key || account.email];
     if (!entry) return account.quota_snapshot_key ? missing() : null;
     return { account, ok: entry.ok === true && !!entry.data, ...snapshotObservationFields(entry), data: entry.ok ? entry.data : undefined,

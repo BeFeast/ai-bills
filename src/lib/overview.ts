@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { loadConfig, type AppConfig } from './config';
 import { currentMonth } from './accounting';
 import { readSubscriptionOverrides, type SubscriptionOverride } from './subscription-overrides';
+import { overridesStoreFor, readSnapshot, type Scope } from './storage';
 
 export type SubscriptionConfig = {
   id: string; provider: string; label?: string; plan: string; status?: string;
@@ -130,8 +131,8 @@ export function buildProductOverview(config: AppConfig, input: unknown, month = 
       reconciliation: { status: text(reconciliation.status) || 'unknown', confirmedTokens: number(reconciliation.confirmed_tokens), confirmedRequests: number(reconciliation.confirmed_requests), nativeObservations: number(reconciliation.unreconciled_native_observations) },
       observedAt: Object.keys(current).length ? date(ledger.generated) || date(snapshot.generated) : null, last24h: recentUsage(ledger, snapshot) }, features };
 }
-export async function productOverview(config: AppConfig = loadConfig()): Promise<ProductOverview> {
-  let snapshot: unknown = {};
-  try { snapshot = JSON.parse(await readFile(config.billing.snapshot_path, 'utf8')); } catch { /* Explicit plans remain useful while usage is unavailable. */ }
-  return buildProductOverview(config, snapshot, currentMonth(config.server.timezone), await readSubscriptionOverrides(config));
+export async function productOverview(config: AppConfig = loadConfig(), scope?: Scope): Promise<ProductOverview> {
+  // Explicit plans remain useful while usage is unavailable: an unreadable snapshot is an empty one here.
+  const snapshot = (await readSnapshot(config, scope)).body;
+  return buildProductOverview(config, snapshot, currentMonth(config.server.timezone), await readSubscriptionOverrides(config, overridesStoreFor(scope)));
 }

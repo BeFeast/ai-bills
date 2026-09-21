@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { readSnapshot, type Scope } from './storage';
 import { loadConfig, type AppConfig } from './config';
 
 /** One rule evaluation as the collector-side alerts process reported it. `state` is the condition now; `severity` is what a page would carry. */
@@ -27,8 +28,7 @@ export function parseAlerts(snapshot: unknown): AlertsReport {
   return { generatedAt, snapshotAt: iso(root.generated), conditions, active: conditions.filter(c => c.state !== 'ok'), events, available: generatedAt !== null };
 }
 
-export async function alertsReport(config: AppConfig = loadConfig()): Promise<AlertsReport> {
-  let snapshot: unknown = {};
-  try { snapshot = JSON.parse(await readFile(config.billing.snapshot_path, 'utf8')); } catch { /* An unreadable snapshot reports as unavailable below. */ }
-  return parseAlerts(snapshot);
+export async function alertsReport(config: AppConfig = loadConfig(), scope?: Scope): Promise<AlertsReport> {
+  // An unreadable snapshot reports as unavailable below.
+  return parseAlerts((await readSnapshot(config, scope)).body);
 }

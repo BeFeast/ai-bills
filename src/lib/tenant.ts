@@ -2,7 +2,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { NextResponse } from 'next/server';
 import { ingestTokens, memberships } from '@/db/schema';
-import { defaultTenantSlug, ensureTenant, getDb, withTenant, type Db } from './db';
+import { defaultTenant, defaultTenantSlug, ensureTenant, getDb, withTenant, type Db } from './db';
 import { IDENTITY_HEADERS, authMode, authorizeEmail, membershipMode, normalizeEmail, parseEmailList } from './hosted-auth';
 
 /**
@@ -52,7 +52,7 @@ export async function resolveTenant(env: Record<string, string | undefined> = pr
   if (authMode(env) !== 'clerk' || !membershipMode(env) || !db) {
     // File-backed or allow-list mode: one tenant, decided by configuration, not by the person.
     const slug = defaultTenantSlug(env);
-    const tenant = db ? await ensureTenant(db, slug) : null;
+    const tenant = db ? await defaultTenant(db, env) : null;
     return { id: tenant?.id ?? null, slug, role: 'admin', userId: null, email: null };
   }
   const incoming = await headers();

@@ -5,6 +5,8 @@ import { readSeries, recordHistory } from '@/lib/history';
 import { loadConfig } from '@/lib/config';
 import { accountingOverview, currentMonth, freshness } from '@/lib/accounting';
 import { requireTenant } from '@/lib/tenant';
+import { historyStoreFor, journalStoreFor } from '@/lib/storage';
+import { journalRecordsFromRows } from '@/lib/accounting';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -12,11 +14,13 @@ export const dynamic = 'force-dynamic';
 const NO_STORE = { 'cache-control': 'no-store' };
 
 export async function GET() {
-  const { forbidden } = await requireTenant(); if (forbidden) return forbidden;
+  const { tenant, forbidden } = await requireTenant(); if (forbidden) return forbidden;
   try {
-    const snapshot = await fetchBillingSnapshot();
+    const snapshot = await fetchBillingSnapshot({ scope: tenant });
     const config = loadConfig();
-    snapshot.accounting = await accountingOverview(config.accounting, currentMonth(config.server.timezone));
+    const journal = journalStoreFor(tenant); const history = historyStoreFor(tenant);
+    const journalInput = journal ? await journal.read().then(read => ({ records: journalRecordsFromRows(read.rows), observedAt: read.observedAt })) : null;
+    snapshot.accounting = await accountingOverview(config.accounting, currentMonth(config.server.timezone), journalInput);
     snapshot.freshness = [freshness('billing-snapshot', snapshot.generatedAt, 300), ...snapshot.accounting.coverage];
     for (const source of snapshot.freshness.filter(row => row.status !== 'fresh')) {
       snapshot.diagnostics.push({ level: 'warn', source: source.id, message: source.message });
@@ -34,9 +38,9 @@ export async function GET() {
 
     // Sparklines from local history.
     const [runpodSeries, vastSeries, estSeries] = await Promise.all([
-      readSeries('runpod'),
-      readSeries('vast'),
-      readSeries('est_usd_today'),
+      readSeries('runpod', undefined, { store: history }),
+      readSeries('vast', undefined, { store: history }),
+      readSeries('est_usd_today', undefined, { store: history }),
     ]);
     attachSparkline(snapshot, 'runpod', runpodSeries);
     attachSparkline(snapshot, 'vast', vastSeries);
@@ -45,7 +49,7 @@ export async function GET() {
     }
 
     // Record this sample (after the live overlay so history tracks live values).
-    const historyError = await recordHistory(snapshot);
+    const historyError = await recordHistory(snapshot, { store: history });
     if (historyError) {
       snapshot.diagnostics.push({ level: 'warn', message: historyError, source: 'billing-history' });
     }

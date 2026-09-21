@@ -1,4 +1,4 @@
-import { boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { boolean, doublePrecision, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 /**
  * Tenancy schema (spec: Dev/Areas/ai-bills/specs/2026-09-21-multi-tenancy.md). Every table that
@@ -69,4 +69,32 @@ export const quotaObservations = pgTable('quota_observations', {
   uniqueIndex('quota_observations_unique_idx').on(table.tenantId, table.provider, table.accountKey, table.observedAt, table.source),
 ]);
 
-export const schema = { tenants, memberships, ingestTokens, snapshots, quotaObservations };
+/** Operator-entered financial records (formerly journal.jsonl); `record_id` is the record's own deduplication id. */
+export const journalRecords = pgTable('journal_records', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  recordId: text('record_id').notNull(),
+  record: jsonb('record').notNull(),
+  observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [uniqueIndex('journal_records_tenant_record_idx').on(table.tenantId, table.recordId)]);
+
+/** Operator edits to subscriptions (formerly subscription-overrides.json), one row per subscription. */
+export const subscriptionOverrides = pgTable('subscription_overrides', {
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  subscriptionId: text('subscription_id').notNull(),
+  override: jsonb('override').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [uniqueIndex('subscription_overrides_tenant_subscription_idx').on(table.tenantId, table.subscriptionId)]);
+
+/** Balance/spend samples for the sparklines (formerly history.jsonl). */
+export const historyPoints = pgTable('history_points', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  at: timestamp('at', { withTimezone: true }).notNull(),
+  runpod: doublePrecision('runpod'),
+  vast: doublePrecision('vast'),
+  estUsdToday: doublePrecision('est_usd_today'),
+}, table => [index('history_points_tenant_at_idx').on(table.tenantId, table.at)]);
+
+export const schema = { tenants, memberships, ingestTokens, snapshots, quotaObservations, journalRecords, subscriptionOverrides, historyPoints };

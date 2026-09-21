@@ -85,6 +85,22 @@ application sets per transaction; a connection without a tenant context sees no 
 Without `DATABASE_URL` nothing changes. Retention: the last 48 snapshot bodies per tenant;
 observations are kept.
 
+**Reading from the database (phase 3)** is switched with `AI_BILLS_STORAGE=db`. Every reader —
+usage cards, accounts, overview, accounting, alerts, billing history, the usage export — then
+reads the requesting tenant's rows (`snapshots`, `journal_records`, `subscription_overrides`,
+`history_points`) instead of the files; the collector's file is still written, so setting the
+variable back to `file` (or unsetting it) restores the previous behaviour without a deploy. At
+the first boot in `db` mode the operator-entered files are imported once for the default tenant
+while their tables are empty: the accounting journal (`accounting.journal_path`) and
+`subscription-overrides.json`; balance history and alert state start fresh. `/api/health`
+reports the default tenant's snapshot in this mode.
+
+The platform operator — addresses in `AI_BILLS_OPERATOR_EMAILS`, or the single admin of a
+non-Clerk instance — gets `/operator` and `GET /api/operator`: every tenant with ingest
+freshness, member and token counts and the latest quota observation per account, read under a
+read-only operator context (`app.operator`) that the row-level-security policies honour for
+`snapshots` and `quota_observations` only.
+
 ## Partner instances fed by the portable collector
 
 An instance whose config declares no `[[accounts]]` lists its Claude/Codex accounts from the

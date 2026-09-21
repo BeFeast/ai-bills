@@ -1,3 +1,4 @@
+import { readSnapshot, type Scope } from './storage';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -40,7 +41,7 @@ export function discoverConfiguredAccounts(config: unknown, observedAt: string):
   return result;
 }
 
-export async function accountRegistry(config: AppConfig = loadConfig()): Promise<AccountRegistry> {
+export async function accountRegistry(config: AppConfig = loadConfig(), scope?: Scope): Promise<AccountRegistry> {
   const generatedAt = new Date().toISOString(); const accounts: RegistryAccount[] = []; const sources: Freshness[] = [];
   const source = (id: string, status: Freshness['status'], message: string, observedAt: string | null = null) => sources.push({ id, status, message, observedAt, maxAgeSeconds: 300 });
   // Remote collector publishes a sanitized projection with the existing snapshot.
@@ -48,7 +49,10 @@ export async function accountRegistry(config: AppConfig = loadConfig()): Promise
   let snapshot: ObjectRow = {};
   const snapshotPath = config.accounting?.registry_snapshot_path ?? config.billing.snapshot_path;
   try {
-    snapshot = object(JSON.parse(await readFile(snapshotPath, 'utf8')));
+    // A separately configured registry file keeps its own path; otherwise the tenant's snapshot is the source.
+    const read = await readSnapshot(config, config.accounting?.registry_snapshot_path ? undefined : scope, snapshotPath);
+    if (read.version === null) throw new Error('snapshot unavailable');
+    snapshot = object(read.body);
     for (const row of rows(snapshot.source_receipts)) {
       const status = row.status === 'fresh' ? freshness(text(row.id), text(row.observedAt), 600).status : 'error';
       source(text(row.id), status, row.status === 'fresh' ? 'Collector source observation' : 'Collector source failed; an empty fallback is not evidence of zero usage', text(row.observedAt));
