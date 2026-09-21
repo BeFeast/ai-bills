@@ -282,7 +282,8 @@ async function establishSession(account: ProviderConfig, endpoint: string, signa
     session.sessionId = attached.sessionId;
     await startupSend('Page.enable', {}, session.sessionId);
     await startupSend('Runtime.enable', {}, session.sessionId);
-    const navUrl = account.provider === 'kimi' ? 'https://www.kimi.com/' : 'https://cursor.com';
+    // Kimi moved its international site to kimi.ai (2026-09); the token lives in the page's localStorage there.
+    const navUrl = account.provider === 'kimi' ? 'https://www.kimi.ai/' : 'https://cursor.com';
     await startupSend('Page.navigate', { url: navUrl }, session.sessionId);
     await waitForReady(session, budget);
     await waitForExecutionContext(session, budget);
@@ -308,11 +309,13 @@ async function joinSessionStart(flight: SessionStart, signal: AbortSignal | unde
 async function evaluateKimiFetch(session: CdpSession, url: string) {
   return evaluateInPage(session, `
     (async () => {
+      // kimi.ai keeps the session token in localStorage (access_token, refreshed by the page); the older kimi.com cookie is the fallback.
+      const stored = (() => { try { return localStorage.getItem('access_token'); } catch (_) { return null; } })();
       const authCookie = document.cookie
         .split('; ')
         .find((part) => part.startsWith('kimi-auth='));
-      if (!authCookie) throw new Error('Missing kimi-auth cookie');
-      const authValue = decodeURIComponent(authCookie.slice('kimi-auth='.length));
+      const authValue = stored || (authCookie ? decodeURIComponent(authCookie.slice('kimi-auth='.length)) : '');
+      if (!authValue) throw new Error('Missing Kimi access token: the browser profile is not signed in to kimi.ai');
       const response = await fetch(${JSON.stringify(url)}, {
         method: 'POST',
         credentials: 'include',

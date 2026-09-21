@@ -232,7 +232,7 @@ export type ProviderUsage = {
 
 export function usageUrl(account: ProviderConfig): string {
   if (account.provider === 'claude') return `https://claude.ai/api/organizations/${account.claude_org_id}/usage`;
-  if (account.provider === 'kimi') return 'https://www.kimi.com/apiv2/kimi.gateway.billing.v1.BillingService/GetUsages';
+  if (account.provider === 'kimi') return 'https://www.kimi.ai/apiv2/kimi.gateway.billing.v1.BillingService/GetUsages';
   if (account.provider === 'cursor') return 'https://cursor.com/api/usage-summary';
   return 'https://chatgpt.com/backend-api/wham/usage';
 }

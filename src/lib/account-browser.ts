@@ -7,7 +7,7 @@ import { acquireBrowserLease, releaseBrowserLease, renewBrowserLease, type Brows
 export class AccountBrowserInputError extends Error {}
 const providerHosts: Record<AccountConfig['provider'], string[]> = {
   claude: ['claude.ai'], codex: ['chatgpt.com', 'auth.openai.com'],
-  kimi: ['www.kimi.com', 'kimi.com'], cursor: ['cursor.com', 'www.cursor.com', 'authenticator.cursor.sh'],
+  kimi: ['www.kimi.ai', 'kimi.ai', 'www.kimi.com', 'kimi.com'], cursor: ['cursor.com', 'www.cursor.com', 'authenticator.cursor.sh'],
 };
 const email = (value: unknown): value is string => typeof value === 'string' && value.length < 255 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
