@@ -9,7 +9,3 @@ timezone = "UTC"
 usage_refresh_seconds = 60
 billing_fetch_timeout_ms = 1500
 idle_timeout_seconds = 60
-
-[billing]
-snapshot_path = "/data/snapshot.json"
-history_path = "/data/history.jsonl"

@@ -47,10 +47,8 @@ export async function accountRegistry(config: AppConfig = loadConfig(), scope?: 
   // Remote collector publishes a sanitized projection with the existing snapshot.
   let remoteInventory = false;
   let snapshot: ObjectRow = {};
-  const snapshotPath = config.accounting?.registry_snapshot_path ?? config.billing.snapshot_path;
   try {
-    // A separately configured registry file keeps its own path; otherwise the tenant's snapshot is the source.
-    const read = await readSnapshot(config, config.accounting?.registry_snapshot_path ? undefined : scope, snapshotPath);
+    const read = await readSnapshot(config, scope);
     if (read.version === null) throw new Error('snapshot unavailable');
     snapshot = object(read.body);
     for (const row of rows(snapshot.source_receipts)) {

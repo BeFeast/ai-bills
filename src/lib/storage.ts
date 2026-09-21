@@ -1,40 +1,28 @@
-import { readFile, stat } from 'node:fs/promises';
+import { latestSnapshot } from './snapshot-store';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { historyPoints, journalRecords, subscriptionOverrides } from '@/db/schema';
 import type { AppConfig } from './config';
 import { getDb, withTenant, type Db } from './db';
-import { latestSnapshot } from './snapshot-store';
 
 /**
- * Tenancy phase 3: where the instance reads its state from. `file` is the behaviour every instance
- * had before; `db` reads the tenant's rows. The flag exists so production can switch and switch back
- * without a deploy while the file is still written beside the database (phase 5 removes the file).
+ * Tenancy phase 5: the database is the only store. Every reader takes the tenant scope; without a
+ * configured database (or without a tenant) a read yields the empty snapshot and the stores are null,
+ * and the callers say so instead of inventing data.
  */
-export type StorageMode = 'db' | 'file';
-export const storageMode = (env: Record<string, string | undefined> = process.env): StorageMode => env.AI_BILLS_STORAGE === 'db' && env.DATABASE_URL ? 'db' : 'file';
-
-/** What every reader needs to know: which tenant, and whether the database is the source for it. */
 /** Shaped so a TenantContext (which has `id`) can be passed straight in. */
 export type Scope = { id: string | null };
-export const fileScope: Scope = { id: null };
 const dbFor = (scope: Scope | undefined, env = process.env): { db: Db; tenantId: string } | null => {
-  const db = storageMode(env) === 'db' && scope?.id ? getDb(env) : null;
+  const db = scope?.id ? getDb(env) : null;
   return db && scope?.id ? { db, tenantId: scope.id } : null;
 };
 
-export type SnapshotRead = { body: unknown; version: string | null; source: 'db' | 'file' };
-/** The current collector snapshot for the scope: the newest stored row, or the file. `version` changes whenever the content does. */
-export async function readSnapshot(config: AppConfig, scope?: Scope, path: string | undefined = config.billing?.snapshot_path): Promise<SnapshotRead> {
+export type SnapshotRead = { body: unknown; version: string | null };
+/** The tenant's newest stored snapshot; `version` (its receipt time) changes whenever the content does. */
+export async function readSnapshot(_config: AppConfig | undefined, scope?: Scope): Promise<SnapshotRead> {
   const target = dbFor(scope);
-  if (target) {
-    const row = await latestSnapshot(target.db, target.tenantId);
-    return { body: row?.body ?? {}, version: row ? row.receivedAt.toISOString() : null, source: 'db' };
-  }
-  if (!path) return { body: {}, version: null, source: 'file' };
-  try {
-    const [text, info] = await Promise.all([readFile(path, 'utf8'), stat(path)]);
-    return { body: JSON.parse(text), version: String(info.mtimeMs), source: 'file' };
-  } catch { return { body: {}, version: null, source: 'file' }; }
+  if (!target) return { body: {}, version: null };
+  const row = await latestSnapshot(target.db, target.tenantId);
+  return { body: row?.body ?? {}, version: row ? row.receivedAt.toISOString() : null };
 }
 
 // ---------------------------------------------------------------- journal

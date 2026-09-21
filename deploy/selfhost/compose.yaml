@@ -1,16 +1,38 @@
-# Self-host quickstart: the dashboard only. The collector runs on the machine where Claude Code /
-# Codex CLI are signed in (usually this one) and pushes snapshots to the ingest endpoint; see
-# docs/self-host.md. No login in this mode: keep the port on loopback or a private network.
+# Self-host quickstart: the dashboard and its database. The collector runs on the machine where
+# Claude Code / Codex CLI are signed in (usually this one) and pushes snapshots to the ingest
+# endpoint; see docs/self-host.md. No login in this mode: keep the port on loopback or a private network.
 services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zecori
+      POSTGRES_USER: zecori
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set the database owner password in .env}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set the application role password in .env}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zecori -d zecori"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
   zecori:
     build:
       context: ../..
     image: ${AI_BILLS_IMAGE:-zecori:local}
     container_name: zecori
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       AI_BILLS_CONFIG: /app/config.toml
+      AI_BILLS_TENANT: default
+      DATABASE_URL: postgres://zecori_app:${POSTGRES_APP_PASSWORD}@db:5432/zecori
+      DATABASE_ADMIN_URL: postgres://zecori:${POSTGRES_PASSWORD}@db:5432/zecori
       HOSTNAME: "0.0.0.0"
       PORT: "18088"
     env_file:
@@ -19,7 +41,6 @@ services:
       - "${AI_BILLS_BIND:-127.0.0.1}:${AI_BILLS_PORT:-13180}:18088"
     volumes:
       - ./config.toml:/app/config.toml:ro
-      - ./data:/data
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:18088/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s

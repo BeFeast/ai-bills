@@ -1,6 +1,5 @@
-import { readFileSync } from 'node:fs';
 import { openRouterFunds } from './openrouter';
-import { loadConfig, type AccountConfig } from './config';
+import { loadConfig, tenantAccounts, type AccountConfig } from './config';
 import { peekUsageObservations } from './usage-observations';
 
 type SnapshotQuota = { ok?: boolean; fetched_at?: string };
@@ -30,15 +29,10 @@ function newer(a: Observation | null, b: Observation | null): Observation | null
 }
 
 /** No network, refresh, browser acquisition or private source payloads. */
-export function sourceHealth(now = Date.now(), provided?: unknown) {
+export function sourceHealth(now = Date.now(), snapshot: unknown = {}) {
   const config = loadConfig();
   const observations = peekUsageObservations();
-  const collected = config.accounts.some(account => ['claude', 'codex'].includes(account.provider));
-  let snapshot: unknown = provided ?? {};
-  if (provided === undefined && (collected || config.accounting?.openrouter_account_id)) {
-    try { snapshot = JSON.parse(readFileSync(config.billing?.snapshot_path ?? '', 'utf8')); } catch { /* Sources fall back to in-process observations. */ }
-  }
-  const sources = config.accounts.map(account => {
+  const sources = tenantAccounts(config, snapshot).map(account => {
     const observation = observations.find(row => row.account.key === account.key);
     const inProcess: Observation | null = observation?.fetchedAt ? { observedAt: observation.fetchedAt, ok: observation.ok } : null;
     const chosen = newer(inProcess, snapshotObservation(snapshot, account));

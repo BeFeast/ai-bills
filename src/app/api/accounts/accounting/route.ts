@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { reconcileMonth } from '@/lib/reconciliation';
 import { hasAllowedOrigin } from '@/lib/request-origin';
 import { loadConfig } from '@/lib/config';
-import { accountingOverview, appendFinancialRecords, appendFinancialRecordsTo, journalRecordsFromRows, AccountingConflictError, AccountingInputError, currentMonth, fxRates } from '@/lib/accounting';
+import { accountingOverview, appendFinancialRecordsTo, journalRecordsFromRows, AccountingConflictError, AccountingInputError, currentMonth, fxRates } from '@/lib/accounting';
 import { requireTenant } from '@/lib/tenant';
 import { journalStoreFor, readSnapshot } from '@/lib/storage';
 export const runtime = 'nodejs';
@@ -26,14 +26,13 @@ export async function POST(request: Request) {
   if (!hasAllowedOrigin(request)) return NextResponse.json({ error: 'Cross-origin accounting changes are not allowed' }, { status: 403 });
   try {
     const store = journalStoreFor(tenant);
-    const path = loadConfig().accounting?.journal_path;
-    if (!store && !path) return NextResponse.json({ error: 'Private accounting journal is not configured' }, { status: 503 });
+    if (!store) return NextResponse.json({ error: 'The accounting journal needs the database' }, { status: 503 });
     const content = await request.text();
     if (content.length > 2_000_000) throw new AccountingInputError('Import is too large');
     const body = JSON.parse(content);
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new AccountingInputError('Expected a JSON object');
     if (!Array.isArray(body.records)) throw new AccountingInputError('Expected records array');
-    return NextResponse.json(store ? await appendFinancialRecordsTo(store, body.records) : await appendFinancialRecords(path!, body.records));
+    return NextResponse.json(await appendFinancialRecordsTo(store, body.records));
   } catch (error) { return failure(error); }
 }
 function failure(error: unknown) {

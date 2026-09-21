@@ -1,14 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { schema, journalRecords } from '../src/db/schema';
 import { APP_ROLE, MIGRATIONS_FOLDER, ensureTenant, withTenant, type Db } from '../src/lib/db';
 import { storeSnapshot } from '../src/lib/snapshot-store';
-import { dbHistoryStore, dbJournalStore, dbOverridesStore, readSnapshot, storageMode, withOperator } from '../src/lib/storage';
+import { dbHistoryStore, dbJournalStore, dbOverridesStore, readSnapshot, withOperator } from '../src/lib/storage';
 import { appendFinancialRecordsTo, journalRecordsFromRows } from '../src/lib/accounting';
 import { readSeries, recordHistory } from '../src/lib/history';
 import { operatorOverview, isOperator } from '../src/lib/operator';
@@ -18,8 +15,7 @@ import type { BillingSnapshot } from '../src/lib/billing';
 let pg: PGlite; let db: Db;
 vi.mock('../src/lib/db', async importOriginal => ({ ...(await importOriginal<typeof import('../src/lib/db')>()), getDb: () => db }));
 
-const dir = mkdtempSync(join(tmpdir(), 'zecori-storage-'));
-const config = { billing: { snapshot_path: join(dir, 'snapshot.json'), history_path: join(dir, 'history.jsonl') }, accounting: {}, accounts: [], server: { timezone: 'UTC' } } as unknown as AppConfig;
+const config = { billing: {}, accounting: {}, accounts: [], server: { timezone: 'UTC' } } as unknown as AppConfig;
 
 beforeAll(async () => {
   pg = new PGlite();
@@ -32,32 +28,20 @@ afterAll(async () => { await pg.close(); });
 
 const record = (id: string, amount: number) => ({ sourceId: 'manual', sourceRecordId: id, accountId: 'acct', provider: 'anthropic', kind: 'payment', amount, currency: 'USD', date: '2026-09-10' });
 
-describe('storage mode', () => {
-  it('reads from the database only when asked and a database exists', () => {
-    expect(storageMode({ AI_BILLS_STORAGE: 'db', DATABASE_URL: 'postgres://x' })).toBe('db');
-    expect(storageMode({ AI_BILLS_STORAGE: 'db' })).toBe('file');
-    expect(storageMode({ DATABASE_URL: 'postgres://x' })).toBe('file');
-  });
-});
-
 describe('snapshot source', () => {
-  it('serves each tenant its own newest snapshot in db mode and the file otherwise', async () => {
-    process.env.AI_BILLS_STORAGE = 'db'; process.env.DATABASE_URL = 'postgres://mocked';
+  it('serves each tenant its own newest snapshot, and nothing without a tenant', async () => {
+    process.env.DATABASE_URL = 'postgres://mocked';
     const a = await ensureTenant(db, 'read-a'); const b = await ensureTenant(db, 'read-b');
     await storeSnapshot(db, a.id, JSON.stringify({ generated: '2026-09-21T10:00:00Z', marker: 'a-old' }), '2026-09-21T10:00:00Z', new Date('2026-09-21T10:00:30Z'));
     await storeSnapshot(db, a.id, JSON.stringify({ generated: '2026-09-21T10:05:00Z', marker: 'a-new' }), '2026-09-21T10:05:00Z', new Date('2026-09-21T10:05:30Z'));
     await storeSnapshot(db, b.id, JSON.stringify({ generated: '2026-09-21T10:01:00Z', marker: 'b' }), '2026-09-21T10:01:00Z', new Date('2026-09-21T10:01:30Z'));
     const readA = await readSnapshot(config, { id: a.id }); const readB = await readSnapshot(config, { id: b.id });
-    expect((readA.body as { marker: string }).marker).toBe('a-new'); expect(readA.source).toBe('db'); expect(readA.version).toBe('2026-09-21T10:05:30.000Z');
+    expect((readA.body as { marker: string }).marker).toBe('a-new'); expect(readA.version).toBe('2026-09-21T10:05:30.000Z');
     expect((readB.body as { marker: string }).marker).toBe('b');
     const empty = await readSnapshot(config, { id: (await ensureTenant(db, 'read-empty')).id });
-    expect(empty).toEqual({ body: {}, version: null, source: 'db' });
-    // File mode, or no tenant: the file as before, with its mtime as the version.
-    writeFileSync(config.billing.snapshot_path, JSON.stringify({ generated: 'x', marker: 'file' }));
-    expect(((await readSnapshot(config, { id: null })).body as { marker: string }).marker).toBe('file');
-    process.env.AI_BILLS_STORAGE = 'file';
-    const fromFile = await readSnapshot(config, { id: a.id });
-    expect((fromFile.body as { marker: string }).marker).toBe('file'); expect(fromFile.source).toBe('file'); expect(fromFile.version).not.toBeNull();
+    expect(empty).toEqual({ body: {}, version: null });
+    // No tenant: nothing is read, nothing is invented.
+    expect(await readSnapshot(config, { id: null })).toEqual({ body: {}, version: null });
     delete process.env.DATABASE_URL;
   });
 });

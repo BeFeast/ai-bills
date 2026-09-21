@@ -41,7 +41,7 @@ back to the newer of two honest alternatives and says so in `source`: `proxy_hea
 the quota the proxy read from response headers of the account's own traffic (passed by
 the wrapper through `AI_BILLS_PROXY_QUOTA_FILE`, no extra provider request), or
 `retained`, the last successful observation from the previous snapshot
-(`AI_BILLS_PREVIOUS_SNAPSHOT`), kept for at most six hours. A fallback entry keeps `ok`
+(`AI_BILLS_PREVIOUS_SNAPSHOT`, the collector's own copy of what it last delivered), kept for at most six hours. A fallback entry keeps `ok`
 and `data` with the fallback's own `fetched_at`, has `status: null`, and records how the
 direct request ended under `direct` (`status`, `error`, `attempted_at`). The dashboard
 shows the number with a "Check rate-limited" or "Check failed" badge and the fallback's

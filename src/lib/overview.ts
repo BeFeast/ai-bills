@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { loadConfig, type AppConfig } from './config';
 import { currentMonth } from './accounting';
 import { readSubscriptionOverrides, type SubscriptionOverride } from './subscription-overrides';

@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { hasAllowedOrigin } from '@/lib/request-origin';
-import { loadConfig } from '@/lib/config';
-import { AccountingConflictError, AccountingInputError, appendFinancialRecords, appendFinancialRecordsTo } from '@/lib/accounting';
+import { AccountingConflictError, AccountingInputError, appendFinancialRecordsTo } from '@/lib/accounting';
 import { MAX_STATEMENT_BYTES, StatementImportError, importStatement, type StatementImportInput } from '@/lib/statement-import';
 import { readBounded } from '@/lib/snapshot-ingest';
 import { requireTenant } from '@/lib/tenant';
@@ -18,8 +17,7 @@ export async function POST(request: Request) {
   if (!hasAllowedOrigin(request)) return NextResponse.json({ error: 'Cross-origin accounting changes are not allowed' }, { status: 403 });
   try {
     const store = journalStoreFor(tenant);
-    const path = loadConfig().accounting?.journal_path;
-    if (!store && !path) return NextResponse.json({ error: 'Private accounting journal is not configured' }, { status: 503 });
+    if (!store) return NextResponse.json({ error: 'The accounting journal needs the database' }, { status: 503 });
     // Bounded by bytes on the wire. JSON escaping can double a quote-heavy CSV, so the wire bound is twice the
     // decoded limit plus the envelope; the decoded CSV is still held to MAX_STATEMENT_BYTES by importStatement.
     const read = await readBounded(request, MAX_STATEMENT_BYTES * 2 + 10_000);
@@ -35,7 +33,7 @@ export async function POST(request: Request) {
     const preview = { parsed: parsed.records.length, skipped: parsed.skipped, columns: parsed.columns, mapping: parsed.mapping, sample: parsed.records.slice(0, 5) };
     if (body.dryRun === true) return NextResponse.json({ ...preview, dryRun: true }, { headers: { 'cache-control': 'no-store' } });
     if (!parsed.records.length) throw new AccountingInputError('No rows could be read; nothing was imported');
-    const result = store ? await appendFinancialRecordsTo(store, parsed.records) : await appendFinancialRecords(path!, parsed.records);
+    const result = await appendFinancialRecordsTo(store, parsed.records);
     return NextResponse.json({ ...preview, ...result, dryRun: false }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
     const input = error instanceof AccountingInputError || error instanceof StatementImportError || error instanceof SyntaxError;

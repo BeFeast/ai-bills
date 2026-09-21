@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-vi.mock('../src/lib/config', () => ({ loadConfig: () => ({ accounting: { journal_path: '/not-used-by-invalid-input' } }) }));
+vi.mock('../src/lib/config', () => ({ loadConfig: () => ({ accounting: {} }) }));
+vi.mock('../src/lib/tenant', () => ({ requireTenant: async () => ({ tenant: { id: 'tenant', slug: 't', role: 'admin', userId: null, email: null }, forbidden: null }) }));
+vi.mock('../src/lib/storage', () => ({ journalStoreFor: () => ({ configured: true, read: async () => ({ rows: [], observedAt: null }), add: async () => 0 }), readSnapshot: async () => ({ body: {}, version: null }) }));
 import { POST } from '../src/app/api/accounts/accounting/route';
 
 describe('accounting request validation', () => {

@@ -75,20 +75,17 @@ describe('account identity and quota evidence', () => {
 });
 
 describe('proxy-owned Codex snapshot observations', () => {
-  async function snapshot(data: unknown) {
-    const directory = await mkdtemp(join(tmpdir(), 'ai-bills-quota-')); temporary.push(directory);
-    const path = join(directory, 'snapshot.json'); await writeFile(path, JSON.stringify(data));
-    resetConfigCache(); const config = loadConfig('tests/fixtures/accounts.toml'); config.billing.snapshot_path = path;
-  }
+  let current: unknown = {};
+  async function snapshot(data: unknown) { current = data; }
   const account = { key: 'codex-example', provider: 'codex' as const, label: 'Codex example', email: 'fixture@example.invalid', quota_snapshot_key: 'binding' };
   it('uses collector quota and preserves original source timestamp', async () => {
     await snapshot({ codex_usage: { binding: { ok: true, status: 200, fetched_at: '2026-01-01T00:00:00Z', data: { rate_limit: { primary_window: { used_percent: 30 } } } } } });
-    expect(fetchCodexFromSnapshot(account)).toMatchObject({ ok: true, sourceUrl: 'proxy-collector:codex-quota', fetchedAt: '2026-01-01T00:00:00Z' });
+    expect(fetchCodexFromSnapshot(account, current)).toMatchObject({ ok: true, sourceUrl: 'proxy-collector:codex-quota', fetchedAt: '2026-01-01T00:00:00Z' });
   });
   it('returns a failed observation on 401 or missing explicit binding, preventing fallback refresh', async () => {
     await snapshot({ codex_usage: { binding: { ok: false, status: 401, fetched_at: '2026-01-01T00:00:00Z', error: 'Rejected' } } });
-    expect(fetchCodexFromSnapshot(account)).toMatchObject({ ok: false, status: 401 });
-    expect(fetchCodexFromSnapshot({ ...account, quota_snapshot_key: 'missing' })).toMatchObject({ ok: false, fetchedAt: '' });
-    expect(fetchCodexFromSnapshot({ ...account, quota_snapshot_key: undefined })).toBeNull();
+    expect(fetchCodexFromSnapshot(account, current)).toMatchObject({ ok: false, status: 401 });
+    expect(fetchCodexFromSnapshot({ ...account, quota_snapshot_key: 'missing' }, current)).toMatchObject({ ok: false, fetchedAt: '' });
+    expect(fetchCodexFromSnapshot({ ...account, quota_snapshot_key: undefined }, current)).toBeNull();
   });
 });

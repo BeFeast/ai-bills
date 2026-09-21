@@ -1,11 +1,8 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { authMode, authorizeEmail, clerkRuntime, parseEmailList } from '../src/lib/hosted-auth';
 import { publicUrl } from '../src/middleware';
-import { bearerAccepted, parseTokenDigests, readBounded, validateSnapshot, writeSnapshotAtomically } from '../src/lib/snapshot-ingest';
+import { bearerAccepted, parseTokenDigests, readBounded, validateSnapshot } from '../src/lib/snapshot-ingest';
 
 describe('hosted authorization', () => {
   it('is off unless explicitly switched to clerk', () => {
@@ -44,26 +41,25 @@ describe('snapshot ingest', () => {
     expect(validateSnapshot('{"generated":5}')).toMatchObject({ ok: false });
     expect(validateSnapshot('{')).toMatchObject({ ok: false, error: 'snapshot is not valid JSON' });
   });
-  it('replaces the file atomically', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'zecori-ingest-'));
-    const target = join(dir, 'nested', 'snapshot.json');
-    await writeSnapshotAtomically(target, '{"generated":"a"}');
-    await writeSnapshotAtomically(target, '{"generated":"b"}');
-    expect(JSON.parse(await readFile(target, 'utf8')).generated).toBe('b');
-  });
   it('stops reading an oversized body at the cap, with or without a content-length header', async () => {
     const big = new ReadableStream<Uint8Array>({ start(controller) { for (let i = 0; i < 6; i++) controller.enqueue(new Uint8Array(1024).fill(120)); controller.close(); } });
     expect(await readBounded(new Request('http://x/', { method: 'PUT', body: big, duplex: 'half' } as RequestInit), 4096)).toEqual({ ok: false });
     expect(await readBounded(new Request('http://x/', { method: 'PUT', body: 'small', headers: { 'content-length': '99999999' } }), 4096)).toEqual({ ok: false });
     expect(await readBounded(new Request('http://x/', { method: 'PUT', body: '{"generated":"a"}' }), 4096)).toEqual({ ok: true, text: '{"generated":"a"}' });
   });
-  it('serves the route with the configured digest and rejects everything else', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'zecori-route-'));
+  it('serves the route with the configured digest, stores for the default tenant and rejects everything else', async () => {
+    const { PGlite } = await import('@electric-sql/pglite');
+    const { drizzle } = await import('drizzle-orm/pglite');
+    const { migrate } = await import('drizzle-orm/pglite/migrator');
+    const { schema } = await import('../src/db/schema');
+    const dbModule = await import('../src/lib/db');
+    const pg = new PGlite(); const owner = drizzle(pg, { schema });
+    await migrate(owner, { migrationsFolder: dbModule.MIGRATIONS_FOLDER }); await pg.exec(`SET ROLE ${dbModule.APP_ROLE}`);
+    const spy = vi.spyOn(dbModule, 'getDb').mockReturnValue(owner as unknown as ReturnType<typeof dbModule.getDb>);
     process.env.AI_BILLS_INGEST_TOKEN_SHA256 = digest;
     process.env.AI_BILLS_CONFIG = `${process.cwd()}/tests/fixtures/accounts.toml`;
-    const { resetConfigCache, loadConfig } = await import('../src/lib/config');
-    resetConfigCache();
-    loadConfig().billing.snapshot_path = join(dir, 'snapshot.json');
+    process.env.AI_BILLS_TENANT = 'route-test';
+    const { resetConfigCache } = await import('../src/lib/config'); resetConfigCache();
     const { PUT } = await import('../src/app/api/snapshot/route');
     const call = (auth: string | null, body: string) => PUT(new Request('http://hosted.test/api/snapshot', { method: 'PUT', headers: auth ? { authorization: auth, 'content-type': 'application/json' } : {}, body }));
     expect((await call(null, '{"generated":"x"}')).status).toBe(401);
@@ -71,10 +67,14 @@ describe('snapshot ingest', () => {
     expect((await call(`Bearer ${token}`, '{"nope":true}')).status).toBe(400);
     const ok = await call(`Bearer ${token}`, '{"generated":"2026-09-19T00:00:00Z","alerts":{}}');
     expect(ok.status).toBe(200);
-    expect(JSON.parse(await readFile(join(dir, 'snapshot.json'), 'utf8')).generated).toBe('2026-09-19T00:00:00Z');
+    expect(await ok.json()).toMatchObject({ ok: true, stored: { tenant: 'route-test' } });
+    const { latestSnapshot } = await import('../src/lib/snapshot-store');
+    const tenant = await dbModule.ensureTenant(owner as unknown as ReturnType<typeof dbModule.getDb> & object, 'route-test');
+    expect(((await latestSnapshot(owner as unknown as Parameters<typeof latestSnapshot>[0], tenant.id))?.body as { generated: string }).generated).toBe('2026-09-19T00:00:00Z');
     delete process.env.AI_BILLS_INGEST_TOKEN_SHA256;
     expect((await call(`Bearer ${token}`, '{"generated":"x"}')).status).toBe(404);
-  });
+    spy.mockRestore(); dbModule.resetDefaultTenantCache(); await pg.close();
+  }, 60_000);
 });
 
 describe('public return address', () => {

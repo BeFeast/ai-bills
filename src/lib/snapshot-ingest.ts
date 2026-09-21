@@ -1,6 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdir, open, rename } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 export const MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024;
 
@@ -29,15 +27,6 @@ export function validateSnapshot(raw: string): { ok: true; generated: string } |
   try { value = JSON.parse(raw); } catch { return { ok: false, error: 'snapshot is not valid JSON' }; }
   if (!value || typeof value !== 'object' || Array.isArray(value) || typeof (value as { generated?: unknown }).generated !== 'string') return { ok: false, error: 'invalid snapshot envelope' };
   return { ok: true, generated: (value as { generated: string }).generated };
-}
-
-/** Write next to the destination, fsync, then rename: readers see either the previous or the complete new snapshot. */
-export async function writeSnapshotAtomically(destination: string, raw: string): Promise<void> {
-  await mkdir(dirname(destination), { recursive: true });
-  const temporary = join(dirname(destination), `.snapshot-${randomUUID()}.tmp`);
-  const handle = await open(temporary, 'w', 0o640);
-  try { await handle.writeFile(raw, 'utf8'); await handle.sync(); } finally { await handle.close(); }
-  await rename(temporary, destination);
 }
 
 /** Read at most `limit` bytes from a request body, stopping (and cancelling the stream) as soon as the cap is exceeded, so an oversized upload never sits in memory. */
