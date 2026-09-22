@@ -37,8 +37,25 @@ const VIEWS: Record<View, { label: string; subtitle: string }> = {
 
 const statusTone: Record<StatusTone, PillTone> = { '': 'idle', ok: 'ok', warn: 'warn', danger: 'bad' };
 
+const isView = (value: string | null): value is View => value !== null && Object.prototype.hasOwnProperty.call(VIEWS, value);
+/** The view named in the URL (`?view=accounts`), so a section can be bookmarked and shared; anything else is the overview. */
+const viewFromLocation = (): View => { if (typeof window === 'undefined') return 'overview'; const value = new URLSearchParams(window.location.search).get('view'); return isView(value) ? value : 'overview'; };
+
 export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
-  const [view, setView] = useState<View>('overview');
+  const [view, setViewState] = useState<View>('overview');
+  // Hydration renders the overview; the URL decides right after, and the back button keeps working.
+  useEffect(() => {
+    setViewState(viewFromLocation());
+    const onPop = () => setViewState(viewFromLocation());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  const setView = useCallback((next: View) => {
+    setViewState(next);
+    const url = new URL(window.location.href);
+    if (next === 'overview') url.searchParams.delete('view'); else url.searchParams.set('view', next);
+    if (url.href !== window.location.href) window.history.pushState(null, '', url);
+  }, []);
   const [overview, setOverview] = useState<ProductOverview | null>(null);
   const [overviewError, setOverviewError] = useState('');
   const [alerts, setAlerts] = useState<AlertsReport | null>(null);

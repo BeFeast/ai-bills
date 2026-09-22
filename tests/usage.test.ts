@@ -51,6 +51,9 @@ describe('usage helpers', () => {
     expect(payload.usages).toEqual([{ scope: 'FEATURE_CODING', detail: { limit: 100, used: 4, remaining: 96, resetTime: null }, limits: [] }]);
     expect(kimiCodingUsage(payload)?.detail.remaining).toBe(96);
     expect(() => parseKimiUsagePayload({ totalQuota: {} })).toThrow(/missing usages array and total quota/);
+    // A failed observation carries the provider's raw answer (no usages); the helpers answer null instead of throwing.
+    expect(kimiCodingUsage({ code: 'unauthenticated' } as never)).toBeNull();
+    expect(kimiWindow({ usages: [{ scope: 'FEATURE_CODING', detail: { limit: 1, used: 0, remaining: 1, resetTime: null } }] } as never, 300, 'TIME_UNIT_MINUTE')).toBeNull();
   });
   test('takes utilization as whole percents, without fraction rescaling', () => {
     expect(windowUtilization({ utilization: 42 })).toBe(42);

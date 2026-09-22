@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 
-export type SidebarItem<T extends string> = { id: T; label: string; icon?: ReactNode; count?: number };
+export type SidebarItem<T extends string> = { id: T; label: string; icon?: ReactNode; count?: number; /** Deep link for the item; the click still goes through onSelect so the app can switch without a reload. */ href?: string };
 
 type SidebarProps<T extends string> = {
   brand: { mark: ReactNode; name: ReactNode; sub?: ReactNode };
@@ -29,11 +29,12 @@ export function Sidebar<T extends string>({ brand, sectionLabel, items, activeId
       {items.map((item) => {
         const active = item.id === activeId;
         return (
-          <button key={item.id} type="button" className={`bf-sb__link${active ? ' bf-sb__link--active' : ''}`} aria-current={active ? 'page' : undefined} onClick={() => onSelect(item.id)}>
+          <a key={item.id} href={item.href ?? `?view=${item.id}`} className={`bf-sb__link${active ? ' bf-sb__link--active' : ''}`} aria-current={active ? 'page' : undefined}
+            onClick={(event) => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); onSelect(item.id); }}>
             {item.icon ? <span className="bf-sb__icon">{item.icon}</span> : null}
             <span className="bf-sb__label">{item.label}</span>
             {item.count !== undefined ? <span className="bf-sb__count">{item.count}</span> : null}
-          </button>
+          </a>
         );
       })}
       {footer ? <div className="bf-sb__footer">{footer}</div> : null}

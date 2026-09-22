@@ -448,11 +448,14 @@ function asRecord(value: unknown, label: string): Record<string, unknown> {
 }
 
 export function kimiCodingUsage(data?: KimiUsagePayload | null): KimiUsageEntry | null {
-  return data?.usages.find((usage) => usage.scope === 'FEATURE_CODING') ?? data?.usages[0] ?? null;
+  // A failed observation carries the provider's raw answer, which has no usages; the card must not crash on it.
+  const usages = Array.isArray(data?.usages) ? data.usages : [];
+  return usages.find((usage) => usage.scope === 'FEATURE_CODING') ?? usages[0] ?? null;
 }
 
 export function kimiWindow(data: KimiUsagePayload | null | undefined, duration: number, timeUnit: string): KimiQuotaWindow | null {
-  return kimiCodingUsage(data)?.limits.find((limit) => limit.duration === duration && limit.timeUnit === timeUnit) ?? null;
+  const limits = kimiCodingUsage(data)?.limits;
+  return (Array.isArray(limits) ? limits : []).find((limit) => limit.duration === duration && limit.timeUnit === timeUnit) ?? null;
 }
 
 export function kimiUsagePercent(detail?: KimiQuotaDetail | null): number | null {
