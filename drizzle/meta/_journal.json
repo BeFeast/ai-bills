@@ -29,6 +29,13 @@
       "when": 1789992584953,
       "tag": "0003_stores-rls",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790183035294,
+      "tag": "0004_device-tokens",
+      "breakpoints": true
     }
   ]
 }

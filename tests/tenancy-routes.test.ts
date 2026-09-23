@@ -26,9 +26,13 @@ describe('tenant guard on API routes', () => {
       const handlers = [...source.matchAll(handlerPattern)];
       expect(handlers.length).toBeGreaterThan(0);
       // Each exported handler calls the guard itself, or every handler delegates to one function that does (routing's `forward`).
-      const guardCalls = (source.match(/await requireTenant\(\); if \(forbidden\) return forbidden;/g) ?? []).length;
+      const guardCalls = (source.match(/await requireTenant\((?:\{ device: true \})?\); if \(forbidden\) return forbidden;/g) ?? []).length;
       const delegating = handlers.filter(match => match[2]).length;
       expect(guardCalls).toBeGreaterThanOrEqual(delegating === handlers.length ? 1 : handlers.length);
+    });
+    // A device token is read-only by construction: exactly one route may accept it, and it must be the widget.
+    it(`${route} ${route === '/api/widget' ? 'accepts' : 'refuses'} a device token`, () => {
+      expect(/requireTenant\(\{/.test(source)).toBe(route === '/api/widget');
     });
   }
 });

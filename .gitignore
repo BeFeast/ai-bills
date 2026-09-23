@@ -71,3 +71,12 @@ payments.yml
 !src/app/tokens/*.css
 deploy/selfhost/data/
 deploy/selfhost/.env
+
+# Device-token source: code and migration, never a credential value
+!src/lib/device-tokens.ts
+!src/app/api/device-tokens/
+!tests/device-tokens.test.ts
+!drizzle/0004_device-tokens.sql
+
+# Omarchy widget mark shipped with the plugin
+!integrations/omarchy/befeast.zecori/assets/*.png

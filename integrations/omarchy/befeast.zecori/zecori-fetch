@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Print the widget answer of a Zecori instance as one JSON document on stdout.
+#
+#   zecori-fetch <base-url> <token-file>
+#
+# The device token never appears on a command line: curl reads the header from
+# its config on stdin. Every failure is reported as {"error": ..., "status": ...}
+# with exit status 0, so the widget always has something to show.
+set -uo pipefail
+
+base="${1:-https://zecori.befeast.com}"
+token_file="${2:-$HOME/.config/zecori/token}"
+token_file="${token_file/#\~/$HOME}"
+base="${base%/}"
+
+fail() {
+  local message="$1" status="${2:-null}"
+  printf '{"error":%s,"status":%s}\n' "$(printf '%s' "$message" | jq -Rs .)" "$status"
+  exit 0
+}
+
+command -v curl >/dev/null || fail "curl is not installed"
+command -v jq >/dev/null || fail "jq is not installed"
+[ -f "$token_file" ] || fail "No device token at $token_file"
+[ -r "$token_file" ] || fail "The device token at $token_file is not readable"
+# Owner-only is the rule: no group or other bits. 0600 is the documented mode; 0400 is fine too.
+mode="$(stat -c %a "$token_file" 2>/dev/null || echo "")"
+case "$mode" in
+  [0-7]00 | [0-7][0-7]00) ;;
+  *) fail "The device token at $token_file must not be readable by others: chmod 600 it" ;;
+esac
+token="$(tr -d '[:space:]' < "$token_file")"
+[ -n "$token" ] || fail "The device token file at $token_file is empty"
+
+response="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+  | curl -sS --max-time 20 --config - -w '\n%{http_code}' "$base/api/widget" 2>&1)" || {
+  fail "Could not reach $base: ${response%%$'\n'*}"
+}
+status="${response##*$'\n'}"
+body="${response%$'\n'*}"
+
+case "$status" in
+  200)
+    if printf '%s' "$body" | jq -e 'type == "object" and has("accounts")' >/dev/null 2>&1; then
+      printf '%s\n' "$body"
+    else
+      fail "Unexpected answer from $base/api/widget" 200
+    fi
+    ;;
+  401) fail "The device token was not accepted; issue a new one" 401 ;;
+  403) fail "This token may not read the widget; issue a device token, not an ingest token" 403 ;;
+  *)
+    detail="$(printf '%s' "$body" | jq -r '.error // empty' 2>/dev/null)"
+    fail "Zecori answered HTTP ${status:-?}${detail:+: $detail}" "${status:-null}"
+    ;;
+esac

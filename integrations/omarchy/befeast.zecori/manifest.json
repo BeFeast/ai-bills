@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "befeast.zecori",
+  "name": "Zecori",
+  "version": "0.1.0",
+  "author": "BeFeast",
+  "license": "MIT",
+  "description": "Remaining AI subscription limits, reset times and today's spend per machine, read from your Zecori instance.",
+  "kinds": ["bar-widget"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Zecori",
+    "description": "One bar icon with the tightest remaining allowance and one panel: every account's limit windows with reset countdowns, plus today's usage by client label.",
+    "category": "AI",
+    "aliases": ["zecori", "ai-limits"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "baseUrl": "https://zecori.befeast.com",
+      "tokenPath": "~/.config/zecori/token",
+      "refreshIntervalSec": 300
+    },
+    "schema": [
+      { "key": "baseUrl", "type": "string", "label": "Zecori instance URL", "defaultValue": "https://zecori.befeast.com", "description": "Origin of the Zecori instance that holds your tenant." },
+      { "key": "tokenPath", "type": "path", "label": "Device token file", "defaultValue": "~/.config/zecori/token", "description": "File holding the device token; owner-only (mode 0600). Issue one with POST /api/device-tokens as a tenant admin." },
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 60, "max": 3600, "step": 30, "defaultValue": 300 }
+    ]
+  }
+}
