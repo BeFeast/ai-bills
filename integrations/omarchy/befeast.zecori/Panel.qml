@@ -615,7 +615,8 @@ Panel {
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
-      elide: Text.ElideRight
+      // Wraps rather than elides: the reset time and "as of" sit at the end of this line.
+      wrapMode: Text.WordWrap
     }
   }
 
