@@ -22,9 +22,15 @@ describe('widget payload', () => {
   it('reports the same windows as the Overview hero and sorts the tightest account first', () => {
     const work = claude('work', 'Work', 40, 10); const personal = claude('personal', 'Personal', 5, 3, 2, 30);
     const payload = buildWidgetPayload({ usage: usage([personal, work]), snapshot: { body: ledger('2026-09-23'), version: new Date(now - 4 * 60_000).toISOString() }, now, timezone: 'UTC' });
+    // The bar leads with the account-wide window (Work: Weekly all models 90 % vs Personal: Session 95 %), so Work is tighter.
     expect(payload.accounts.map(row => row.key)).toEqual(['work', 'personal']);
-    expect(payload.accounts[0]).toMatchObject({ state: 'fresh', message: null, limiting: { label: 'Fable weekly', remainingPercent: 15, limiting: true } });
-    expect(payload.accounts[0].windows).toEqual(accountWindows(work).windows);
+    expect(payload.accounts[0]).toMatchObject({ state: 'fresh', message: null,
+      limiting: { label: 'Fable weekly', remainingPercent: 15, limiting: true, scoped: true },
+      headline: { label: 'Session', remainingPercent: 60, scoped: false } });
+    // Account-wide windows first, tightest first; the model-scoped allowance last, however tight it is.
+    expect(payload.accounts[0].windows.map(w => [w.label, w.scoped])).toEqual([['Session', false], ['Weekly all models', false], ['Fable weekly', true]]);
+    expect(payload.accounts[0].windows.map(({ scoped: _scoped, ...rest }) => rest).sort((a, b) => a.label.localeCompare(b.label))).toEqual([...accountWindows(work).windows].sort((a, b) => a.label.localeCompare(b.label)));
+    expect(payload.accounts[1].headline).toMatchObject({ label: 'Session', remainingPercent: 95 });
     expect(payload.snapshot).toMatchObject({ stale: false, reason: null, ageSeconds: 240, generatedAt: ledger('x').generated });
     expect(payload.today).toEqual({ date: '2026-09-23', byClient: [
       { name: 't3-claude', tokens: 289097590, requests: 1442, apiEquivalentUsd: null, pricedApiEquivalentUsd: 0 },
@@ -38,7 +44,11 @@ describe('widget payload', () => {
     expect(stale.snapshot).toMatchObject({ stale: true, reason: 'snapshot-age', ageSeconds: 1200 });
     expect(stale.accounts.map(row => [row.key, row.state])).toEqual([['work', 'stale'], ['codex', 'error'], ['kimi', 'pending']]);
     expect(stale.accounts[0].limiting).not.toBeNull();
-    expect(stale.accounts[2]).toMatchObject({ limiting: null, windows: [], message: PENDING_OBSERVATION });
+    expect(stale.accounts[2]).toMatchObject({ limiting: null, headline: null, windows: [], message: PENDING_OBSERVATION });
+    // A Claude account that only reports a scoped window leads with it rather than with nothing.
+    const onlyScoped: ProviderUsage = { account: account('solo', 'claude', 'Solo'), ok: true, fetchedAt: new Date(now).toISOString(), sourceUrl: 'snapshot',
+      data: { limits: [{ kind: 'weekly_scoped', percent: 50, resets_at: '2026-09-26T12:00:00Z', is_active: true, scope: { model: { display_name: 'Fable' } } }] } };
+    expect(buildWidgetPayload({ usage: usage([onlyScoped]), snapshot: { body: {}, version: null }, now, timezone: 'UTC' }).accounts[0].headline).toMatchObject({ label: 'Fable weekly', scoped: true, remainingPercent: 50 });
     expect(stale.today).toBeNull();
     const none = buildWidgetPayload({ usage: usage([]), snapshot: { body: {}, version: null }, now, timezone: 'UTC' });
     expect(none.snapshot).toMatchObject({ stale: true, reason: 'no-snapshot', ageSeconds: null, generatedAt: null, receivedAt: null });
