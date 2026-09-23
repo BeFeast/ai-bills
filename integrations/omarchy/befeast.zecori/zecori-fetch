@@ -34,7 +34,7 @@ token="$(tr -d '[:space:]' < "$token_file")"
 
 response="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
   | curl -sS --max-time 20 --config - -w '\n%{http_code}' "$base/api/widget" 2>&1)" || {
-  fail "Could not reach $base: ${response##*$'\n'}"
+  fail "Could not reach $base: ${response%%$'\n'*}"
 }
 status="${response##*$'\n'}"
 body="${response%$'\n'*}"
