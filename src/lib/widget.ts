@@ -70,7 +70,9 @@ function widgetAccount(result: ProviderUsage, now: number): WidgetAccount {
   const windows = heroWindows.map(window => ({ ...window, scoped: scoped.has(window.label) }));
   const general = windows.filter(window => !window.scoped).sort(byRemaining);
   const model = windows.filter(window => window.scoped).sort(byRemaining);
-  const limiting = windows.find(window => window === heroLimiting || (heroLimiting && window.label === heroLimiting.label)) ?? null;
+  // The hero's limiting entry by position: the copies above keep heroWindows' order, and labels are not unique by contract.
+  const limitingIndex = heroLimiting ? heroWindows.indexOf(heroLimiting) : -1;
+  const limiting = limitingIndex >= 0 ? windows[limitingIndex] : null;
   return { ...base, state: evidence.state, message: evidence.state === 'fresh' ? null : evidence.message, observedAt: result.fetchedAt || null, limiting, headline: general[0] ?? model[0] ?? null, windows: [...general, ...model] };
 }
 
