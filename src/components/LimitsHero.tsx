@@ -15,6 +15,11 @@ function remainingText(window: HeroWindow): string {
   if (window.unit === 'requests') return window.remaining === null ? 'n/a' : `${window.remaining.toLocaleString()} requests`;
   return pct(window.remainingPercent);
 }
+/** A window carried over from an earlier observation says when it was seen; the rest share the card's observation time. */
+function asOf(window: HeroWindow): string {
+  if (!window.observedAt || !Number.isFinite(Date.parse(window.observedAt))) return '';
+  return ` · as of ${new Date(window.observedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: TZ })}`;
+}
 function ResetChip({ reset, now }: { reset: string | null; now: number }) {
   const text = refillLabel(reset, now);
   return text ? <span className="hero-chip" title={`Resets ${fmtDate(reset, TZ)}`}>↻ {text}</span> : <span className="hero-chip">refill time unknown</span>;
@@ -68,7 +73,7 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
     {head(<>{badge}{card.fallback ? <FallbackPill fallback={card.fallback} /> : null}</>)}
     <div className="hero-card__body">
       <div className="hero-card__main">
-        <span className="hero-card__window" title="The window currently constraining this account">{card.limiting.label}</span>
+        <span className="hero-card__window" title="The window currently constraining this account">{card.limiting.label}{asOf(card.limiting)}</span>
         <div className="hero-card__value"><span className="hero-card__num tabular">{remainingText(card.limiting)}</span>{card.limiting.exhausted ? null : <span className="t-small">left</span>}</div>
         <ResetChip reset={card.limiting.resetsAt} now={now} />
       </div>
@@ -76,7 +81,7 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
         <span className="hero-window__label">{window.label}</span>
         <span className="hero-window__value">{remainingText(window)}{window.exhausted || window.unit === 'requests' ? '' : ' left'}</span>
         <Progress value={window.remainingPercent ?? 0} tone={window.tone} label={`${window.label} remaining`} />
-        <span className="hero-window__reset">{refillLabel(window.resetsAt, now) ? `↻ ${refillLabel(window.resetsAt, now)}` : 'refill time unknown'}</span>
+        <span className="hero-window__reset">{refillLabel(window.resetsAt, now) ? `↻ ${refillLabel(window.resetsAt, now)}` : 'refill time unknown'}{asOf(window)}</span>
       </li>)}</ul> : null}
     </div>
     <div className="hero-card__foot"><span className="t-small">{activityText(card.activity, recencyKnown, now)}{card.fallback ? ` · ${fallbackSource[card.fallback.kind]} · observed ${fmtDate(card.observedAt, TZ)}` : ''}</span>{access}</div>

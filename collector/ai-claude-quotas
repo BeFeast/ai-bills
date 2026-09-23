@@ -94,11 +94,38 @@ def load_previous(path, bucket):
     return rows if isinstance(rows, dict) else {}
 
 
-def fallback(entry, identity, email, previous, proxy_quota, now, to_payload):
+def carried_scoped_limits(prior, now):
+    """Per-model weekly allowances (limits of kind `weekly_scoped`, e.g. the Fable weekly) from the
+    previous observation, each stamped with the time it was actually observed.
+
+    Rate-limit headers only carry the account-wide 5-hour and 7-day windows, so a header-based
+    fallback would otherwise drop the per-model allowance every time the direct request is refused.
+    A carried limit keeps its original `observed_at` across consecutive fallbacks and is dropped once
+    its window has reset or it is older than RETAIN_SECONDS."""
+    if not isinstance(prior, dict) or not prior.get('ok') or not isinstance(prior.get('data'), dict):
+        return []
+    fallback_time = parse_time(prior.get('fetched_at'))
+    carried = []
+    for limit in prior['data'].get('limits') or []:
+        if not isinstance(limit, dict) or limit.get('kind') != 'weekly_scoped':
+            continue
+        observed = parse_time(limit.get('observed_at')) or fallback_time
+        resets = parse_time(limit.get('resets_at'))
+        if not observed or not 0 <= (now - observed).total_seconds() <= RETAIN_SECONDS:
+            continue
+        if resets and resets <= now:
+            continue
+        carried.append(dict(limit, observed_at=observed.isoformat()))
+    return carried
+
+
+def fallback(entry, identity, email, previous, proxy_quota, now, to_payload, carry=None):
     """Replace a transiently failed direct observation with the newest honest alternative, if any.
 
     A definite rejection (401/403 and other non-retryable statuses) means the credential itself is
-    the problem; no fallback may hide that behind a number, so the entry stays failed."""
+    the problem; no fallback may hide that behind a number, so the entry stays failed. When the
+    proxy headers win and `carry` is given, what they cannot express is carried over from the
+    previous observation by `carry(prior, now)`, stamped with its own observation time."""
     if entry.get('status') is not None and entry['status'] not in RETRYABLE:
         return
     direct = {'status': entry.get('status'), 'error': entry.get('error'), 'attempted_at': entry['fetched_at']}
@@ -116,6 +143,10 @@ def fallback(entry, identity, email, previous, proxy_quota, now, to_payload):
     if not candidates:
         return
     observed, source, data = max(candidates, key=lambda item: item[0])
+    if source == 'proxy_headers' and carry:
+        limits = carry(prior, now)
+        if limits:
+            data = dict(data, limits=limits)
     entry.pop('error', None)
     entry.update(ok=True, status=None, fetched_at=observed.isoformat(), data=data, source=source, direct=direct)
 
@@ -153,7 +184,7 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
                 entry.update(ok=True, status=status, data=payload, source='direct')
             else:
                 entry.update(status=status, error=payload)
-                fallback(entry, identity, email, previous, proxy_quota, attempted, proxy_quota_payload)
+                fallback(entry, identity, email, previous, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
         result[identity] = entry
         if email:
             emails.setdefault(email, []).append(entry)

@@ -180,7 +180,11 @@ Panel {
       var w = account.windows[i]
       var head = headlineOf(account)
       if (!w || (head && w.label === head.label)) continue
-      parts.push(w.label + " " + remainingText(w) + (w.resetsAt && (w.tone === "bad" || w.tone === "warn") ? " (" + resetIn(w) + ")" : ""))
+      // A low window says when it refills; a window carried from an earlier observation says when it was seen.
+      var notes = []
+      if (w.resetsAt && (w.tone === "bad" || w.tone === "warn")) notes.push(resetIn(w))
+      if (w.observedAt) notes.push("as of " + clock(w.observedAt))
+      parts.push(w.label + " " + remainingText(w) + (notes.length ? " (" + notes.join(", ") + ")" : ""))
     }
     return parts.join(" · ")
   }
@@ -590,6 +594,7 @@ Panel {
         var parts = [String(accountRow.limiting.label)]
         var reset = root.resetIn(accountRow.limiting)
         if (reset !== "") parts.push(reset)
+        if (accountRow.limiting.observedAt) parts.push("as of " + root.clock(accountRow.limiting.observedAt))
         var state = root.stateText(accountRow.account)
         if (state !== "") parts.push(state)
         return parts.join(" · ")

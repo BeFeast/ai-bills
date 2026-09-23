@@ -49,6 +49,13 @@ describe('widget payload', () => {
     const onlyScoped: ProviderUsage = { account: account('solo', 'claude', 'Solo'), ok: true, fetchedAt: new Date(now).toISOString(), sourceUrl: 'snapshot',
       data: { limits: [{ kind: 'weekly_scoped', percent: 50, resets_at: '2026-09-26T12:00:00Z', is_active: true, scope: { model: { display_name: 'Fable' } } }] } };
     expect(buildWidgetPayload({ usage: usage([onlyScoped]), snapshot: { body: {}, version: null }, now, timezone: 'UTC' }).accounts[0].headline).toMatchObject({ label: 'Fable weekly', scoped: true, remainingPercent: 50 });
+    // A header fallback keeps the account-wide windows fresh and the carried Fable window second, with its own time.
+    const carried: ProviderUsage = { account: account('work', 'claude', 'Work'), ok: true, fetchedAt: new Date(now).toISOString(), sourceUrl: 'snapshot', source: 'proxy_headers',
+      data: { five_hour: { utilization: 20, resets_at: '2026-09-23T20:00:00Z' }, seven_day: { utilization: 40, resets_at: '2026-09-27T00:00:00Z' },
+        limits: [{ kind: 'weekly_scoped', percent: 100, resets_at: '2026-09-26T12:00:00Z', is_active: true, scope: { model: { display_name: 'Fable' } }, observed_at: '2026-09-23T16:40:00Z' }] } };
+    const row = buildWidgetPayload({ usage: usage([carried]), snapshot: { body: {}, version: null }, now, timezone: 'UTC' }).accounts[0];
+    expect(row.headline).toMatchObject({ label: 'Weekly all models', remainingPercent: 60, scoped: false });
+    expect(row.windows.map(w => [w.label, w.scoped, w.observedAt ?? null])).toEqual([['Weekly all models', false, null], ['Session', false, null], ['Fable weekly', true, '2026-09-23T16:40:00Z']]);
     expect(stale.today).toBeNull();
     const none = buildWidgetPayload({ usage: usage([]), snapshot: { body: {}, version: null }, now, timezone: 'UTC' });
     expect(none.snapshot).toMatchObject({ stale: true, reason: 'no-snapshot', ageSeconds: null, generatedAt: null, receivedAt: null });

@@ -68,3 +68,13 @@ test('a stale observation shows the last known value labelled as such, never as 
   expect(html).not.toContain('>Unknown<');
   expect(html).not.toContain('Running low');
 });
+
+test('a per-model window carried from an earlier observation says when it was seen', () => {
+  const carried: ProviderUsage = { ...work, source: 'proxy_headers', status: undefined, direct: { status: 429, error: 'Proxy quota request rejected (HTTP 429)', attemptedAt: fetchedAt },
+    data: { five_hour: { utilization: 7, resets_at: '2026-09-19T00:10:00Z' }, seven_day: { utilization: 43, resets_at: '2026-09-21T08:00:00Z' },
+      limits: [{ kind: 'weekly_scoped', percent: 83, resets_at: '2026-09-21T08:00:00Z', scope: { model: { display_name: 'Fable' } }, is_active: true, observed_at: '2026-09-18T19:40:00Z' }] } };
+  const data = buildProductOverview(config, snapshot, '2026-09');
+  const html = renderToStaticMarkup(<ProductOverviewPanel data={data} accounts={[carried]} registry={[]} view="overview" onView={() => {}} now={now} />);
+  expect(html).toContain('Fable weekly · as of 22:40');
+  expect(html).not.toContain('Weekly all models · as of');
+});
