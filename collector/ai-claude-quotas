@@ -104,6 +104,9 @@ def carried_scoped_limits(prior, now):
     its window has reset or it is older than RETAIN_SECONDS."""
     if not isinstance(prior, dict) or not prior.get('ok') or not isinstance(prior.get('data'), dict):
         return []
+    # A limit without its own stamp comes straight from the observation that holds it: a `direct` entry,
+    # or a `retained` one whose fetched_at is still that direct observation's time. Header-based entries
+    # never hold an unstamped scoped limit, because this function stamps every limit it carries.
     fallback_time = parse_time(prior.get('fetched_at'))
     carried = []
     for limit in prior['data'].get('limits') or []:

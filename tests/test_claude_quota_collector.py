@@ -228,6 +228,9 @@ class QuotaFallbackTests(unittest.TestCase):
         self.assertNotIn('limits', self.collect(module, request, previous=reset, proxy_quota=proxy)[0]['data'])
         stale = {identity: dict(entry, data=dict(entry['data'], limits=[dict(fable, observed_at='2026-09-21T02:00:00+00:00')]))}
         self.assertNotIn('limits', self.collect(module, request, previous=stale, proxy_quota=proxy)[0]['data'])
+        # A retained entry keeps the direct observation's time, so a header fallback after it stamps that time too.
+        retained = {identity: {'ok': True, 'source': 'retained', 'fetched_at': '2026-09-21T08:20:00+00:00', 'data': {'limits': [fable]}}}
+        self.assertEqual(self.collect(module, request, previous=retained, proxy_quota=proxy)[0]['data']['limits'][0]['observed_at'], '2026-09-21T08:20:00+00:00')
         # Without a usable previous observation nothing is invented.
         self.assertNotIn('limits', self.collect(module, request, previous={identity: {'ok': False, 'fetched_at': '2026-09-21T08:30:04+00:00'}}, proxy_quota=proxy)[0]['data'])
 
