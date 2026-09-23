@@ -26,6 +26,7 @@ Panel {
   readonly property string baseUrl: String(root.setting("baseUrl", "https://zecori.befeast.com"))
   readonly property string tokenPath: String(root.setting("tokenPath", "~/.config/zecori/token"))
   readonly property int refreshIntervalSec: Math.max(60, Number(root.setting("refreshIntervalSec", 300)) || 300)
+  readonly property string glyphName: String(root.setting("glyph", "coin")) === "face" ? "face" : "coin"
   readonly property string fetchScript: Qt.resolvedUrl("zecori-fetch").toString().replace(/^file:\/\//, "")
 
   // The last answer, or the last failure: the panel keeps showing the previous
@@ -296,19 +297,20 @@ Panel {
       bar: root.bar
       active: root.alarming
       tooltipText: root.barTooltip()
-      // A monochrome silhouette in the bar's own colour, like every other bar icon; the
-      // portrait stays for the panel hero. The image is a hidden layer the effect samples.
+      // A schematic monochrome mark in the bar's own colour, like every other bar icon; the
+      // portrait stays for the panel hero. The SVG fills the icon canvas (its ink is about the
+      // height of the cpu and monitor glyphs) and is decoded at physical pixels so it stays crisp
+      // on fractional scales. The image is a hidden layer the effect samples.
       iconComponent: Component {
         Item {
           Image {
             id: glyph
             anchors.fill: parent
-            source: Qt.resolvedUrl("assets/zecori-glyph.png")
-            sourceSize.width: Math.round(Math.max(1, width) * 2)
-            sourceSize.height: Math.round(Math.max(1, height) * 2)
+            source: Qt.resolvedUrl("assets/zecori-glyph-" + root.glyphName + ".svg")
+            sourceSize.width: Math.round(Math.max(1, width) * Screen.devicePixelRatio)
+            sourceSize.height: Math.round(Math.max(1, height) * Screen.devicePixelRatio)
             fillMode: Image.PreserveAspectFit
             smooth: true
-            mipmap: true
             visible: false
             layer.enabled: true
           }
