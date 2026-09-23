@@ -57,7 +57,7 @@ Set with `omarchy bar set befeast.zecori <key> <value> [--json]`:
 | Key | Default | What it does |
 |---|---|---|
 | `baseUrl` | `https://zecori.befeast.com` | The instance that holds your tenant |
-| `tokenPath` | `~/.config/zecori/token` | File with the device token (must be mode `0600`) |
+| `tokenPath` | `~/.config/zecori/token` | File with the device token; owner-only (`0600`), no group or other bits |
 | `refreshIntervalSec` | `300` | How often the widget polls (`--json` for numbers) |
 
 ## Panel
@@ -83,7 +83,7 @@ Set with `omarchy bar set befeast.zecori <key> <value> [--json]`:
 ## Files
 
 - `Panel.qml` — the bar button and the panel.
-- `zecori-fetch` — reads the token file, calls `/api/widget`, prints one JSON
+- `zecori-fetch` — reads the token file (refused unless owner-only), calls `/api/widget`, prints one JSON
   document; every failure is `{"error": …, "status": …}` so the panel can show it.
   The token is handed to curl through its config on stdin, never as an argument.
 - `assets/zecori-mark.png` — the round Zecori mark from the brand kit.

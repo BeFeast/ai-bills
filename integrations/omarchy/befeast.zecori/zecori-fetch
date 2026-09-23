@@ -23,10 +23,11 @@ command -v curl >/dev/null || fail "curl is not installed"
 command -v jq >/dev/null || fail "jq is not installed"
 [ -f "$token_file" ] || fail "No device token at $token_file"
 [ -r "$token_file" ] || fail "The device token at $token_file is not readable"
+# Owner-only is the rule: no group or other bits. 0600 is the documented mode; 0400 is fine too.
 mode="$(stat -c %a "$token_file" 2>/dev/null || echo "")"
 case "$mode" in
-  *00) ;;
-  *) fail "The device token at $token_file must be private: chmod 600 it" ;;
+  [0-7]00 | [0-7][0-7]00) ;;
+  *) fail "The device token at $token_file must not be readable by others: chmod 600 it" ;;
 esac
 token="$(tr -d '[:space:]' < "$token_file")"
 [ -n "$token" ] || fail "The device token file at $token_file is empty"

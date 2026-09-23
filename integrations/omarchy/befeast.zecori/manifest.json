@@ -25,7 +25,7 @@
     },
     "schema": [
       { "key": "baseUrl", "type": "string", "label": "Zecori instance URL", "defaultValue": "https://zecori.befeast.com", "description": "Origin of the Zecori instance that holds your tenant." },
-      { "key": "tokenPath", "type": "path", "label": "Device token file", "defaultValue": "~/.config/zecori/token", "description": "File holding the device token (mode 0600). Issue one with POST /api/device-tokens as a tenant admin." },
+      { "key": "tokenPath", "type": "path", "label": "Device token file", "defaultValue": "~/.config/zecori/token", "description": "File holding the device token; owner-only (mode 0600). Issue one with POST /api/device-tokens as a tenant admin." },
       { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 60, "max": 3600, "step": 30, "defaultValue": 300 }
     ]
   }
