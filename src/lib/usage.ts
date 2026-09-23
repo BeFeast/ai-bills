@@ -20,6 +20,8 @@ export type ClaudeLimitEntry = {
   resets_at?: string | null;
   scope?: string | { model?: { display_name?: string | null } | null; surface?: string | null; [key: string]: unknown } | null;
   is_active?: boolean | null;
+  /** Set by the collector when a header-based fallback carries this limit over from an earlier direct observation. */
+  observed_at?: string | null;
 };
 
 export type ClaudeSpend = {
@@ -308,6 +310,8 @@ export type ClaudeWindow = {
   isActive: boolean;
   severity: string | null;
   exhausted: boolean;
+  /** Only for a limit carried over from an earlier observation: when it was actually observed. */
+  observedAt?: string;
 };
 
 /** Every limit window Claude reports for an account, in display order: session, weekly all models, then each scoped model. */
@@ -317,7 +321,8 @@ export function claudeWindows(data?: ClaudeUsagePayload | null): ClaudeWindow[] 
     const used = pickFinite(windowUtilization(window), limitPercent(limit));
     if (used === null) return;
     windows.push({ kind, label, usedPercent: used, resetsAt: window?.resets_at || limit?.resets_at || null,
-      isActive: limit?.is_active === true, severity: limit?.severity ?? null, exhausted: used >= 100 || isLimitExhausted(limit) });
+      isActive: limit?.is_active === true, severity: limit?.severity ?? null, exhausted: used >= 100 || isLimitExhausted(limit),
+      ...(limit?.observed_at ? { observedAt: limit.observed_at } : {}) });
   };
   push('session', 'Session', data?.five_hour, claudeLimitByKind(data ?? undefined, 'session'));
   push('weekly_all', 'Weekly all models', data?.seven_day, claudeLimitByKind(data ?? undefined, 'weekly_all'));

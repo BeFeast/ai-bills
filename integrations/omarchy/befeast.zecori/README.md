@@ -59,6 +59,7 @@ Set with `omarchy bar set befeast.zecori <key> <value> [--json]`:
 | `baseUrl` | `https://zecori.befeast.com` | The instance that holds your tenant |
 | `tokenPath` | `~/.config/zecori/token` | File with the device token; owner-only (`0600`), no group or other bits |
 | `refreshIntervalSec` | `300` | How often the widget polls (`--json` for numbers) |
+| `glyph` | `coin` | Bar mark: `coin` (the Zecori Z in a coin with ear discs) or `face` (the schematic Zecori head) |
 
 ## Panel
 
@@ -89,5 +90,6 @@ Set with `omarchy bar set befeast.zecori <key> <value> [--json]`:
   document; every failure is `{"error": …, "status": …}` so the panel can show it.
   The token is handed to curl through its config on stdin, never as an argument.
 - `assets/zecori-mark.png` — the Zecori portrait cut out of its background, for the hero.
-- `assets/zecori-glyph.png` — a white silhouette with alpha; the bar tints it with its own
-  foreground colour (urgent when a limit is out), like every other bar icon.
+- `assets/zecori-glyph-coin.svg`, `assets/zecori-glyph-face.svg` — the bar marks, white on
+  transparent; the bar tints them with its own foreground colour (urgent when a limit is out),
+  like every other bar icon.

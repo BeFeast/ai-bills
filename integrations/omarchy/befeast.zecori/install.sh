@@ -16,6 +16,8 @@ for file in manifest.json Panel.qml zecori-fetch README.md; do
   install -m 0644 "$src/$file" "$dest/$file"
 done
 chmod 0755 "$dest/zecori-fetch"
+# Assets are replaced, not merged, so a renamed or retired mark does not linger.
+rm -rf "$dest/assets"
 mkdir -p "$dest/assets"
 install -m 0644 "$src/assets/"* "$dest/assets/"
 

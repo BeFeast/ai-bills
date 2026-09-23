@@ -5,7 +5,9 @@ import { claudeWindows, isPendingObservation, codexPrimaryWindow, codexWindowDur
 import { usageEvidence, type UsageEvidence } from './usage-evidence';
 
 /** One limit window of an account as the hero shows it. `remaining` is in `unit`; `remainingPercent` drives tone and order. */
-export type HeroWindow = { label: string; remaining: number | null; remainingPercent: number | null; unit: 'percent' | 'requests'; resetsAt: string | null; limiting: boolean; exhausted: boolean; tone: QuotaTone };
+export type HeroWindow = { label: string; remaining: number | null; remainingPercent: number | null; unit: 'percent' | 'requests'; resetsAt: string | null; limiting: boolean; exhausted: boolean; tone: QuotaTone;
+  /** Present only when this window was carried over from an earlier observation than the account's (Claude per-model allowance during a header fallback). */
+  observedAt?: string };
 /** Proxy request outcomes for the account in the rolling window. `failed` excludes rate-limited requests. */
 export type HeroActivity = { requests: number; ok: number; failed: number; rateLimited: number; lastRequestAt: string | null };
 export type HeroIdentity = { key: string; provider: string; label: string; email: string };
@@ -28,10 +30,10 @@ const upstreamProvider = (value: string) => normalize(value.replace(/^openai-com
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
 
-function window(label: string, usedPercent: number | null, resetsAt: string | null, exhausted = false): HeroWindow | null {
+function window(label: string, usedPercent: number | null, resetsAt: string | null, exhausted = false, observedAt?: string): HeroWindow | null {
   if (usedPercent === null) return null;
   const remaining = clampPercent(100 - usedPercent);
-  return { label, remaining, remainingPercent: remaining, unit: 'percent', resetsAt, limiting: false, exhausted: exhausted || remaining === 0, tone: quotaTone(remaining, exhausted || remaining === 0) };
+  return { label, remaining, remainingPercent: remaining, unit: 'percent', resetsAt, limiting: false, exhausted: exhausted || remaining === 0, tone: quotaTone(remaining, exhausted || remaining === 0), ...(observedAt ? { observedAt } : {}) };
 }
 function requestWindow(label: string, detail: KimiQuotaDetail | null | undefined): HeroWindow | null {
   if (!finite(detail?.remaining)) return null;
@@ -51,7 +53,7 @@ export function accountWindows(result: ProviderUsage): { windows: HeroWindow[]; 
   const provider = result.account.provider;
   if (provider === 'claude') {
     for (const item of claudeWindows(result.data as ClaudeUsagePayload | undefined)) {
-      const entry = window(item.label, item.usedPercent, item.resetsAt, item.exhausted);
+      const entry = window(item.label, item.usedPercent, item.resetsAt, item.exhausted, item.observedAt);
       if (!entry) continue;
       windows.push(entry); if (item.isActive) active.push(entry);
     }

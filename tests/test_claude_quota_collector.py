@@ -205,6 +205,43 @@ class QuotaFallbackTests(unittest.TestCase):
         entry, _ = self.collect(module, request, previous=previous, proxy_quota=proxy)
         self.assertEqual(entry['source'], 'retained')
 
+    def test_header_fallback_keeps_the_per_model_weekly_allowance_with_its_own_observation_time(self):
+        module = load('ai-claude-quotas')
+        request, _ = self.rejecting([429])
+        identity = hashlib.sha256(b'oauth:claude-a.json').hexdigest()[:24]
+        fable = {'kind': 'weekly_scoped', 'percent': 85, 'resets_at': '2026-09-26T12:00:00+00:00', 'is_active': True, 'scope': {'model': {'display_name': 'Fable'}}}
+        session = {'kind': 'session', 'percent': 10, 'resets_at': '2026-09-21T13:00:00+00:00', 'is_active': False}
+        previous = {identity: {'ok': True, 'source': 'direct', 'fetched_at': '2026-09-21T08:30:04+00:00',
+                               'data': {'five_hour': {'utilization': 10, 'resets_at': None}, 'limits': [session, fable]}}}
+        proxy = {'a@example.invalid': {'observed_at': '2026-09-21T08:34:00Z', 'signals': {
+            'Anthropic-Ratelimit-Unified-5h-Utilization': '0.2', 'Anthropic-Ratelimit-Unified-5h-Reset': '1789997400',
+            'Anthropic-Ratelimit-Unified-7d-Utilization': '0.43', 'Anthropic-Ratelimit-Unified-7d-Reset': '1790582400'}}}
+        entry, _ = self.collect(module, request, previous=previous, proxy_quota=proxy)
+        # The fresh account-wide windows come from the headers; only the per-model allowance is carried, stamped with when it was seen.
+        self.assertEqual((entry['source'], entry['fetched_at'], entry['data']['five_hour']['utilization']), ('proxy_headers', '2026-09-21T08:34:00+00:00', 20.0))
+        self.assertEqual(entry['data']['limits'], [dict(fable, observed_at='2026-09-21T08:30:04+00:00')])
+        # A second fallback in a row keeps the original observation time instead of re-stamping it as new.
+        entry2, _ = self.collect(module, request, previous={identity: entry}, proxy_quota=proxy)
+        self.assertEqual(entry2['data']['limits'][0]['observed_at'], '2026-09-21T08:30:04+00:00')
+        # Past its reset the allowance no longer exists; past the retention it is no longer evidence.
+        reset = {identity: dict(previous[identity], data={'limits': [dict(fable, resets_at='2026-09-21T08:00:00+00:00')]})}
+        self.assertNotIn('limits', self.collect(module, request, previous=reset, proxy_quota=proxy)[0]['data'])
+        stale = {identity: dict(entry, data=dict(entry['data'], limits=[dict(fable, observed_at='2026-09-21T02:00:00+00:00')]))}
+        self.assertNotIn('limits', self.collect(module, request, previous=stale, proxy_quota=proxy)[0]['data'])
+        # A retained entry keeps the direct observation's time, so a header fallback after it stamps that time too.
+        retained = {identity: {'ok': True, 'source': 'retained', 'fetched_at': '2026-09-21T08:20:00+00:00', 'data': {'limits': [fable]}}}
+        self.assertEqual(self.collect(module, request, previous=retained, proxy_quota=proxy)[0]['data']['limits'][0]['observed_at'], '2026-09-21T08:20:00+00:00')
+        # Without a usable previous observation nothing is invented.
+        self.assertNotIn('limits', self.collect(module, request, previous={identity: {'ok': False, 'fetched_at': '2026-09-21T08:30:04+00:00'}}, proxy_quota=proxy)[0]['data'])
+
+    def test_a_retained_observation_is_passed_through_unchanged(self):
+        module = load('ai-claude-quotas')
+        request, _ = self.rejecting([429])
+        identity = hashlib.sha256(b'oauth:claude-a.json').hexdigest()[:24]
+        data = {'five_hour': {'utilization': 12, 'resets_at': None}, 'limits': [{'kind': 'weekly_scoped', 'percent': 50, 'resets_at': '2026-09-26T12:00:00+00:00'}]}
+        entry, _ = self.collect(module, request, previous={identity: {'ok': True, 'fetched_at': '2026-09-21T08:30:04+00:00', 'data': data}})
+        self.assertEqual((entry['source'], entry['data']), ('retained', data))
+
     def test_codex_falls_back_to_proxy_headers_in_the_usage_endpoint_shape(self):
         module = load('ai-codex-quotas')
         request, calls = self.rejecting([503])

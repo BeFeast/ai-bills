@@ -28,6 +28,18 @@ const last24h: OverviewRecentUsage = { windowHours: 24, observedAt: '2026-09-18T
   upstream('xai', 'work@example.invalid', 4, 2, 2), upstream('openai-compatible-openrouter', 'sk-or-v1…2253', 12), upstream('antigravity', 'personal@example.invalid', 0),
 ] };
 
+describe('per-model allowance carried over a header fallback', () => {
+  it('keeps the Fable window with its own observation time; the fresh account-wide windows carry none', () => {
+    const headerFallback: ProviderUsage = { account: { key: 'claude-work', provider: 'claude', label: 'Claude · Work', email: 'work@example.invalid' }, ok: true, fetchedAt, sourceUrl: 'fixture', source: 'proxy_headers',
+      direct: { status: 429, error: 'Proxy quota request rejected (HTTP 429)', attemptedAt: fetchedAt },
+      data: { five_hour: { utilization: 20, resets_at: '2026-09-18T23:40:00Z' }, seven_day: { utilization: 40, resets_at: '2026-09-24T17:00:00Z' },
+        limits: [{ kind: 'weekly_scoped', percent: 85, resets_at: '2026-09-21T08:00:00Z', scope: { model: { display_name: 'Fable' } }, is_active: true, observed_at: '2026-09-18T20:00:00Z' }] } };
+    const { windows, limiting } = accountWindows(headerFallback);
+    expect(windows.map(w => [w.label, w.observedAt ?? null])).toEqual([['Session', null], ['Weekly all models', null], ['Fable weekly', '2026-09-18T20:00:00Z']]);
+    expect(limiting).toMatchObject({ label: 'Fable weekly', remainingPercent: 15 });
+  });
+});
+
 describe('limits hero', () => {
   it('orders by least remaining, follows the active Claude window and keeps every window on the card', () => {
     const hero = buildLimitsHero({ usage: [claude('claude-personal', 'personal@example.invalid', 23, 17, 33), claude('claude-work', 'work@example.invalid', 7, 43, 83), codex('codex-work', 'work@example.invalid', 34), codex('codex-personal', 'personal@example.invalid', 83)], registry: [], last24h, now });
