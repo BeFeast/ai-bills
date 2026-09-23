@@ -65,9 +65,11 @@ Set with `omarchy bar set befeast.zecori <key> <value> [--json]`:
 - **Hero** — the mark, snapshot time of the collector, when the widget last read.
   A banner appears when the instance is unreachable, the token is refused, or
   the snapshot is older than fifteen minutes.
-- **Limits now** — one block per account: the limiting window with a meter that
-  drains as the allowance is used, its reset countdown, and the other windows in
-  one line. Below 25 % left the value is bold, below 10 % (or exhausted) it turns
+- **Limits now** — one block per account: the tightest account-wide window with a
+  meter that drains as the allowance is used and its reset countdown, then the
+  other windows in one line — a model-scoped allowance (Claude's per-model weekly)
+  is listed there with its reset when it is low, so "0 %" for one model never reads
+  as the whole account being out. Below 25 % left the value is bold, below 10 % (or exhausted) it turns
   urgent, and so does the bar icon.
 - **Today by client** — one row per client label of today's ledger with the
   api-equivalent cost, tokens and requests; the bar behind each row is scaled to
@@ -86,4 +88,6 @@ Set with `omarchy bar set befeast.zecori <key> <value> [--json]`:
 - `zecori-fetch` — reads the token file (refused unless owner-only), calls `/api/widget`, prints one JSON
   document; every failure is `{"error": …, "status": …}` so the panel can show it.
   The token is handed to curl through its config on stdin, never as an argument.
-- `assets/zecori-mark.png` — the round Zecori mark from the brand kit.
+- `assets/zecori-mark.png` — the Zecori portrait cut out of its background, for the hero.
+- `assets/zecori-glyph.png` — a white silhouette with alpha; the bar tints it with its own
+  foreground colour (urgent when a limit is out), like every other bar icon.

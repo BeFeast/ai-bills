@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -45,7 +46,7 @@ Panel {
   readonly property var todayRows: payload && payload.today && payload.today.byClient ? payload.today.byClient : []
   readonly property var worst: worstAccount(accounts)
   readonly property bool stale: !!payload && !!payload.snapshot && payload.snapshot.stale === true
-  readonly property bool alarming: errorText !== "" || stale || (!!worst && !!worst.limiting && (worst.limiting.tone === "bad" || worst.limiting.exhausted === true))
+  readonly property bool alarming: errorText !== "" || stale || (!!worst && !!headlineOf(worst) && (headlineOf(worst).tone === "bad" || headlineOf(worst).exhausted === true))
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
@@ -84,13 +85,21 @@ Panel {
     fetchedAtMs = Date.now()
   }
 
-  // The account whose limiting window has the least left decides the bar label.
+  // The window an account leads with: the server's headline (tightest account-wide window),
+  // or the hero's limiting window from an instance that does not send a headline yet.
+  function headlineOf(account) {
+    if (!account) return null
+    return account.headline || account.limiting || null
+  }
+
+  // The account whose headline window has the least left decides the bar label.
   function worstAccount(list) {
     var best = null
     for (var i = 0; i < list.length; i++) {
       var entry = list[i]
-      if (!entry || !entry.limiting || entry.limiting.remainingPercent === null || entry.limiting.remainingPercent === undefined) continue
-      if (!best || Number(entry.limiting.remainingPercent) < Number(best.limiting.remainingPercent)) best = entry
+      var head = headlineOf(entry)
+      if (!head || head.remainingPercent === null || head.remainingPercent === undefined) continue
+      if (!best || Number(head.remainingPercent) < Number(headlineOf(best).remainingPercent)) best = entry
     }
     return best
   }
@@ -99,14 +108,14 @@ Panel {
     if (errorText !== "" && !payload) return "!"
     if (!payload) return "…"
     if (!worst) return "–"
-    return Math.round(Number(worst.limiting.remainingPercent)) + "%"
+    return Math.round(Number(headlineOf(worst).remainingPercent)) + "%"
   }
 
   function barTooltip() {
     if (errorText !== "") return "Zecori: " + errorText
     if (!payload) return "Zecori: loading"
     if (!worst) return "Zecori: no limit windows observed"
-    return "Zecori: " + worst.label + " · " + worst.limiting.label + " · " + Math.round(Number(worst.limiting.remainingPercent)) + "% left"
+    return "Zecori: " + worst.label + " · " + headlineOf(worst).label + " · " + Math.round(Number(headlineOf(worst).remainingPercent)) + "% left"
   }
 
   // ---------------------------------------------------------------- formatting
@@ -163,13 +172,15 @@ Panel {
     return Math.round(Number(window.remainingPercent)) + "% left"
   }
 
+  // Everything but the headline, in the server's order: account-wide windows, then the model-scoped ones.
   function otherWindowsText(account) {
     if (!account || !account.windows) return ""
     var parts = []
     for (var i = 0; i < account.windows.length; i++) {
       var w = account.windows[i]
-      if (!w || w.limiting === true) continue
-      parts.push(w.label + " " + remainingText(w))
+      var head = headlineOf(account)
+      if (!w || (head && w.label === head.label)) continue
+      parts.push(w.label + " " + remainingText(w) + (w.resetsAt && (w.tone === "bad" || w.tone === "warn") ? " (" + resetIn(w) + ")" : ""))
     }
     return parts.join(" · ")
   }
@@ -281,15 +292,29 @@ Panel {
       bar: root.bar
       active: root.alarming
       tooltipText: root.barTooltip()
+      // A monochrome silhouette in the bar's own colour, like every other bar icon; the
+      // portrait stays for the panel hero. The image is a hidden layer the effect samples.
       iconComponent: Component {
-        Image {
-          source: Qt.resolvedUrl("assets/zecori-mark.png")
-          sourceSize.width: 64
-          sourceSize.height: 64
-          fillMode: Image.PreserveAspectFit
-          smooth: true
-          mipmap: true
-          opacity: root.alarming ? 0.85 : 1
+        Item {
+          Image {
+            id: glyph
+            anchors.fill: parent
+            source: Qt.resolvedUrl("assets/zecori-glyph.png")
+            sourceSize.width: Math.round(Math.max(1, width) * 2)
+            sourceSize.height: Math.round(Math.max(1, height) * 2)
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            mipmap: true
+            visible: false
+            layer.enabled: true
+          }
+          MultiEffect {
+            anchors.fill: glyph
+            source: glyph
+            colorization: 1.0
+            // The button's own colours: what every other bar icon is painted with, urgent included.
+            colorizationColor: button.active && button.useActiveColor ? button.activeColor : button.foreground
+          }
         }
       }
       onPressed: function(buttonCode) {
@@ -509,7 +534,7 @@ Panel {
     id: accountRow
     property var account: null
 
-    readonly property var limiting: account ? (account.limiting || null) : null
+    readonly property var limiting: root.headlineOf(account)
     readonly property bool alarming: !!limiting && (limiting.tone === "bad" || limiting.exhausted === true)
     readonly property bool warning: !!limiting && limiting.tone === "warn"
     readonly property real ratio: limiting && limiting.remainingPercent !== null && limiting.remainingPercent !== undefined
