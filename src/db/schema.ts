@@ -35,6 +35,21 @@ export const ingestTokens = pgTable('ingest_tokens', {
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 }, table => [uniqueIndex('ingest_tokens_sha256_idx').on(table.sha256), index('ingest_tokens_tenant_idx').on(table.tenantId)]);
 
+/**
+ * Read-only tokens for devices (a desktop widget, a status bar): they may call `GET /api/widget` and
+ * nothing else — never ingest, never a browser mutation. Same storage rule as ingest tokens: only the
+ * SHA-256 is kept, the device holds the plaintext; a revoked row stops working at once.
+ */
+export const deviceTokens = pgTable('device_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  sha256: text('sha256').notNull(),
+  label: text('label').notNull().default(''),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, table => [uniqueIndex('device_tokens_sha256_idx').on(table.sha256), index('device_tokens_tenant_idx').on(table.tenantId)]);
+
 /** Whole collector snapshots as received; retention is the last SNAPSHOT_RETENTION per tenant (see snapshot-store). */
 export const snapshots = pgTable('snapshots', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -97,4 +112,4 @@ export const historyPoints = pgTable('history_points', {
   estUsdToday: doublePrecision('est_usd_today'),
 }, table => [index('history_points_tenant_at_idx').on(table.tenantId, table.at)]);
 
-export const schema = { tenants, memberships, ingestTokens, snapshots, quotaObservations, journalRecords, subscriptionOverrides, historyPoints };
+export const schema = { tenants, memberships, ingestTokens, deviceTokens, snapshots, quotaObservations, journalRecords, subscriptionOverrides, historyPoints };

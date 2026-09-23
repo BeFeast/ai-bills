@@ -116,8 +116,10 @@ describe('operator context', () => {
   });
   it('recognises the operator by address in Clerk mode and by the single admin without Clerk', () => {
     const env = { AI_BILLS_OPERATOR_EMAILS: 'oleg@example.test' };
-    expect(isOperator({ id: 'x', slug: 'oleg', role: 'admin', userId: 'u1', email: 'Oleg@Example.test' }, env)).toBe(true);
-    expect(isOperator({ id: 'x', slug: 'oleg', role: 'admin', userId: 'u2', email: 'other@example.test' }, env)).toBe(false);
-    expect(isOperator({ id: null, slug: 'default', role: 'admin', userId: null, email: null }, env)).toBe(true);
+    expect(isOperator({ id: 'x', slug: 'oleg', role: 'admin', userId: 'u1', email: 'Oleg@Example.test', access: 'session' }, env)).toBe(true);
+    expect(isOperator({ id: 'x', slug: 'oleg', role: 'admin', userId: 'u2', email: 'other@example.test', access: 'session' }, env)).toBe(false);
+    expect(isOperator({ id: null, slug: 'default', role: 'admin', userId: null, email: null, access: 'session' }, env)).toBe(true);
+    // A machine credential is never the operator, whatever role it carries in the context.
+    expect(isOperator({ id: 'x', slug: 'oleg', role: 'member', userId: null, email: null, access: 'device' }, env)).toBe(false);
   });
 });

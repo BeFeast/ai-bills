@@ -37,6 +37,7 @@ repository contains no production account config, ledger, payment records or cre
 - Self-host on one machine, no login: [docs/self-host.md](docs/self-host.md) (`deploy/selfhost/`, collector from cron).
 - Feeding a hosted instance from your machine: [docs/partner-collector.md](docs/partner-collector.md).
 - Operating a hosted instance with sign-in: [DEPLOYMENT.md](DEPLOYMENT.md).
+- Limits and today's spend in the Omarchy bar: [integrations/omarchy/befeast.zecori](integrations/omarchy/befeast.zecori/README.md) (read-only device token, `GET /api/widget`).
 
 ## Development
 

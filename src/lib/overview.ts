@@ -83,7 +83,8 @@ function group(value: Row, mask = false): OverviewUsageGroup {
     ...(number(value.failed) !== null ? { failed: number(value.failed)! } : {}), ...(number(value.rate_limited) !== null ? { rateLimited: number(value.rate_limited)! } : {}),
     ...(lastRequestAt ? { lastRequestAt } : {}) };
 }
-function groups(value: unknown, mask = false): OverviewUsageGroup[] {
+/** Ledger group rows (`by_client`, `by_model`, …) as the product shows them; the widget reads today's `by_client` through this too. */
+export function groups(value: unknown, mask = false): OverviewUsageGroup[] {
   return rows(value).map(value => group(value, mask)).filter(value => value.name).sort((a, b) => b.tokens - a.tokens);
 }
 /** The collector's rolling window is the only recency evidence; a calendar day or month is never relabelled as it. */

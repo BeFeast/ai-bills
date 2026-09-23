@@ -73,7 +73,16 @@ default the collector's own project).
 Machine clients (the collector's browser-quota refresh, `ai-browser-refresh`) call
 `GET /api/usage?refresh=1` with the same ingest token as a bearer (`AI_BILLS_BROWSER_REFRESH_TOKEN`
 on the collector host); with a database the token names the tenant, without one there is no
-sign-in to pass.
+sign-in to pass. Ingest tokens can also read; they are the tenant's machine credential.
+
+**Device tokens** are the read-only counterpart for a desktop widget (`integrations/omarchy/`):
+a signed-in tenant admin issues one with `POST /api/device-tokens` (`{"label": "laptop"}`; the
+plaintext is answered once, the instance stores the digest in `device_tokens`), lists them with
+`GET /api/device-tokens` and revokes with `DELETE /api/device-tokens/<id>`. A device token
+authenticates exactly one route, `GET /api/widget` — the tenant's accounts with their limit
+windows, today's spend by client label and the snapshot's age. Every other route answers it with
+403, `PUT /api/snapshot` with 401; an ingest token is refused by the widget in turn. Device tokens
+only exist in membership mode (Clerk and a database).
 
 ## Database
 
