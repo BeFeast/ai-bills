@@ -8,23 +8,18 @@ struct PanelView: View {
     @ObservedObject var store: WidgetStore
     var openSite: () -> Void = {}
     var openSettings: () -> Void = {}
-    @State private var contentHeight: CGFloat = 200
 
+    // The popover's size is set by StatusItemController (content height, capped by the screen);
+    // the scroll view only matters when the screen is shorter than the content.
     var body: some View {
         ScrollView(.vertical) {
             PanelContent(presenter: store.presenter, busy: store.busy, refresh: store.refresh, openSite: openSite, openSettings: openSettings)
-                .background(GeometryReader { proxy in Color.clear.preference(key: HeightKey.self, value: proxy.size.height) })
         }
         .scrollIndicators(.automatic)
-        .frame(width: PanelContent.width, height: min(contentHeight, 640))
-        .onPreferenceChange(HeightKey.self) { contentHeight = $0 }
+        .frame(width: PanelContent.width)
+        .frame(maxHeight: .infinity, alignment: .top)
         .onKeyPress("r") { store.refresh(); return .handled }
         .onKeyPress(.return) { store.refresh(); return .handled }
-    }
-
-    private struct HeightKey: PreferenceKey {
-        static var defaultValue: CGFloat = 200
-        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
     }
 }
 

@@ -30,7 +30,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.animates = false
         popover.delegate = self
         let hosting = NSHostingController(rootView: PanelView(store: store, openSite: { [weak self] in self?.openSite() }, openSettings: openSettings))
-        hosting.sizingOptions = [.preferredContentSize]
+        hosting.sizingOptions = []
         popover.contentViewController = hosting
         subscription = store.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.render() } }
         render()
@@ -44,6 +44,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         button.attributedTitle = NSAttributedString(string: " " + presenter.barLabel, attributes: [.foregroundColor: color, .font: font])
         button.contentTintColor = presenter.alarming ? .systemRed : nil
         button.toolTip = presenter.barTooltip
+        if popover.isShown { popover.contentSize = fittedSize() }
+    }
+
+    /// The whole panel if it fits, otherwise the height of the screen below the menu bar (then it scrolls).
+    private func fittedSize() -> NSSize {
+        let probe = NSHostingView(rootView: PanelContent(presenter: store.presenter, busy: store.busy))
+        let content = ceil(probe.fittingSize.height)
+        let screen = item.button?.window?.screen ?? NSScreen.main
+        let available = (screen?.visibleFrame.height ?? 800) - 24
+        return NSSize(width: PanelContent.width, height: max(120, min(content, available)))
     }
 
     @objc private func clicked(_ sender: NSStatusBarButton) {
@@ -60,6 +70,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         if popover.isShown { popover.performClose(nil); return }
         guard let button = item.button else { return }
         store.panelOpened()
+        popover.contentSize = fittedSize()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         NSApp.activate(ignoringOtherApps: true)
