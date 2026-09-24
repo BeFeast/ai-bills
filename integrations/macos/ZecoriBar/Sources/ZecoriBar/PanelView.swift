@@ -52,7 +52,9 @@ struct PanelContent: View {
             HStack {
                 Text("r refresh · esc close").font(.caption2).foregroundStyle(.tertiary)
                 Spacer()
-                Button("Settings…", action: openSettings).buttonStyle(.link).font(.caption)
+                Button(action: openSite) { Text("Open Zecori").font(.caption).foregroundStyle(Color.accentColor) }.buttonStyle(.plain)
+                Text("·").font(.caption).foregroundStyle(.tertiary)
+                Button(action: openSettings) { Text("Settings…").font(.caption).foregroundStyle(Color.accentColor) }.buttonStyle(.plain)
             }
         }
         .padding(16)
@@ -71,8 +73,11 @@ struct PanelContent: View {
                 Text(presenter.heroMeta.uppercased()).font(.caption2.weight(.bold)).tracking(1.1).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            Button(action: refresh) { Image(systemName: "arrow.clockwise") }.buttonStyle(.borderless).help("Refresh")
-            Button(action: openSite) { Image(systemName: "arrow.up.forward.square") }.buttonStyle(.borderless).help("Open Zecori")
+            // Plain SwiftUI buttons (not AppKit-backed styles), so the --render PNGs show them too.
+            Button(action: refresh) { Image(systemName: "arrow.clockwise").font(.body.weight(.medium)).foregroundStyle(.secondary) }
+                .buttonStyle(.plain).help("Refresh")
+            Button(action: openSite) { Image(systemName: "arrow.up.forward.square").font(.body.weight(.medium)).foregroundStyle(.secondary) }
+                .buttonStyle(.plain).help("Open Zecori")
         }
     }
 
