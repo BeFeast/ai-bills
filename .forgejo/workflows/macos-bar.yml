@@ -1,0 +1,70 @@
+# Zecori menu bar app for macOS (integrations/macos/ZecoriBar), built on the M4 laptop runner
+# (label macos, see BeFeast/hedroom docs/ci-macos-runner.md). Tests the shared display rules,
+# builds Zecori.app, renders the panel and bar label from the fixture to PNGs for review, and
+# signs + notarizes the Figori way when the repository variables ZECORI_SIGNING_IDENTITY and
+# ZECORI_NOTARY_PROFILE are set (otherwise a DRAFT zip).
+#
+# Never make this check required: the runner is a laptop, pending means the lid is shut.
+# Publishing a build to users is a separate, approved step (the operator's install script
+# reads a Forgejo generic package, not these run artifacts).
+name: macos-bar
+
+on:
+  push:
+    paths:
+      - "integrations/macos/**"
+      - ".forgejo/workflows/macos-bar.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: macos-bar-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    runs-on: macos
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+        working-directory: integrations/macos/ZecoriBar
+    env:
+      ZECORI_SIGNING_IDENTITY: ${{ vars.ZECORI_SIGNING_IDENTITY }}
+      ZECORI_NOTARY_PROFILE: ${{ vars.ZECORI_NOTARY_PROFILE }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Host toolchain
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Display rules (shared with the Omarchy widget)
+        run: swift test
+      - name: Build Zecori.app
+        run: scripts/build-app.sh "$RUNNER_TEMP/build"
+      - name: Render panel and bar from the fixture
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/build/Zecori.app/Contents/MacOS/ZecoriBar" --render Tests/ZecoriCoreTests/Fixtures/widget-payload.json "$RUNNER_TEMP/out/render" 2026-09-24T14:00:00Z
+          ls -la "$RUNNER_TEMP/out/render"
+      - name: Sign, notarize and package
+        run: |
+          set -euo pipefail
+          mode=draft
+          if [[ -n $ZECORI_SIGNING_IDENTITY && -n $ZECORI_NOTARY_PROFILE ]]; then
+            security find-identity -v -p codesigning | grep -Fq "$ZECORI_SIGNING_IDENTITY" || { echo 'Configured signing identity is not available to this runner session' >&2; exit 1; }
+            mode=release
+          fi
+          scripts/package.sh "$mode" "$RUNNER_TEMP/build/Zecori.app" "$RUNNER_TEMP/out"
+      - name: Upload app and renders
+        if: always()
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: zecori-bar-${{ github.sha }}
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+          retention-days: 30

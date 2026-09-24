@@ -26,6 +26,7 @@ on:
       - "integrations/**"
       - "tests/**"
       - ".forgejo/workflows/ci.yml"
+      - ".forgejo/workflows/macos-bar.yml"
   workflow_dispatch:
 
 concurrency:
