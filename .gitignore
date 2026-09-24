@@ -80,3 +80,7 @@ deploy/selfhost/.env
 
 # Omarchy widget mark shipped with the plugin
 !integrations/omarchy/befeast.zecori/assets/*.png
+
+# SwiftPM build output of the macOS menu bar app
+integrations/macos/ZecoriBar/.build/
+integrations/macos/ZecoriBar/.swiftpm/
