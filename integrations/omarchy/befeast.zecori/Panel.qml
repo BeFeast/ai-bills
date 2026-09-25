@@ -780,6 +780,7 @@ Panel {
   }
 
   // One account inside a model row: urgent when it has nothing left, bold when low, hollow when it reports no window.
+  // A chip wider than the row wraps rather than elides: the reset and "as of" sit at the end of its text.
   component Chip: Rectangle {
     id: chip
     property var entry: null
@@ -790,12 +791,18 @@ Panel {
     readonly property bool unknown: !entry || entry.remainingPercent === null || entry.remainingPercent === undefined
     readonly property real padding: Style.space(8)
 
-    implicitWidth: Math.min(chipLabel.implicitWidth, Math.max(0, maxWidth - padding * 2)) + padding * 2
+    implicitWidth: Math.min(chipMetrics.advanceWidth + 1, Math.max(0, maxWidth - padding * 2)) + padding * 2
     implicitHeight: chipLabel.implicitHeight + Style.space(6)
-    radius: height / 2
+    radius: Style.cornerRadius
     color: bad ? root.alpha(root.urgent, 0.12) : root.alpha(root.foreground, unknown ? 0 : 0.07)
     border.width: 1
     border.color: bad ? root.alpha(root.urgent, 0.45) : root.alpha(root.foreground, unknown ? 0.25 : 0.12)
+
+    TextMetrics {
+      id: chipMetrics
+      font: chipLabel.font
+      text: chipLabel.text
+    }
 
     Text {
       id: chipLabel
@@ -807,7 +814,7 @@ Panel {
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
       font.bold: chip.bad || chip.warn
-      elide: Text.ElideRight
+      wrapMode: Text.WordWrap
     }
   }
 

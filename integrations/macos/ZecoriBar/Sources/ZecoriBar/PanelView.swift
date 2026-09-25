@@ -144,6 +144,7 @@ struct ModelRow: View {
 }
 
 /// One account inside a model row: red when it has nothing left, bold when low, hollow when it reports no window.
+/// A chip wider than the row wraps its text rather than truncating: the reset and "as of" sit at the end of it.
 struct Chip: View {
     let text: String
     let tone: String?
@@ -151,15 +152,15 @@ struct Chip: View {
 
     var body: some View {
         let bad = tone == "bad"
-        Text(text).font(.caption.weight(bad || tone == "warn" ? .bold : .regular)).lineLimit(1).truncationMode(.tail)
+        Text(text).font(.caption.weight(bad || tone == "warn" ? .bold : .regular)).fixedSize(horizontal: false, vertical: true)
             .foregroundStyle(bad ? Color.red : (unknown ? Color.secondary : Color.primary))
             .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(bad ? Color.red.opacity(0.12) : Color.primary.opacity(unknown ? 0 : 0.07)))
-            .overlay(Capsule().stroke(bad ? Color.red.opacity(0.45) : Color.primary.opacity(unknown ? 0.25 : 0.12)))
+            .background(RoundedRectangle(cornerRadius: 8).fill(bad ? Color.red.opacity(0.12) : Color.primary.opacity(unknown ? 0 : 0.07)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(bad ? Color.red.opacity(0.45) : Color.primary.opacity(unknown ? 0.25 : 0.12)))
     }
 }
 
-/// Lays the chips out left to right and wraps to the next line, like QML's Flow; a chip wider than the row is truncated.
+/// Lays the chips out left to right and wraps to the next line, like QML's Flow; a chip wider than the row takes the row's width.
 struct ChipFlow: Layout {
     var spacing: CGFloat = 6
 
