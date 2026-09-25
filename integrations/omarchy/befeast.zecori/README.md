@@ -72,6 +72,14 @@ Set with `omarchy bar set befeast.zecori <key> <value> [--json]`:
   is listed there with its reset when it is low, so "0 %" for one model never reads
   as the whole account being out. Below 25 % left the value is bold, below 10 % (or exhausted) it turns
   urgent, and so does the bar icon.
+- **Models** — one row per model-scoped allowance across the pool (Claude's
+  per-model weekly). The pool fails over between accounts, so the row answers
+  "can this model be used": the account with the most left sets the value and
+  the meter, and one chip per account shows its own remaining — urgent when it
+  has nothing left, bold below 25 %, hollow with `—` when the account reports no
+  such window right now. With every account out the row turns urgent and says
+  when the nearest reset is. The bar tooltip ends with the same answer
+  (`· Fable 25% (<account>)` or `· Fable none`); the bar label does not change.
 - **Today by client** — one row per client label of today's ledger with the
   api-equivalent cost, tokens and requests; the bar behind each row is scaled to
   the heaviest client.

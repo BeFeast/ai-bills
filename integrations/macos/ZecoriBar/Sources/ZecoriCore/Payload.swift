@@ -7,16 +7,72 @@ public struct WidgetPayload: Decodable, Equatable {
     public var snapshot: SnapshotInfo?
     public var usage: UsageInfo?
     public var accounts: [Account]
+    /// Model-scoped allowances across the pool; an older server sends none.
+    public var models: [WidgetModel]
     public var today: Today?
 
-    enum CodingKeys: String, CodingKey { case now, snapshot, usage, accounts, today }
+    enum CodingKeys: String, CodingKey { case now, snapshot, usage, accounts, models, today }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         now = try c.decodeIfPresent(String.self, forKey: .now)
         snapshot = try c.decodeIfPresent(SnapshotInfo.self, forKey: .snapshot)
         usage = try c.decodeIfPresent(UsageInfo.self, forKey: .usage)
         accounts = try c.decode([Account].self, forKey: .accounts)
+        models = try c.decodeIfPresent([WidgetModel].self, forKey: .models) ?? []
         today = try c.decodeIfPresent(Today.self, forKey: .today)
+    }
+}
+
+/// One model-scoped allowance across every account of a provider (widget.ts WidgetModel): the pool fails over
+/// between the accounts, so `best` is the account with the most left and `usable` says whether it has anything.
+public struct WidgetModel: Decodable, Equatable, Identifiable {
+    public var provider: String
+    public var label: String
+    public var model: String
+    public var best: ModelAccount?
+    public var usable: Bool?
+    public var tone: String?
+    public var nextResetAt: String?
+    public var accounts: [ModelAccount]
+    public var id: String { "\(provider)/\(label)" }
+
+    enum CodingKeys: String, CodingKey { case provider, label, model, best, usable, tone, nextResetAt, accounts }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? ""
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? label
+        best = try c.decodeIfPresent(ModelAccount.self, forKey: .best)
+        usable = try c.decodeIfPresent(Bool.self, forKey: .usable)
+        tone = try c.decodeIfPresent(String.self, forKey: .tone)
+        nextResetAt = try c.decodeIfPresent(String.self, forKey: .nextResetAt)
+        accounts = try c.decodeIfPresent([ModelAccount].self, forKey: .accounts) ?? []
+    }
+}
+
+/// One account's share of a model-scoped allowance; `remainingPercent` is nil when the account reports no such window.
+public struct ModelAccount: Decodable, Equatable, Identifiable {
+    public var key: String
+    public var label: String
+    public var state: String?
+    public var remainingPercent: Double?
+    public var tone: String?
+    public var exhausted: Bool?
+    public var resetsAt: String?
+    public var observedAt: String?
+    public var id: String { key }
+
+    enum CodingKeys: String, CodingKey { case key, label, state, remainingPercent, tone, exhausted, resetsAt, observedAt }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? key
+        state = try c.decodeIfPresent(String.self, forKey: .state)
+        remainingPercent = try c.decodeIfPresent(Double.self, forKey: .remainingPercent)
+        tone = try c.decodeIfPresent(String.self, forKey: .tone)
+        exhausted = try c.decodeIfPresent(Bool.self, forKey: .exhausted)
+        resetsAt = try c.decodeIfPresent(String.self, forKey: .resetsAt)
+        observedAt = try c.decodeIfPresent(String.self, forKey: .observedAt)
     }
 }
 

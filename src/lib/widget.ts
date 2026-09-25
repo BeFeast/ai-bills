@@ -1,6 +1,6 @@
 import { loadConfig } from './config';
-import { accountWindows, type HeroWindow } from './limits-hero';
-import { claudeWindows, type ClaudeUsagePayload } from './usage';
+import { accountWindows, LOW_REMAINING_PERCENT, type HeroWindow } from './limits-hero';
+import { claudeWindows, type ClaudeUsagePayload, type QuotaTone } from './usage';
 import { groups, type OverviewUsageGroup } from './overview';
 import { readSnapshot, type Scope } from './storage';
 import { isPendingObservation, type ProviderUsage } from './usage';
@@ -29,11 +29,39 @@ export type WidgetAccount = {
   /** Account-wide windows first (tightest first), then the model-scoped ones. */
   windows: WidgetWindow[];
 };
+/**
+ * One account's share of a model-scoped allowance. `remainingPercent` is null when the account reports no such
+ * window right now (a header fallback that carried nothing, a pending or failed observation): the account is listed
+ * as unknown rather than dropped, so the reader sees that half the pool is unaccounted for.
+ */
+export type WidgetModelAccount = { key: string; label: string; state: WidgetAccountState; remainingPercent: number | null; tone: QuotaTone | null; exhausted: boolean; resetsAt: string | null; observedAt: string | null };
+/**
+ * A model-scoped allowance across every account of one provider. The pool fails over between the accounts, so the
+ * question is "does any account still answer for this model": `best` is the account with the most left and `usable`
+ * says whether it has anything at all. Not a sum and not an average.
+ */
+export type WidgetModel = {
+  provider: string;
+  /** The window label as it appears in `windows[]` ("Fable weekly"). */
+  label: string;
+  /** The model's display name ("Fable"). */
+  model: string;
+  best: WidgetModelAccount | null;
+  usable: boolean;
+  /** Bad when nothing is usable, warn when the best account is under 25 %, otherwise none. */
+  tone: QuotaTone;
+  /** The earliest reset among the accounts that report the window: when the pool may answer again once nothing is usable. */
+  nextResetAt: string | null;
+  /** Every account of the provider, most remaining first, unknown ones last. */
+  accounts: WidgetModelAccount[];
+};
 export type WidgetPayload = {
   now: string;
   snapshot: { generatedAt: string | null; receivedAt: string | null; ageSeconds: number | null; stale: boolean; reason: 'no-snapshot' | 'snapshot-age' | null };
   usage: { refreshedAt: string | null; refreshing: boolean; timezone: string };
   accounts: WidgetAccount[];
+  /** Model-scoped allowances aggregated across the pool, one per provider and window label; empty when no account reports one. */
+  models: WidgetModel[];
   /** Today's ledger by client label, or null when the stored ledger is not for today in the instance's timezone. */
   today: { date: string; byClient: OverviewUsageGroup[] } | null;
 };
@@ -55,10 +83,42 @@ const stateOrder: Record<WidgetAccountState, number> = { fresh: 0, stale: 1, unk
 
 const byRemaining = (a: WidgetWindow, b: WidgetWindow) => (a.remainingPercent ?? 101) - (b.remainingPercent ?? 101);
 
-/** Claude reports per-model weekly allowances beside the account-wide ones; their labels come from claudeWindows in the same order. */
-function scopedLabels(result: ProviderUsage): Set<string> {
-  if (result.account.provider !== 'claude') return new Set();
-  return new Set(claudeWindows(result.data as ClaudeUsagePayload | undefined).filter(item => item.kind === 'weekly_scoped').map(item => item.label));
+/** Claude reports per-model weekly allowances beside the account-wide ones: their window labels, each with the model it belongs to. */
+function scopedModels(result: ProviderUsage): Map<string, string> {
+  if (result.account.provider !== 'claude') return new Map();
+  return new Map(claudeWindows(result.data as ClaudeUsagePayload | undefined).filter(item => item.kind === 'weekly_scoped').map(item => [item.label, item.model ?? item.label]));
+}
+
+/**
+ * The tone of a model-scoped allowance in the pool view. The question here is "can this model still be used", so
+ * only nothing left is bad and anything under 25 % is a warning; quotaTone's "bad under 10 %" is for the account
+ * as a whole, where 5 % left means the next requests are about to fail.
+ */
+export function modelTone(remainingPercent: number | null, exhausted: boolean): QuotaTone {
+  if (exhausted || remainingPercent === 0) return 'bad';
+  if (remainingPercent !== null && remainingPercent < LOW_REMAINING_PERCENT) return 'warn';
+  return undefined;
+}
+
+function widgetModels(results: ProviderUsage[], accounts: WidgetAccount[]): WidgetModel[] {
+  // Every model-scoped window label the tenant's accounts report, per provider, with the model behind it.
+  const groups = new Map<string, { provider: string; label: string; model: string }>();
+  for (const result of results) for (const [label, model] of scopedModels(result)) groups.set(`${result.account.provider}\u0000${label}`, { provider: result.account.provider, label, model });
+  const ordered = [...groups.values()].sort((a, b) => a.provider.localeCompare(b.provider) || a.label.localeCompare(b.label));
+  return ordered.map(group => {
+    const rows: WidgetModelAccount[] = accounts.filter(account => account.provider === group.provider).map(account => {
+      const window = account.windows.find(entry => entry.scoped && entry.label === group.label) ?? null;
+      const remainingPercent = window?.remainingPercent ?? null;
+      const exhausted = window?.exhausted === true;
+      return { key: account.key, label: account.label, state: account.state, remainingPercent, tone: window ? modelTone(remainingPercent, exhausted) : null, exhausted,
+        resetsAt: window?.resetsAt ?? null, observedAt: window?.observedAt ?? null };
+    }).sort((a, b) => (b.remainingPercent ?? -1) - (a.remainingPercent ?? -1) || a.label.localeCompare(b.label));
+    const best = rows.find(row => row.remainingPercent !== null) ?? null;
+    const usable = best !== null && (best.remainingPercent ?? 0) > 0 && !best.exhausted;
+    const resets = rows.map(row => row.resetsAt).filter((value): value is string => Boolean(value) && Number.isFinite(Date.parse(value as string)));
+    const nextResetAt = resets.sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? null;
+    return { ...group, best, usable, tone: usable ? modelTone(best!.remainingPercent, false) : 'bad', nextResetAt, accounts: rows };
+  });
 }
 
 function widgetAccount(result: ProviderUsage, now: number): WidgetAccount {
@@ -66,7 +126,7 @@ function widgetAccount(result: ProviderUsage, now: number): WidgetAccount {
   if (isPendingObservation(result)) return { ...base, state: 'pending', message: 'Waiting for the first quota observation', observedAt: null, limiting: null, headline: null, windows: [] };
   const evidence = usageEvidence(result, now);
   const { windows: heroWindows, limiting: heroLimiting } = accountWindows(result);
-  const scoped = scopedLabels(result);
+  const scoped = scopedModels(result);
   const windows = heroWindows.map(window => ({ ...window, scoped: scoped.has(window.label) }));
   const general = windows.filter(window => !window.scoped).sort(byRemaining);
   const model = windows.filter(window => window.scoped).sort(byRemaining);
@@ -95,6 +155,7 @@ export function buildWidgetPayload({ usage, snapshot, now, timezone, staleAfterS
     snapshot: { generatedAt: text(body.generated) || null, receivedAt: snapshot.version, ageSeconds, stale: reason !== null, reason },
     usage: { refreshedAt: usage.generatedAt, refreshing: usage.refreshing === true, timezone },
     accounts,
+    models: widgetModels(usage.accounts, accounts),
     // A snapshot that outlived midnight carries yesterday's "today"; never relabel it as the current day.
     today: date && date === localDate(timezone, new Date(now)) && text(today.period) === 'day' ? { date, byClient: groups(today.by_client) } : null,
   };

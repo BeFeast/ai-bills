@@ -3,7 +3,7 @@
   "snapshot": { "generatedAt": "2026-09-24T13:57:00Z", "receivedAt": "2026-09-24T13:57:01.000Z", "ageSeconds": 179, "stale": false, "reason": null },
   "usage": { "refreshedAt": "2026-09-24T13:59:30.000Z", "refreshing": false, "timezone": "UTC" },
   "accounts": [
-    { "key": "claude-personal", "provider": "claude", "label": "Claude · Personal", "email": "personal@example.test", "state": "fresh", "message": null, "observedAt": "2026-09-24T13:57:00Z",
+    { "key": "claude-personal", "provider": "claude", "label": "Claude · one@example.test", "email": "personal@example.test", "state": "fresh", "message": null, "observedAt": "2026-09-24T13:57:00Z",
       "limiting": { "label": "Fable weekly", "remaining": 0, "remainingPercent": 0, "unit": "percent", "resetsAt": "2026-09-24T17:00:00Z", "limiting": true, "exhausted": true, "tone": "bad", "scoped": true, "observedAt": "2026-09-24T13:52:00Z" },
       "headline": { "label": "Weekly all models", "remaining": 19, "remainingPercent": 19, "unit": "percent", "resetsAt": "2026-09-24T17:00:00Z", "limiting": false, "exhausted": false, "tone": "warn", "scoped": false },
       "windows": [
@@ -11,7 +11,7 @@
         { "label": "Session", "remaining": 88, "remainingPercent": 88, "unit": "percent", "resetsAt": "2026-09-24T16:30:00Z", "limiting": false, "exhausted": false, "scoped": false },
         { "label": "Fable weekly", "remaining": 0, "remainingPercent": 0, "unit": "percent", "resetsAt": "2026-09-24T17:00:00Z", "limiting": true, "exhausted": true, "tone": "bad", "scoped": true, "observedAt": "2026-09-24T13:52:00Z" }
       ] },
-    { "key": "claude-work", "provider": "claude", "label": "Claude · Work", "email": "work@example.test", "state": "fresh", "message": null, "observedAt": "2026-09-24T13:57:00Z",
+    { "key": "claude-work", "provider": "claude", "label": "Claude · two@example.test", "email": "work@example.test", "state": "fresh", "message": null, "observedAt": "2026-09-24T13:57:00Z",
       "limiting": { "label": "Fable weekly", "remaining": 25, "remainingPercent": 25, "unit": "percent", "resetsAt": "2026-09-28T08:00:00Z", "limiting": true, "exhausted": false, "scoped": true },
       "headline": { "label": "Weekly all models", "remaining": 34, "remainingPercent": 34, "unit": "percent", "resetsAt": "2026-09-28T08:00:00Z", "limiting": false, "exhausted": false, "scoped": false },
       "windows": [
@@ -19,11 +19,11 @@
         { "label": "Session", "remaining": 87, "remainingPercent": 87, "unit": "percent", "resetsAt": "2026-09-24T16:30:00Z", "limiting": false, "exhausted": false, "scoped": false },
         { "label": "Fable weekly", "remaining": 25, "remainingPercent": 25, "unit": "percent", "resetsAt": "2026-09-28T08:00:00Z", "limiting": true, "exhausted": false, "scoped": true }
       ] },
-    { "key": "codex-work", "provider": "codex", "label": "Codex · Work", "email": "work@example.test", "state": "fresh", "message": null, "observedAt": "2026-09-24T13:57:00Z",
+    { "key": "codex-work", "provider": "codex", "label": "Codex · two@example.test", "email": "work@example.test", "state": "fresh", "message": null, "observedAt": "2026-09-24T13:57:00Z",
       "limiting": { "label": "Weekly", "remaining": 73, "remainingPercent": 73, "unit": "percent", "resetsAt": "2026-09-26T15:46:51.000Z", "limiting": true, "exhausted": false, "scoped": false },
       "headline": { "label": "Weekly", "remaining": 73, "remainingPercent": 73, "unit": "percent", "resetsAt": "2026-09-26T15:46:51.000Z", "limiting": true, "exhausted": false, "scoped": false },
       "windows": [ { "label": "Weekly", "remaining": 73, "remainingPercent": 73, "unit": "percent", "resetsAt": "2026-09-26T15:46:51.000Z", "limiting": true, "exhausted": false, "scoped": false } ] },
-    { "key": "codex-personal", "provider": "codex", "label": "Codex · Personal", "email": "personal@example.test", "state": "fresh", "message": null, "observedAt": "2026-09-24T13:57:00Z",
+    { "key": "codex-personal", "provider": "codex", "label": "Codex · one@example.test", "email": "personal@example.test", "state": "fresh", "message": null, "observedAt": "2026-09-24T13:57:00Z",
       "limiting": { "label": "Weekly", "remaining": 88, "remainingPercent": 88, "unit": "percent", "resetsAt": "2026-09-26T09:12:06.000Z", "limiting": true, "exhausted": false, "scoped": false },
       "headline": { "label": "Weekly", "remaining": 88, "remainingPercent": 88, "unit": "percent", "resetsAt": "2026-09-26T09:12:06.000Z", "limiting": true, "exhausted": false, "scoped": false },
       "windows": [ { "label": "Weekly", "remaining": 88, "remainingPercent": 88, "unit": "percent", "resetsAt": "2026-09-26T09:12:06.000Z", "limiting": true, "exhausted": false, "scoped": false } ] },
@@ -31,6 +31,14 @@
       "limiting": null, "headline": null, "windows": [] },
     { "key": "cursor", "provider": "cursor", "label": "Cursor", "email": "work@example.test", "state": "pending", "message": "Waiting for the first quota observation", "observedAt": null,
       "limiting": null, "headline": null, "windows": [] }
+  ],
+  "models": [
+    { "provider": "claude", "label": "Fable weekly", "model": "Fable", "usable": true, "nextResetAt": "2026-09-24T17:00:00Z",
+      "best": { "key": "claude-work", "label": "Claude · two@example.test", "state": "fresh", "remainingPercent": 25, "exhausted": false, "resetsAt": "2026-09-28T08:00:00Z", "observedAt": null },
+      "accounts": [
+        { "key": "claude-work", "label": "Claude · two@example.test", "state": "fresh", "remainingPercent": 25, "exhausted": false, "resetsAt": "2026-09-28T08:00:00Z", "observedAt": null },
+        { "key": "claude-personal", "label": "Claude · one@example.test", "state": "fresh", "remainingPercent": 0, "tone": "bad", "exhausted": true, "resetsAt": "2026-09-24T17:00:00Z", "observedAt": "2026-09-24T13:52:00Z" }
+      ] }
   ],
   "today": null
 }

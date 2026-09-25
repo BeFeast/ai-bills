@@ -9,6 +9,7 @@ import { issueDeviceToken } from '../src/lib/device-tokens';
 import { IDENTITY_HEADERS } from '../src/lib/hosted-auth';
 import { storeSnapshot } from '../src/lib/snapshot-store';
 import { ensureIngestTokens, resetTenantCache } from '../src/lib/tenant';
+import { localDate } from '../src/lib/widget';
 
 let requestHeaders = new Headers();
 vi.mock('next/headers', () => ({ headers: async () => requestHeaders }));
@@ -49,7 +50,9 @@ const json = (method: string, path: string, body?: unknown) => new Request(`${or
 describe('GET /api/widget', () => {
   it('answers a device token with the tenant\'s limits and today\'s spend, and refuses everything else', async () => {
     const tenant = await ensureTenant(db, 'oleg');
-    const today = new Date().toISOString().slice(0, 10);
+    // "Today" is decided in the instance's timezone, which is ahead of UTC in the evening.
+    const { loadConfig } = await import('../src/lib/config');
+    const today = localDate(loadConfig().server.timezone, new Date());
     await storeSnapshot(db, tenant.id, JSON.stringify({ generated: new Date().toISOString(), usage_ledger: { today: { date: today, period: 'day', by_client: [{ name: 'slava', priced_api_equivalent_usd: 0.33, tokens: 803952, requests: 31 }, { name: 'claude-idunn', priced_api_equivalent_usd: 0.41, tokens: 109900, requests: 8 }] } } }), new Date().toISOString());
     const issued = await issueDeviceToken(db, tenant.id, 'slava');
     await ensureIngestTokens(db, tenant.id, [digest('zk_collector')]);
@@ -66,6 +69,7 @@ describe('GET /api/widget', () => {
     expect(body.accounts.length).toBeGreaterThan(0);
     expect(body.accounts[0]).toMatchObject({ state: 'fresh', limiting: { remainingPercent: 60 } });
     expect(body.today).toMatchObject({ date: today });
+    expect(Array.isArray(body.models)).toBe(true);
     expect(body.today.byClient.map((row: { name: string }) => row.name)).toEqual(['slava', 'claude-idunn']);
 
     bearer('zk_collector');

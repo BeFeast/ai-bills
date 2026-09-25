@@ -312,21 +312,23 @@ export type ClaudeWindow = {
   exhausted: boolean;
   /** Only for a limit carried over from an earlier observation: when it was actually observed. */
   observedAt?: string;
+  /** Only for a model-scoped window: the model's display name, as the label is built from it. */
+  model?: string;
 };
 
 /** Every limit window Claude reports for an account, in display order: session, weekly all models, then each scoped model. */
 export function claudeWindows(data?: ClaudeUsagePayload | null): ClaudeWindow[] {
   const windows: ClaudeWindow[] = [];
-  const push = (kind: ClaudeWindow['kind'], label: string, window: ClaudeLimitWindow | null | undefined, limit: ClaudeLimitEntry | undefined) => {
+  const push = (kind: ClaudeWindow['kind'], label: string, window: ClaudeLimitWindow | null | undefined, limit: ClaudeLimitEntry | undefined, model?: string) => {
     const used = pickFinite(windowUtilization(window), limitPercent(limit));
     if (used === null) return;
     windows.push({ kind, label, usedPercent: used, resetsAt: window?.resets_at || limit?.resets_at || null,
       isActive: limit?.is_active === true, severity: limit?.severity ?? null, exhausted: used >= 100 || isLimitExhausted(limit),
-      ...(limit?.observed_at ? { observedAt: limit.observed_at } : {}) });
+      ...(limit?.observed_at ? { observedAt: limit.observed_at } : {}), ...(model ? { model } : {}) });
   };
   push('session', 'Session', data?.five_hour, claudeLimitByKind(data ?? undefined, 'session'));
   push('weekly_all', 'Weekly all models', data?.seven_day, claudeLimitByKind(data ?? undefined, 'weekly_all'));
-  for (const limit of scopedModelLimits(data ?? undefined)) push('weekly_scoped', `${scopeLabel(limit)} weekly`, null, limit);
+  for (const limit of scopedModelLimits(data ?? undefined)) push('weekly_scoped', `${scopeLabel(limit)} weekly`, null, limit, scopeLabel(limit));
   return windows;
 }
 
