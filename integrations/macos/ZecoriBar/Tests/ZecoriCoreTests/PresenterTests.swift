@@ -13,7 +13,7 @@ final class PresenterTests: XCTestCase {
         let p = Presenter(payload: try fixture(), now: now, timeZone: utc)
         XCTAssertEqual(p.worst?.key, "claude-personal")
         XCTAssertEqual(p.barLabel, "19%")
-        XCTAssertEqual(p.barTooltip, "Zecori: Claude · Personal · Weekly all models · 19% left")
+        XCTAssertEqual(p.barTooltip, "Zecori: Claude · one@example.test · Weekly all models · 19% left · Fable 25% (Claude · two@example.test)")
         XCTAssertFalse(p.alarming, "warn is not urgent; a 0 % Fable weekly must not turn the bar red")
     }
 
@@ -36,6 +36,33 @@ final class PresenterTests: XCTestCase {
         XCTAssertEqual(Presenter.valueText(cursor), "…")
         XCTAssertEqual(p.headlineLine(cursor), "Waiting for the first observation")
         XCTAssertFalse(Presenter.stateIsUrgent(cursor))
+    }
+
+    func testModelRowsMatchTheOmarchyPanel() throws {
+        let p = Presenter(payload: try fixture(), now: now, timeZone: utc)
+        let fable = try XCTUnwrap(p.models.first)
+        XCTAssertEqual(fable.id, "claude/Fable weekly")
+        XCTAssertEqual(Presenter.modelValueText(fable), "25% left")
+        XCTAssertEqual(Presenter.modelMeterRatio(fable), 0.25)
+        XCTAssertFalse(Presenter.modelAlarming(fable)); XCTAssertFalse(Presenter.modelWarning(fable))
+        XCTAssertEqual(fable.accounts.map(p.chipText), ["Claude · two@example.test 25%", "Claude · one@example.test 0% (resets in 3h 0m, as of 13:52)"])
+        XCTAssertEqual(p.modelLine(fable), "Fable via Claude · two@example.test")
+        // Both accounts out: the row is urgent and says when the pool may answer again.
+        let out = try PayloadDecoder.decode(Data(#"{"accounts":[],"models":[{"provider":"claude","label":"Fable weekly","model":"Fable","usable":false,"tone":"bad","nextResetAt":"2026-09-24T17:00:00Z","best":{"key":"a","label":"A","remainingPercent":0,"tone":"bad","exhausted":true},"accounts":[{"key":"a","label":"A","remainingPercent":0,"tone":"bad","exhausted":true,"resetsAt":"2026-09-24T17:00:00Z"},{"key":"b","label":"B","remainingPercent":null,"tone":null}]}]}"#.utf8))
+        let none = Presenter(payload: out, now: now, timeZone: utc)
+        let model = try XCTUnwrap(none.models.first)
+        XCTAssertTrue(Presenter.modelAlarming(model))
+        XCTAssertEqual(Presenter.modelValueText(model), "none left")
+        XCTAssertEqual(Presenter.modelMeterRatio(model), 0)
+        XCTAssertEqual(none.modelLine(model), "Fable: none left · resets in 3h 0m")
+        XCTAssertEqual(model.accounts.map(none.chipText), ["A 0% (resets in 3h 0m)", "B —"])
+        XCTAssertEqual(none.modelsTooltip, " · Fable none")
+        // A low best account is a warning, not urgent; a carried best says when it was seen.
+        let low = try PayloadDecoder.decode(Data(#"{"accounts":[],"models":[{"provider":"claude","label":"Fable weekly","model":"Fable","usable":true,"tone":"warn","best":{"key":"a","label":"A","remainingPercent":10,"tone":"warn","observedAt":"2026-09-24T13:40:00Z"},"accounts":[]}]}"#.utf8))
+        let warn = Presenter(payload: low, now: now, timeZone: utc)
+        XCTAssertTrue(Presenter.modelWarning(warn.models[0])); XCTAssertFalse(Presenter.modelAlarming(warn.models[0]))
+        XCTAssertEqual(warn.modelLine(warn.models[0]), "Fable via A · as of 13:40")
+        XCTAssertEqual(warn.modelsTooltip, " · Fable 10% (A)")
     }
 
     func testHeroBannerAndErrorStates() throws {
@@ -78,6 +105,8 @@ final class PresenterTests: XCTestCase {
         let json = #"{"accounts":[{"key":"x","state":"fresh","future":1,"windows":[{"label":"W","remainingPercent":50,"new":true}]}],"extra":{}}"#
         let payload = try PayloadDecoder.decode(Data(json.utf8))
         XCTAssertEqual(payload.accounts.first?.label, "x")
+        XCTAssertEqual(payload.models, [], "an older server sends no models: no section, no tooltip tail")
         XCTAssertEqual(Presenter(payload: payload, now: now).barLabel, "–")
+        XCTAssertEqual(Presenter(payload: payload, now: now).modelsTooltip, "")
     }
 }

@@ -45,6 +45,8 @@ Panel {
 
   readonly property var accounts: payload && payload.accounts ? payload.accounts : []
   readonly property var todayRows: payload && payload.today && payload.today.byClient ? payload.today.byClient : []
+  // Model-scoped allowances across the pool (Claude's per-model weekly); an older server sends none.
+  readonly property var models: payload && payload.models ? payload.models : []
   readonly property var worst: worstAccount(accounts)
   readonly property bool stale: !!payload && !!payload.snapshot && payload.snapshot.stale === true
   readonly property bool alarming: errorText !== "" || stale || (!!worst && !!headlineOf(worst) && (headlineOf(worst).tone === "bad" || headlineOf(worst).exhausted === true))
@@ -116,7 +118,18 @@ Panel {
     if (errorText !== "") return "Zecori: " + errorText
     if (!payload) return "Zecori: loading"
     if (!worst) return "Zecori: no limit windows observed"
-    return "Zecori: " + worst.label + " · " + headlineOf(worst).label + " · " + Math.round(Number(headlineOf(worst).remainingPercent)) + "% left"
+    return "Zecori: " + worst.label + " · " + headlineOf(worst).label + " · " + Math.round(Number(headlineOf(worst).remainingPercent)) + "% left" + modelsTooltip()
+  }
+
+  // The pool's answer per model, after the account headline: which account still has the model, or none.
+  function modelsTooltip() {
+    var parts = []
+    for (var i = 0; i < models.length; i++) {
+      var m = models[i]
+      if (m.usable === true && m.best) parts.push(String(m.model) + " " + Math.round(Number(m.best.remainingPercent)) + "% (" + String(m.best.label) + ")")
+      else parts.push(String(m.model) + " none")
+    }
+    return parts.length ? " · " + parts.join(" · ") : ""
   }
 
   // ---------------------------------------------------------------- formatting
@@ -188,6 +201,45 @@ Panel {
       parts.push(w.label + " " + remainingText(w) + (notes.length ? " (" + notes.join(", ") + ")" : ""))
     }
     return parts.join(" · ")
+  }
+
+  // ---------------------------------------------------------------- models (the pool view)
+
+  // The best account's remaining, or "none left" when no account answers for the model.
+  function modelValueText(model) {
+    if (!model) return "—"
+    if (model.usable !== true) return model.best ? "none left" : "—"
+    return remainingText(model.best)
+  }
+
+  // One account's chip: its label and what it has left, the reset when low, the observation time when carried.
+  function chipText(entry) {
+    if (!entry) return ""
+    var value = entry.remainingPercent === null || entry.remainingPercent === undefined ? "—" : Math.round(Number(entry.remainingPercent)) + "%"
+    var notes = []
+    if (entry.resetsAt && (entry.tone === "bad" || entry.tone === "warn")) notes.push(resetIn(entry))
+    if (entry.observedAt) notes.push("as of " + clock(entry.observedAt))
+    return String(entry.label) + " " + value + (notes.length ? " (" + notes.join(", ") + ")" : "")
+  }
+
+  // Under the chips: which account answers for the model, or when the pool may answer again.
+  function modelLine(model) {
+    if (!model) return ""
+    if (model.usable !== true) {
+      var when = model.nextResetAt ? resetIn({ resetsAt: model.nextResetAt }) : ""
+      return String(model.model) + ": none left" + (when !== "" ? " · " + when : "")
+    }
+    var parts = [String(model.model) + " via " + String(model.best.label)]
+    if (model.best.observedAt) parts.push("as of " + clock(model.best.observedAt))
+    return parts.join(" · ")
+  }
+
+  function modelAlarming(model) { return !!model && model.usable !== true }
+  function modelWarning(model) { return !!model && model.usable === true && model.tone === "warn" }
+
+  function modelMeterRatio(model) {
+    if (!model || !model.best || model.best.remainingPercent === null || model.best.remainingPercent === undefined) return -1
+    return clamp(Number(model.best.remainingPercent) / 100, 0, 1)
   }
 
   function stateText(account) {
@@ -471,6 +523,36 @@ Panel {
             }
           }
 
+          // ---------- Models across the pool ----------
+          PanelSeparator {
+            visible: modelsSection.visible
+            foreground: root.foreground
+          }
+
+          Column {
+            id: modelsSection
+            visible: root.models.length > 0
+            width: parent.width
+            spacing: Style.space(12)
+
+            PanelSectionHeader {
+              width: parent.width
+              text: "MODELS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: root.models
+
+              ModelRow {
+                required property var modelData
+                width: modelsSection.width
+                entry: modelData
+              }
+            }
+          }
+
           // ---------- Today by client ----------
           PanelSeparator {
             visible: todaySection.visible
@@ -617,6 +699,115 @@ Panel {
       font.pixelSize: Style.font.caption
       // Wraps rather than elides: the reset time and "as of" sit at the end of this line.
       wrapMode: Text.WordWrap
+    }
+  }
+
+  // One model across the pool: the best account's remaining with its meter, a chip per account, then which account answers.
+  component ModelRow: Column {
+    id: modelRow
+    property var entry: null
+
+    readonly property bool alarming: root.modelAlarming(entry)
+    readonly property bool warning: root.modelWarning(entry)
+    readonly property real ratio: root.modelMeterRatio(entry)
+
+    spacing: Style.space(5)
+
+    Item {
+      width: parent.width
+      implicitHeight: Math.max(modelLabel.implicitHeight, modelValue.implicitHeight)
+
+      Text {
+        id: modelLabel
+        textFormat: Text.PlainText
+        text: modelRow.entry ? String(modelRow.entry.label) : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: true
+        elide: Text.ElideRight
+        anchors.left: parent.left
+        anchors.right: modelValue.left
+        anchors.rightMargin: Style.spacing.sm
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: modelValue
+        textFormat: Text.PlainText
+        text: root.modelValueText(modelRow.entry)
+        color: modelRow.alarming ? root.urgent : root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        font.bold: modelRow.alarming || modelRow.warning
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Meter {
+      visible: modelRow.ratio >= 0
+      width: parent.width
+      value: modelRow.ratio
+      alarming: modelRow.alarming
+    }
+
+    Flow {
+      width: parent.width
+      spacing: Style.space(6)
+
+      Repeater {
+        model: modelRow.entry && modelRow.entry.accounts ? modelRow.entry.accounts : []
+
+        Chip {
+          required property var modelData
+          entry: modelData
+          maxWidth: modelRow.width
+        }
+      }
+    }
+
+    Text {
+      textFormat: Text.PlainText
+      visible: text !== ""
+      width: parent.width
+      text: root.modelLine(modelRow.entry)
+      color: modelRow.alarming ? root.urgent : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+  }
+
+  // One account inside a model row: urgent when it has nothing left, bold when low, hollow when it reports no window.
+  component Chip: Rectangle {
+    id: chip
+    property var entry: null
+    property real maxWidth: 0
+
+    readonly property bool bad: !!entry && entry.tone === "bad"
+    readonly property bool warn: !!entry && entry.tone === "warn"
+    readonly property bool unknown: !entry || entry.remainingPercent === null || entry.remainingPercent === undefined
+    readonly property real padding: Style.space(8)
+
+    implicitWidth: Math.min(chipLabel.implicitWidth, Math.max(0, maxWidth - padding * 2)) + padding * 2
+    implicitHeight: chipLabel.implicitHeight + Style.space(6)
+    radius: height / 2
+    color: bad ? root.alpha(root.urgent, 0.12) : root.alpha(root.foreground, unknown ? 0 : 0.07)
+    border.width: 1
+    border.color: bad ? root.alpha(root.urgent, 0.45) : root.alpha(root.foreground, unknown ? 0.25 : 0.12)
+
+    Text {
+      id: chipLabel
+      textFormat: Text.PlainText
+      width: parent.width - chip.padding * 2
+      anchors.centerIn: parent
+      text: root.chipText(chip.entry)
+      color: chip.bad ? root.urgent : (chip.unknown ? root.dim : root.foreground)
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: chip.bad || chip.warn
+      elide: Text.ElideRight
     }
   }
 

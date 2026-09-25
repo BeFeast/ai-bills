@@ -18,6 +18,7 @@ public struct Presenter {
     }
 
     public var accounts: [Account] { payload?.accounts ?? [] }
+    public var models: [WidgetModel] { payload?.models ?? [] }
 
     /// The server's headline (tightest account-wide window), or the hero's limiting window from an older server.
     public static func headlineOf(_ account: Account?) -> LimitWindow? {
@@ -54,7 +55,16 @@ public struct Presenter {
         if !errorText.isEmpty { return "Zecori: \(errorText)" }
         if payload == nil { return "Zecori: loading" }
         guard let worst, let head = Self.headlineOf(worst), let left = head.remainingPercent else { return "Zecori: no limit windows observed" }
-        return "Zecori: \(worst.label) · \(head.label) · \(Int(left.rounded()))% left"
+        return "Zecori: \(worst.label) · \(head.label) · \(Int(left.rounded()))% left" + modelsTooltip
+    }
+
+    /// The pool's answer per model, after the account headline: which account still has the model, or none.
+    public var modelsTooltip: String {
+        let parts = models.map { model -> String in
+            if model.usable == true, let best = model.best, let left = best.remainingPercent { return "\(model.model) \(Int(left.rounded()))% (\(best.label))" }
+            return "\(model.model) none"
+        }
+        return parts.isEmpty ? "" : " · " + parts.joined(separator: " · ")
     }
 
     // MARK: formatting
@@ -77,8 +87,10 @@ public struct Presenter {
         return plain.date(from: text)
     }
 
-    public func resetIn(_ window: LimitWindow?) -> String {
-        guard let window, let at = Self.parseDate(window.resetsAt) else { return "" }
+    public func resetIn(_ window: LimitWindow?) -> String { resetIn(at: window?.resetsAt) }
+
+    public func resetIn(at text: String?) -> String {
+        guard let at = Self.parseDate(text) else { return "" }
         let left = at.timeIntervalSince(now)
         return left > 0 ? "resets in \(Self.formatDuration(left))" : "reset due"
     }
@@ -117,6 +129,45 @@ public struct Presenter {
             parts.append("\(window.label) \(Self.remainingText(window))" + (notes.isEmpty ? "" : " (\(notes.joined(separator: ", ")))"))
         }
         return parts.joined(separator: " · ")
+    }
+
+    // MARK: models (the pool view)
+
+    /// The best account's remaining, or "none left" when no account answers for the model.
+    public static func modelValueText(_ model: WidgetModel) -> String {
+        if model.usable != true { return model.best == nil ? "—" : "none left" }
+        guard let left = model.best?.remainingPercent else { return "—" }
+        return "\(Int(left.rounded()))% left"
+    }
+
+    /// One account's chip: its label and what it has left, the reset when low, the observation time when carried.
+    public func chipText(_ entry: ModelAccount) -> String {
+        let value = entry.remainingPercent.map { "\(Int($0.rounded()))%" } ?? "—"
+        var notes: [String] = []
+        if entry.resetsAt != nil, entry.tone == "bad" || entry.tone == "warn" { notes.append(resetIn(at: entry.resetsAt)) }
+        if entry.observedAt != nil { notes.append("as of \(clock(entry.observedAt))") }
+        return "\(entry.label) \(value)" + (notes.isEmpty ? "" : " (\(notes.joined(separator: ", ")))")
+    }
+
+    /// Under the chips: which account answers for the model, or when the pool may answer again.
+    public func modelLine(_ model: WidgetModel) -> String {
+        if model.usable != true {
+            let when = model.nextResetAt == nil ? "" : resetIn(at: model.nextResetAt)
+            return "\(model.model): none left" + (when.isEmpty ? "" : " · \(when)")
+        }
+        guard let best = model.best else { return "" }
+        var parts = ["\(model.model) via \(best.label)"]
+        if best.observedAt != nil { parts.append("as of \(clock(best.observedAt))") }
+        return parts.joined(separator: " · ")
+    }
+
+    public static func modelAlarming(_ model: WidgetModel) -> Bool { model.usable != true }
+
+    public static func modelWarning(_ model: WidgetModel) -> Bool { model.usable == true && model.tone == "warn" }
+
+    public static func modelMeterRatio(_ model: WidgetModel) -> Double? {
+        guard let left = model.best?.remainingPercent else { return nil }
+        return min(1, max(0, left / 100))
     }
 
     public static func stateText(_ account: Account) -> String {
