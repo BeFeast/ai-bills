@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "befeast.zecori",
   "name": "Zecori",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "BeFeast",
   "license": "MIT",
   "description": "Remaining AI subscription limits, reset times and today's spend per machine, read from your Zecori instance.",

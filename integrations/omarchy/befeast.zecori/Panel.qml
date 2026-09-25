@@ -405,7 +405,8 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(640))
+    // The shell already limits the panel to the screen; the cap only keeps a very tall screen from a wall of text.
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(960))
 
     PanelKeyCatcher {
       id: keyCatcher
