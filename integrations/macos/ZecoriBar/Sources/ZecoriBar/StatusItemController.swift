@@ -39,9 +39,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func render() {
         guard let button = item.button else { return }
         let presenter = store.presenter
-        let color: NSColor = presenter.alarming ? .systemRed : .labelColor
-        let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        button.attributedTitle = NSAttributedString(string: " " + presenter.barLabel, attributes: [.foregroundColor: color, .font: font])
+        // No explicit text colour: the menu bar picks light or dark for the glyph and the text from
+        // the wallpaper behind it (Tahoe tints status items per background). Only an alarm overrides
+        // it, through contentTintColor, which tints the template glyph and the title together.
+        button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        button.title = " " + presenter.barLabel
         button.contentTintColor = presenter.alarming ? .systemRed : nil
         button.toolTip = presenter.barTooltip
         if popover.isShown { popover.contentSize = fittedSize() }
