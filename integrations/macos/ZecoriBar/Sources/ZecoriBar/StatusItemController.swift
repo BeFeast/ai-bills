@@ -20,8 +20,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         super.init()
         item.autosaveName = "zecori"
         if let button = item.button {
-            button.image = Glyph.image()
-            button.imagePosition = .imageLeading
+            button.image = Glyph.statusImage(label: "…", alarming: false)
+            button.imagePosition = .imageOnly
+            button.title = ""
             button.target = self
             button.action = #selector(clicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp, .otherMouseUp])
@@ -39,12 +40,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func render() {
         guard let button = item.button else { return }
         let presenter = store.presenter
-        // No explicit text colour: the menu bar picks light or dark for the glyph and the text from
-        // the wallpaper behind it (Tahoe tints status items per background). Only an alarm overrides
-        // it, through contentTintColor, which tints the template glyph and the title together.
-        button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        button.title = " " + presenter.barLabel
-        button.contentTintColor = presenter.alarming ? .systemRed : nil
+        button.image = Glyph.statusImage(label: presenter.barLabel, alarming: presenter.alarming)
         button.toolTip = presenter.barTooltip
         if popover.isShown { popover.contentSize = fittedSize() }
     }

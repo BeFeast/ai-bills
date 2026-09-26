@@ -53,6 +53,31 @@ enum Glyph {
         return e
     }
 
+    /// The whole status item content — coin glyph, gap, percentage — as ONE image. As a template
+    /// (normal state) the menu bar tints it light or dark per wallpaper like every other icon; a
+    /// button title and contentTintColor do not follow the wallpaper on macOS 26+ (CodexBar renders
+    /// its label the same way). An alarm draws it red and not as a template, so the red survives.
+    static func statusImage(label: String, alarming: Bool) -> NSImage {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        let text = NSAttributedString(string: label, attributes: [.font: font, .foregroundColor: NSColor.black])
+        let textSize = text.size()
+        let glyphSize: CGFloat = 16, gap: CGFloat = 4, height: CGFloat = 22
+        let size = NSSize(width: ceil(glyphSize + gap + textSize.width), height: height)
+        let glyph = image(pointSize: glyphSize)
+        let result = NSImage(size: size, flipped: false) { rect in
+            glyph.draw(in: NSRect(x: 0, y: (height - glyphSize) / 2, width: glyphSize, height: glyphSize))
+            text.draw(at: NSPoint(x: glyphSize + gap, y: floor((height - textSize.height) / 2) + 1))
+            if alarming {
+                NSColor.systemRed.setFill()
+                rect.fill(using: .sourceAtop)
+            }
+            return true
+        }
+        result.isTemplate = !alarming
+        result.accessibilityDescription = "Zecori \(label)"
+        return result
+    }
+
     /// The portrait for the panel hero, shipped in Contents/Resources; the coin stands in without it.
     static var mark: NSImage {
         if let url = Bundle.main.url(forResource: "zecori-mark", withExtension: "png"), let image = NSImage(contentsOf: url) { return image }
