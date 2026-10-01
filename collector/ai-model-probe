@@ -73,11 +73,16 @@ def classify(status, body):
     return 'rejected'
 
 
-def call(open_url, request, timeout=TIMEOUT):
+# A message reply only needs its error text; the model catalog of a busy proxy runs to tens of kilobytes.
+REPLY_BYTES = 4096
+CATALOG_BYTES = 2 * 1024 * 1024
+
+
+def call(open_url, request, timeout=TIMEOUT, limit=REPLY_BYTES):
     """(http_status or None, body text); network failures and timeouts have no status."""
     try:
         with open_url(request, timeout=timeout) as response:
-            return getattr(response, 'status', None) or 200, response.read(4096).decode('utf-8', 'replace')
+            return getattr(response, 'status', None) or 200, response.read(limit).decode('utf-8', 'replace')
     except HTTPError as error:
         try:
             body = error.read(4096).decode('utf-8', 'replace')
@@ -92,7 +97,7 @@ def call(open_url, request, timeout=TIMEOUT):
 def catalog(base, key, open_url):
     """Sorted unique `claude-*` ids from the proxy's model list, or raise with a short reason."""
     status, body = call(open_url, Request(base + '/v1/models', headers={
-        'Authorization': 'Bearer ' + key, 'Accept': 'application/json', 'User-Agent': 'ai-bills-model-probe'}))
+        'Authorization': 'Bearer ' + key, 'Accept': 'application/json', 'User-Agent': 'ai-bills-model-probe'}), limit=CATALOG_BYTES)
     if status is None:
         raise RuntimeError('model catalog unreachable (%s)' % body)
     if not 200 <= status < 300:
