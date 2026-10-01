@@ -126,6 +126,13 @@ class ModelProbeTests(unittest.TestCase):
                 self.assertIn(reason, result['message'])
                 self.assertEqual(proxy.messages(), [])
 
+    def test_a_catalog_larger_than_a_reply_is_read_whole(self):
+        # A live proxy lists hundreds of models (about 30 KB); the Claude ones can sit anywhere in the list.
+        big = {'object': 'list', 'data': [{'id': 'vendor/model-%04d' % n, 'object': 'model', 'owned_by': 'x' * 40} for n in range(600)] + [{'id': 'claude-opus-5'}]}
+        self.assertGreater(len(json.dumps(big)), 30000)
+        result, _ = run(FakeProxy({}, catalog=big))
+        self.assertEqual((result['status'], [row['model'] for row in result['models']]), ('up', ['claude-opus-5']))
+
     def test_catalog_blip_is_retried_once(self):
         proxy = FakeProxy({})
         answers = [None, 200]
