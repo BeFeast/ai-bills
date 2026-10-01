@@ -36,7 +36,7 @@ export async function connectAccountBrowser(endpoint: string, deadlineMs = 12_00
           clearTimeout(timer); pending.delete(id);
           if (error) reject(error); else resolve(value ?? {});
         };
-        const timer = setTimeout(() => finish(new Error(`Account browser ${method} timed out`)), method === 'Target.createTarget' ? 8_000 : 3_000);
+        const timer = setTimeout(() => finish(new Error(`Account browser ${method} timed out`)), method === 'Target.createTarget' || method === 'Page.navigate' ? 8_000 : 3_000);
         pending.set(id, { method, reject: error => finish(error), resolve: value => finish(undefined, value) });
         try { ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
         catch { finish(new Error('Account browser send failed')); }

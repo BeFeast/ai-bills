@@ -4,7 +4,7 @@ import type { Guard, GuardsReport } from '@/lib/guards';
 import { fmtDate } from './format';
 import { Card, Cell, Pill, Table, type Column } from './ui';
 
-const guardNames: Record<keyof GuardsReport['guards'], string> = { stale: 'Quota freshness (5 h)', consistency: 'Proxy vs website cross-check', probe: 'Model probe (hourly)' };
+const guardNames: Record<keyof GuardsReport['guards'], string> = { stale: 'Quota freshness (5 h)', consistency: 'Proxy vs website cross-check', probe: 'Model probe (hourly)', mapping: 'Configured quota links' };
 const checkColumns: Column<'account' | 'verdict' | 'proxy' | 'website' | 'at'>[] = [
   { key: 'account', label: 'Account' }, { key: 'verdict', label: 'Verdict' }, { key: 'proxy', label: 'Proxy' }, { key: 'website', label: 'Website' }, { key: 'at', label: 'Checked', mono: true }];
 const probeColumns: Column<'model' | 'outcome'>[] = [{ key: 'model', label: 'Model', mono: true }, { key: 'outcome', label: 'Outcome' }];
@@ -34,7 +34,7 @@ export function QuotaGuards({ report, tz }: { report: GuardsReport | null; tz: s
         }
       }} /> : null}
       {report.probe.models.length ? <Table columns={probeColumns} rows={report.probe.models} rowKey={(model) => model.model} renderCell={(model, column) => column.key === 'model' ? model.model
-        : <Cell main={<Pill tone={model.outcome === 'ok' ? 'ok' : model.outcome === 'rate_limited' ? 'warn' : 'bad'}>{model.outcome}{model.http_status ? ` · HTTP ${model.http_status}` : ''}</Pill>} sub={model.retried ? `retried once${model.message ? ` · ${model.message}` : ''}` : model.message} />} /> : null}
+        : <Cell main={<Pill tone={model.outcome === 'ok' ? 'ok' : model.outcome === 'rate_limited' || model.outcome === 'retired' || model.outcome === 'skipped' ? 'warn' : 'bad'}>{model.outcome}{model.http_status ? ` · HTTP ${model.http_status}` : ''}</Pill>} sub={model.retried ? `retried once${model.message ? ` · ${model.message}` : ''}` : model.message} />} /> : null}
     </div>
   </Card>;
 }

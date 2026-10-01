@@ -3,19 +3,26 @@ import { accountBrowser, resolveBrowserBinding } from './account-browser';
 import { connectAccountBrowser, type AccountBrowserConnection } from './account-browser-cdp';
 import { acquireBrowserLease, releaseBrowserLease } from './browser-lease';
 import { resolveSecret } from './infisical';
+import { opaqueId } from './accounting';
+import { credentialId } from './snapshot-keys';
 
 /**
  * "Reconnect proxy": the proxy's own Claude OAuth flow, driven through the account's signed-in resident browser profile.
  *
- * The proxy hands out an authorize URL and waits (about five minutes) for its callback. The flow opens that URL in a
- * foreground tab of the account's profile, where claude.ai usually sends it through its login page first; the person
+ * The proxy hands out an authorize URL and waits (about five minutes) for its callback. The flow opens that URL in the
+ * claude.ai tab the account browser's screen shows (or a new tab in that window), where claude.ai usually sends it
+ * through its login page first; the person
  * signs in there through the account browser. Authorize is clicked only on claude.ai's consent page and only while
  * claude.ai's own `/api/account` reports the expected e-mail; anything else stops the flow without a callback. The
- * callback to the proxy's localhost redirect never loads, but the tab's navigation history keeps its URL, which is
- * handed to the proxy. The tab is closed in every outcome. Started only by a person, one flow per account at a time.
+ * consent page's Authorize button stays disabled for a while and is pressed once enabled; the person may also press it
+ * themselves. The callback to the proxy's localhost redirect never loads, but the tab's navigation history keeps its
+ * URL, which is handed to the proxy. In every outcome our own tab is closed and a borrowed one is sent back to its page.
+ * Started only by a person, one flow per account at a time.
  */
 export type ReauthState = 'checking' | 'waiting_for_login' | 'authorizing' | 'exchanging' | 'succeeded' | 'failed';
 export type ReauthJob = { accountKey: string; state: ReauthState; message: string; startedAt: string; finishedAt: string | null;
+  /** After a success: configuration links that no longer name the re-logged credential (the proxy renames its file). */
+  mappingNotes?: string[];
   /** Where the person signs in when the flow waits for, or stopped on, the website login. */
   remoteUrl: string | null; suggestAccountBrowser: boolean };
 
@@ -25,6 +32,8 @@ export const FLOW_TTL_MS = 270_000;
 export const WINDOW_MS = 15 * 60_000;
 const STATUS_POLL_MS = 2_000;
 const FLOW_RETRY_MS = 30_000;
+/** Consecutive unreadable history polls (one per second) after which the tab counts as gone. */
+const UNREADABLE_LIMIT = 5;
 const STATUS_TIMEOUT_MS = 90_000;
 
 type ProxyAnswer = { status: number; body: Record<string, unknown> };
@@ -63,6 +72,8 @@ const defaultDeps = (config: AppConfig): ReauthDeps => ({
   sleep: (ms) => new Promise(resolve => setTimeout(resolve, ms)), now: Date.now });
 
 const host = (value: string) => { try { return new URL(value).host; } catch { return ''; } };
+const callbackState = (value: string) => { try { return new URL(value).searchParams.get('state'); } catch { return null; } };
+const pathOf = (value: string) => { try { return new URL(value).pathname; } catch { return ''; } };
 
 /** Starts the flow unless one is already running for the account; returns the job to poll. */
 export function startProxyReauth(config: AppConfig, scope: string | null, accountKey: string, deps: ReauthDeps = defaultDeps(config)): { job: ReauthJob; done: Promise<ReauthJob> } {
@@ -114,39 +125,76 @@ async function runReauth(config: AppConfig, job: ReauthJob, deps: ReauthDeps): P
   const lease = await acquireBrowserLease(binding.profile_id, 'manual');
   let connection: AccountBrowserConnection | undefined;
   let tab: string | undefined;
+  /** A claude.ai tab the person already sees in the account browser, borrowed for the flow and sent back afterwards. */
+  let borrowed: string | null = null;
+  let session: string | undefined;
   let callback: string | null = null;
   let flow: { url: string; state: string; at: number };
+  /** Every flow this job asked the proxy for: a restart whose navigation timed out may still be the one on screen. */
+  const issued = new Map<string, { url: string; state: string; at: number }>();
   try {
     flow = await startFlow(deps);
+    issued.set(flow.state, flow);
     connection = await deps.connect(endpoint);
-    const created = await connection.send('Target.createTarget', { url: flow.url, background: false });
-    if (typeof created.targetId !== 'string') throw new Error('The browser did not open the authorize tab');
-    tab = created.targetId;
+    // The person signs in through the account browser's screen, so the flow must run in a tab that screen shows: the
+    // provider tab already open there, otherwise a new tab in the same window (a separate window is not on screen).
+    // Short-lived automation tabs (quota reads and identity probes load claude.ai/robots.txt) are never borrowed.
+    const listed = await connection.send('Target.getTargets');
+    const visible = (Array.isArray(listed.targetInfos) ? listed.targetInfos : []).find((target: { type?: string; url?: string }) =>
+      target.type === 'page' && host(target.url ?? '') === 'claude.ai' && !/^\/robots\.txt$/.test(pathOf(target.url ?? '')));
+    if (visible) { tab = visible.targetId as string; borrowed = visible.url as string; }
+    else {
+      const created = await connection.send('Target.createTarget', { url: flow.url, newWindow: false, background: false });
+      if (typeof created.targetId !== 'string') throw new Error('The browser did not open the authorize tab');
+      tab = created.targetId;
+    }
     await connection.send('Target.activateTarget', { targetId: tab });
     const attached = await connection.send('Target.attachToTarget', { targetId: tab, flatten: true });
-    const session = typeof attached.sessionId === 'string' ? attached.sessionId : undefined;
+    session = typeof attached.sessionId === 'string' ? attached.sessionId : undefined;
     if (!session) throw new Error('The browser did not attach to the authorize tab');
+    // A slow claude.ai answer is not a failure: the loop below watches the tab's history either way.
+    if (borrowed !== null) await connection.send('Page.navigate', { url: flow.url }, session).catch(() => undefined);
     const evaluate = async (expression: string) => (await connection!.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, session)).result?.value;
+    if (await evaluate('document.visibilityState').catch(() => null) !== 'visible') {
+      Object.assign(job, { message: 'The sign-in tab may not be on the account browser screen; open the account browser and select the claude.ai tab.', suggestAccountBrowser: true });
+    }
     const deadline = deps.now() + WINDOW_MS;
     let clickedFor: string | null = null;
     let retryFlowAt = 0;
+    let unreadable = 0;
     while (deps.now() < deadline) {
       try {
-        const history = await connection.send('Page.getNavigationHistory', {}, session);
+        let history: Record<string, any>;
+        try { history = await connection.send('Page.getNavigationHistory', {}, session); unreadable = 0; }
+        catch (error) {
+          // One failed read is a page mid-redirect; a tab that stays unreadable was closed under the flow.
+          if (++unreadable >= UNREADABLE_LIMIT) throw new Error('The sign-in tab was closed or stopped responding; start the reconnect again');
+          throw error;
+        }
         const entries: { url?: string }[] = Array.isArray(history.entries) ? history.entries : [];
-        callback = entries.map(entry => entry.url ?? '').find(url => url.startsWith(CALLBACK_PREFIX)) ?? null;
-        if (callback) break;
+        // Only a callback of a flow this job issued counts: a borrowed tab's history can hold an older redirect.
+        callback = entries.map(entry => entry.url ?? '').find(url => url.startsWith(CALLBACK_PREFIX) && issued.has(callbackState(url) ?? '')) ?? null;
+        if (callback) { flow = issued.get(callbackState(callback)!)!; break; }
         const href = entries[typeof history.currentIndex === 'number' ? history.currentIndex : entries.length - 1]?.url ?? '';
         const onClaude = host(href) === 'claude.ai';
         const onAuthorize = onClaude && new URL(href).pathname.startsWith('/oauth/authorize');
-        // Restart only on the authorize page itself: never mid-login on claude.ai's own login page or another host.
-        if (deps.now() - flow.at > FLOW_TTL_MS && clickedFor !== flow.state && onAuthorize && deps.now() >= retryFlowAt) {
-          // A failed restart is retried after a pause, not every second; the old flow stays current until the tab shows the new one.
+        // Every decision is about the flow the tab actually shows (its authorize URL's state), never just the newest one:
+        // a navigation that timed out leaves the previous consent page on screen, and a borrowed tab may show another
+        // client's. Only the current flow's own page is ever clicked.
+        const shown = onAuthorize ? issued.get(callbackState(href) ?? '') : undefined;
+        const current = shown !== undefined && shown.state === flow.state;
+        const expired = deps.now() - flow.at > FLOW_TTL_MS;
+        if (onAuthorize && clickedFor !== flow.state && (expired || !current) && deps.now() >= retryFlowAt) {
+          // Restart an expired flow, or send the tab to the current one; never mid-login on claude.ai's login page or
+          // another host (those are not authorize pages). A failed attempt is retried after a pause, not every second.
           retryFlowAt = deps.now() + FLOW_RETRY_MS;
-          const next = await startFlow(deps);
-          await connection.send('Page.navigate', { url: next.url }, session);
-          flow = next;
-        } else if (onAuthorize && clickedFor !== flow.state && deps.now() - flow.at <= FLOW_TTL_MS) {
+          if (expired) {
+            const next = await startFlow(deps);
+            issued.set(next.state, next);
+            flow = next;
+          }
+          await connection.send('Page.navigate', { url: flow.url }, session);
+        } else if (onAuthorize && current && !expired && clickedFor !== flow.state) {
           const email = await evaluate(ACCOUNT_EMAIL);
           if (typeof email !== 'string') {
             Object.assign(job, { state: 'waiting_for_login', message: 'Sign in to claude.ai in the account browser; the reconnect continues by itself.', suggestAccountBrowser: true });
@@ -161,29 +209,104 @@ async function runReauth(config: AppConfig, job: ReauthJob, deps: ReauthDeps): P
           Object.assign(job, { state: 'waiting_for_login', message: 'Sign in to claude.ai in the account browser; the reconnect continues by itself.', suggestAccountBrowser: true });
         }
       } catch (error) {
-        // A page in the middle of a redirect (destroyed context, slow evaluate) is "not yet"; a dead connection is not.
-        if (error instanceof Error && /connection closed|deadline exceeded|send failed/i.test(error.message)) throw error;
+        // A page in the middle of a redirect (destroyed context, slow evaluate) is "not yet"; a dead connection or tab is not.
+        if (error instanceof Error && /connection closed|deadline exceeded|send failed|tab was closed/i.test(error.message)) throw error;
       }
       await deps.sleep(1_000);
     }
   } finally {
-    if (tab && connection) await connection.send('Target.closeTarget', { targetId: tab }).catch(() => undefined);
+    // Our own tab is closed. A borrowed one is the person's: it goes back to its page, and is never closed (without a
+    // session it was never navigated, so it is left exactly as it was).
+    if (tab && connection) {
+      if (borrowed === null) await connection.send('Target.closeTarget', { targetId: tab }).catch(() => undefined);
+      else if (session) await connection.send('Page.navigate', { url: borrowed }, session).catch(() => undefined);
+    }
     connection?.close();
     await releaseBrowserLease(lease);
   }
   if (!callback) { finish(job, deps, 'failed', 'No sign-in completed within 15 minutes; nothing was changed.', true); return job; }
-  if (new URL(callback).searchParams.get('state') !== flow.state) { finish(job, deps, 'failed', 'The callback did not belong to this flow; nothing was handed to the proxy.'); return job; }
   Object.assign(job, { state: 'exchanging', message: 'Handing the authorization to the proxy' });
   const handed = await deps.proxy('POST', '/v0/management/oauth-callback', { redirect_url: callback, state: flow.state });
   if (handed.status !== 200) { finish(job, deps, 'failed', `The proxy rejected the callback (HTTP ${handed.status})`); return job; }
   const until = deps.now() + STATUS_TIMEOUT_MS;
   while (deps.now() < until) {
     const status = await deps.proxy('GET', `/v0/management/get-auth-status?state=${encodeURIComponent(flow.state)}`);
-    if (status.body.status === 'ok') { finish(job, deps, 'succeeded', 'Proxy credential re-authorized; quota recovers with the next collector run.'); return job; }
+    if (status.body.status === 'ok') return verifyCredential(config, job, deps, account.key, expected);
     if (status.body.status === 'error') { finish(job, deps, 'failed', `The proxy could not save the credential${typeof status.body.error === 'string' ? `: ${status.body.error.slice(0, 200)}` : ''}`); return job; }
     await deps.sleep(STATUS_POLL_MS);
   }
   finish(job, deps, 'failed', 'The proxy did not confirm the new credential within 90 seconds.');
+  return job;
+}
+
+type AuthFileRow = { id?: unknown; name?: unknown; provider?: unknown; type?: unknown; email?: unknown; status?: unknown; status_message?: unknown; unavailable?: unknown };
+const rowName = (file: AuthFileRow) => typeof file.name === 'string' ? file.name : typeof file.id === 'string' ? file.id : '';
+
+async function authFiles(deps: ReauthDeps): Promise<AuthFileRow[] | null> {
+  const answer = await deps.proxy('GET', '/v0/management/auth-files');
+  return answer.status === 200 && Array.isArray(answer.body.files) ? answer.body.files as AuthFileRow[] : null;
+}
+
+/**
+ * A saved credential is not yet a working account link. The proxy's own inventory must show an active credential for
+ * the expected e-mail, and the configuration must still name it: re-login renames the auth file, so a link kept by
+ * file-name id (`quota_snapshot_key`, binding ids and members) silently stops matching.
+ * - The account's own credential is whatever its links name. If that one is still dead, the sign-in authorized another
+ *   credential of the e-mail (another organisation): the job fails instead of advising a relink.
+ * - With one credential for the e-mail, the rename-proof id is advised for every link that no longer matches.
+ * - With several, nothing is guessed: the collector publishes no e-mail or rename-proof key for such an address, so each
+ *   link must name a file id. If no link names an active credential while one of the e-mail's credentials is still dead,
+ *   the job fails (another organisation was most likely authorized); otherwise unlinked links are listed with the active
+ *   file ids, and recovery is not promised.
+ */
+async function verifyCredential(config: AppConfig, job: ReauthJob, deps: ReauthDeps, accountKey: string, expected: string): Promise<ReauthJob> {
+  const files = await authFiles(deps).catch(() => null);
+  if (!files) { finish(job, deps, 'succeeded', 'Proxy credential re-authorized; its state could not be read back from the proxy, so check the card after the next collector run.'); return job; }
+  const holds = (file: AuthFileRow) => (file.provider ?? file.type) === 'claude' && typeof file.email === 'string' && file.email.trim().toLowerCase() === expected;
+  const isActive = (file: AuthFileRow) => file.status === 'active' && file.unavailable !== true;
+  const idOf = (file: AuthFileRow) => opaqueId(`oauth:${rowName(file)}`);
+  const stateOf = (file: AuthFileRow) => typeof file.status_message === 'string' && file.status_message ? file.status_message.slice(0, 200) : String(file.status ?? 'unknown');
+  const mine = files.filter(holds);
+  const active = mine.filter(isActive);
+  if (!active.length) { finish(job, deps, 'failed', `The proxy saved the sign-in, but the credential is not active: ${mine.map(stateOf).join('; ') || 'no credential for this account'}`); return job; }
+  const account = config.accounts.find(entry => entry.key === accountKey);
+  const bindings = (config.accounting?.account_bindings ?? []).filter(binding => binding.quota_account_key === accountKey);
+  const links = [...(account?.quota_snapshot_key ? [account.quota_snapshot_key] : []), ...bindings.flatMap(binding => [binding.id, ...(binding.members ?? [])])];
+  const own = mine.filter(file => links.includes(idOf(file)));
+  if (own.length && !own.some(isActive)) {
+    finish(job, deps, 'failed', `The sign-in did not re-authorize this account's credential (${own.map(file => `${idOf(file)}: ${stateOf(file)}`).join('; ')}); another credential of this e-mail is active instead. Choose this account's organisation on the claude.ai consent page and reconnect again.`, true);
+    return job;
+  }
+  const activeIds = new Set(active.map(idOf));
+  const notes: string[] = [];
+  if (mine.length === 1) {
+    const stable = credentialId('claude', expected);
+    const linked = new Set([stable, expected, ...activeIds]);
+    const shared = config.accounts.some(other => other.key !== accountKey && other.provider === 'claude' && other.email?.trim().toLowerCase() === expected);
+    if (account?.quota_snapshot_key && !linked.has(account.quota_snapshot_key)) notes.push(`quota_snapshot_key no longer names this credential; set it to ${stable} (the rename-proof id)${shared ? '' : '; the card uses the e-mail key meanwhile'}`);
+    for (const binding of bindings) {
+      if (![binding.id, ...(binding.members ?? [])].some(member => linked.has(member))) notes.push(`binding ${binding.label ?? binding.id} has no member for this credential; add ${stable} to its members`);
+    }
+  } else {
+    // Several credentials hold the e-mail, so the collector publishes no e-mail or rename-proof key for it: only a file id
+    // links this account. Without a link to an active one, a credential of the e-mail that is still dead is most likely
+    // this account's own, and the sign-in authorized another organisation.
+    const ids = [...activeIds].join(', ');
+    const dead = mine.filter(file => !isActive(file));
+    const pinned = links.some(link => activeIds.has(link));
+    if (!pinned && dead.length) {
+      finish(job, deps, 'failed', `This e-mail now has ${mine.length} credentials and one is still dead (${dead.map(file => `${idOf(file)}: ${stateOf(file)}`).join('; ')}); this account's configuration names none of the active ones, so the sign-in most likely authorized another organisation. Choose this account's organisation on the claude.ai consent page and reconnect again; if an active credential (${ids}) is in fact this account's, set quota_snapshot_key to its file id.`, true);
+      return job;
+    }
+    if (!account?.quota_snapshot_key || !activeIds.has(account.quota_snapshot_key)) notes.push(`quota_snapshot_key ${account?.quota_snapshot_key ? 'names none of the active credentials of this e-mail' : 'is not set'}; ${mine.length} credentials hold it, so the card cannot use the e-mail key: set it to the file id of this account's credential (active: ${ids})`);
+    for (const binding of bindings) {
+      if (![binding.id, ...(binding.members ?? [])].some(member => activeIds.has(member))) notes.push(`binding ${binding.label ?? binding.id} names none of the active credentials of this e-mail; add this account's file id (active: ${ids})`);
+    }
+  }
+  job.mappingNotes = notes;
+  finish(job, deps, 'succeeded', notes.length
+    ? `Proxy credential re-authorized and active, but the configuration no longer links it: ${notes.join('; ')}.`
+    : 'Proxy credential re-authorized and active; quota recovers with the next collector run.');
   return job;
 }
 

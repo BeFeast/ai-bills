@@ -19,9 +19,9 @@ def discover(auth_dir, config_path):
     now = datetime.now(timezone.utc).isoformat()
     accounts, sources = [], []
 
-    def add(identity, provider, label, origin):
+    def add(identity, provider, label, origin, aliases=()):
         accounts.append(dict(id=identifier(identity), provider=provider,
-                             label=label, origin=origin, observedAt=now))
+                             label=label, origin=origin, observedAt=now, **({'aliases': list(aliases)} if aliases else {})))
 
     try:
         if not auth_dir:
@@ -34,7 +34,11 @@ def discover(auth_dir, config_path):
             try:
                 row = json.loads(path.read_text())
                 provider = row.get('type') or row.get('provider') or 'unknown'
-                add('oauth:' + path.name, provider, row.get('label') or f'{provider} OAuth {identifier(path.name)[:6]}', 'oauth')
+                email = row.get('email')
+                # The file name changes when the proxy re-logs a credential in; provider and e-mail do not. The row keeps
+                # its file-name id (bindings and history use it) and carries the stable one as an alias.
+                stable = [identifier('oauth-account:%s:%s' % (provider, email.strip().lower()))] if isinstance(email, str) and email.strip() else []
+                add('oauth:' + path.name, provider, row.get('label') or f'{provider} OAuth {identifier(path.name)[:6]}', 'oauth', stable)
             except (ValueError, OSError, AttributeError):
                 errors += 1
         sources.append(dict(id='oauth', status='error' if errors else 'fresh', unreadable=errors))

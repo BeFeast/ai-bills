@@ -63,9 +63,12 @@ def classify(status, body):
         return 'ok'
     if status == 429:
         return 'rate_limited'
-    # The proxy answers 400 for a model it cannot route; the provider answers 404 for one it does not know.
-    if status in (400, 404) and any(marker in body.lower() for marker in UNKNOWN_MODEL):
+    # The proxy answers 400 for a model it cannot route (unknown provider, a startup window): an outage for its clients.
+    if status == 400 and any(marker in body.lower() for marker in UNKNOWN_MODEL):
         return 'unknown_model'
+    # The provider answers 404 for a model it has retired while the proxy catalogue still lists it: worth showing, not paging.
+    if status == 404 and any(marker in body.lower() for marker in UNKNOWN_MODEL):
+        return 'retired'
     if status in (401, 403):
         return 'unauthorized'
     if status >= 500:
@@ -168,7 +171,8 @@ def probe(base, key, previous=None, open_url=urlopen, sleep=time.sleep, now=None
         result['status'] = 'down'
         result['message'] = short('; '.join('%s: %s' % (row['model'], row['outcome']) for row in failing), key)
     else:
-        result['message'] = '%d Claude models callable' % len(models)
+        retired = sum(1 for row in result['models'] if row['outcome'] == 'retired')
+        result['message'] = '%d Claude models callable' % (len(models) - retired) + (', %d retired upstream' % retired if retired else '')
     return result
 
 

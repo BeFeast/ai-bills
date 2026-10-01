@@ -2,6 +2,7 @@ import { openRouterFunds } from './openrouter';
 import { loadConfig, tenantAccounts, type AccountConfig } from './config';
 import { peekUsageObservations } from './usage-observations';
 import { CLAUDE_LAST_KNOWN_MS } from './usage-evidence';
+import { quotaEntry } from './snapshot-keys';
 
 type SnapshotQuota = { ok?: boolean; fetched_at?: string; source?: string };
 /** `source` is set when the numbers are not the provider's direct answer (collector fallback or the website). */
@@ -12,13 +13,12 @@ type Observation = { observedAt: string; ok: boolean; source?: string };
  * observation time is therefore the source's freshness, whether or not anything in this process
  * has read it since: an instance nobody is looking at is not an instance without observations.
  */
-function snapshotObservation(snapshot: unknown, account: AccountConfig): Observation | null {
+function snapshotObservation(snapshot: unknown, account: AccountConfig, siblings: readonly AccountConfig[] = []): Observation | null {
   const bucket = account.provider === 'claude' ? 'claude_usage' : account.provider === 'codex' ? 'codex_usage' : null;
   if (!bucket || !snapshot || typeof snapshot !== 'object') return null;
   const rows = (snapshot as Record<string, unknown>)[bucket];
   if (!rows || typeof rows !== 'object') return null;
-  const key = account.quota_snapshot_key || account.email;
-  const entry = key ? (rows as Record<string, SnapshotQuota>)[key] : undefined;
+  const { entry } = quotaEntry(rows as Record<string, SnapshotQuota>, account, siblings);
   if (!entry || typeof entry.fetched_at !== 'string' || !Number.isFinite(Date.parse(entry.fetched_at))) return null;
   return { observedAt: entry.fetched_at, ok: entry.ok === true, ...(entry.source && entry.source !== 'direct' ? { source: entry.source } : {}) };
 }
@@ -34,11 +34,12 @@ function newer(a: Observation | null, b: Observation | null): Observation | null
 export function sourceHealth(now = Date.now(), snapshot: unknown = {}) {
   const config = loadConfig();
   const observations = peekUsageObservations();
-  const sources = tenantAccounts(config, snapshot).map(account => {
+  const configured = tenantAccounts(config, snapshot);
+  const sources = configured.map(account => {
     const observation = observations.find(row => row.account.key === account.key);
     const inProcess: Observation | null = observation?.fetchedAt ? { observedAt: observation.fetchedAt, ok: observation.ok,
       ...(observation.source && observation.source !== 'direct' ? { source: observation.source } : {}) } : null;
-    const chosen = newer(inProcess, snapshotObservation(snapshot, account));
+    const chosen = newer(inProcess, snapshotObservation(snapshot, account, configured));
     const observedAt = chosen?.observedAt ?? null;
     const time = Date.parse(observedAt || '');
     const current = Number.isFinite(time) && time <= now + 60_000 && now - time <= 600_000;

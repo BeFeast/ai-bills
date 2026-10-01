@@ -89,6 +89,11 @@ describe('quota guards', () => {
     expect(report.guards.probe).toMatchObject({ status: 'up', message: '3 of 5 Claude models checked before the time budget ran out' });
   });
 
+  it('keeps a model the provider retired visible without paging', () => {
+    const report = buildGuardsReport({ accounts: [], checks: [], now, snapshot: probe(10, 'up', [{ model: 'claude-opus-5-5', outcome: 'ok', http_status: 200 }, { model: 'claude-3-5-haiku-20241022', outcome: 'retired', http_status: 404 }]) });
+    expect(report.guards.probe).toMatchObject({ status: 'up', message: '1 model callable (0 rate-limited, 1 retired upstream)' });
+  });
+
   it('goes down when the probe stopped reporting', () => {
     expect(buildGuardsReport({ accounts: [], checks: [], now, snapshot: probe(2 * 60 + 1, 'up', []) }).guards.probe).toMatchObject({ status: 'down', message: expect.stringContaining('stopped') });
     expect(buildGuardsReport({ accounts: [], checks: [], now, snapshot: {} }).guards.probe.status).toBe('down');

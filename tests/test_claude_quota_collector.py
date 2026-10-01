@@ -110,6 +110,46 @@ class QuotaFallbackTests(unittest.TestCase):
             self.auth_dir(directory, 'codex' if module.__name__.endswith('codex_quotas') else 'claude')
             return module.collect(directory, request, sleep=slept.append, now=now or self.NOW, **kwargs)['a@example.invalid'], slept
 
+    def test_a_renamed_credential_file_keeps_its_stable_key_back_off_and_last_value(self):
+        # The proxy renames the auth file on re-login (an org hash is added); the file-name key changes, nothing else may.
+        module = load('ai-claude-quotas')
+        stable = hashlib.sha256(b'oauth-account:claude:a@example.invalid').hexdigest()[:24]
+        self.assertEqual(module.credential_id('claude', ' A@Example.invalid '), stable)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'claude-a@example.invalid.json'
+            path.write_text(json.dumps({'type': 'claude', 'email': 'a@example.invalid', 'access_token': 'synthetic'}))
+            request, _ = self.rejecting([429], headers={'Retry-After': '600'})
+            first = module.collect(directory, request, sleep=lambda _: None, now=self.NOW,
+                                   previous={stable: {'ok': True, 'fetched_at': '2026-09-21T08:30:04+00:00', 'data': {'five_hour': {'utilization': 12, 'resets_at': None}}}})
+            self.assertIs(first[stable], first['a@example.invalid'])
+            path.rename(Path(directory) / 'claude-c0ffee42-a@example.invalid.json')
+            request, calls = self.rejecting([200])
+            later = self.NOW + timedelta(minutes=5)
+            second = module.collect(directory, request, sleep=lambda _: None, now=later, previous=first)
+        old_key = hashlib.sha256(b'oauth:claude-a@example.invalid.json').hexdigest()[:24]
+        new_key = hashlib.sha256(b'oauth:claude-c0ffee42-a@example.invalid.json').hexdigest()[:24]
+        self.assertIn(old_key, first); self.assertNotIn(old_key, second); self.assertIn(new_key, second)
+        # Same stable and e-mail keys; the back-off deadline and the last value survive the rename.
+        self.assertIs(second[stable], second['a@example.invalid'])
+        self.assertEqual(len(calls), 0)
+        self.assertEqual((second[stable]['source'], second[stable]['data']['five_hour']['utilization'], second[stable]['direct']['retry_after_until']),
+                         ('retained', 12, first[stable]['direct']['retry_after_until']))
+
+    def test_a_second_credential_for_the_same_address_inherits_nothing(self):
+        module = load('ai-claude-quotas')
+        stable = hashlib.sha256(b'oauth-account:claude:a@example.invalid').hexdigest()[:24]
+        backoff = {'ok': True, 'fetched_at': '2026-09-21T08:30:04+00:00', 'data': {'five_hour': {'utilization': 12, 'resets_at': None}},
+                   'direct': {'status': 429, 'retry_after_until': (self.NOW + timedelta(minutes=30)).isoformat()}}
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ('claude-a@example.invalid.json', 'claude-c0ffee42-A@example.invalid.json'):
+                (Path(directory) / name).write_text(json.dumps({'type': 'claude', 'email': name.split('-', 1)[1].rsplit('.', 1)[0].split('-')[-1], 'access_token': 'synthetic'}))
+            request, calls = self.rejecting([200])
+            result = module.collect(directory, request, sleep=lambda _: None, now=self.NOW, previous={stable: backoff, 'a@example.invalid': backoff})
+        # Neither credential takes over the other's back-off, and neither address key is published.
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn(stable, result); self.assertNotIn('a@example.invalid', result); self.assertNotIn('A@example.invalid', result)
+        self.assertTrue(all(entry['source'] == 'direct' for entry in result.values()))
+
     def test_server_error_is_retried_with_jitter_then_succeeds(self):
         module = load('ai-claude-quotas')
         request, calls = self.rejecting([503, 502, 200])

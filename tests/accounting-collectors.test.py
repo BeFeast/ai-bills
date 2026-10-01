@@ -11,6 +11,25 @@ def module(name):
     return importlib.machinery.SourceFileLoader(name.replace('-', '_'), str(ROOT / 'collector' / name)).load_module()
 
 class CollectorTests(unittest.TestCase):
+    def test_account_inventory_keeps_file_ids_and_adds_a_rename_proof_alias(self):
+        import hashlib
+        inventory = module('ai-account-inventory')
+        ident = lambda value: hashlib.sha256(value.encode()).hexdigest()[:24]
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'claude-a@example.invalid.json').write_text(json.dumps({'type': 'claude', 'email': 'A@example.invalid'}))
+            (Path(directory) / 'codex-no-email.json').write_text(json.dumps({'type': 'codex'}))
+            before = {row['id']: row for row in inventory.discover(directory, None)['accounts']}
+            os.rename(Path(directory) / 'claude-a@example.invalid.json', Path(directory) / 'claude-c0ffee42-a@example.invalid.json')
+            after = {row['id']: row for row in inventory.discover(directory, None)['accounts']}
+        stable = ident('oauth-account:claude:a@example.invalid')
+        # File-name ids stay exactly as before, so existing bindings and history keep matching.
+        self.assertIn(ident('oauth:claude-a@example.invalid.json'), before)
+        self.assertIn(ident('oauth:claude-c0ffee42-a@example.invalid.json'), after)
+        self.assertEqual(before[ident('oauth:claude-a@example.invalid.json')]['aliases'], [stable])
+        self.assertEqual(after[ident('oauth:claude-c0ffee42-a@example.invalid.json')]['aliases'], [stable])
+        self.assertNotIn('aliases', before[ident('oauth:codex-no-email.json')])
+        self.assertNotIn('a@example.invalid', json.dumps(after).lower())
+
     def test_scheduled_browser_refresh_starts_once_and_waits_with_a_deadline(self):
         refresh = module('ai-browser-refresh')
         now = [0]

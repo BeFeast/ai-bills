@@ -56,10 +56,18 @@ Claude never retries a 429 in the same run. The entry records `direct.retry_afte
 later runs send no direct request until then: the entry is a failed 429 observation ("next
 attempt after HH:MM UTC") that keeps the deadline and still falls back as above. The wrapper
 also passes each auth file's `status`, `status_message` (300 chars) and `unavailable` (also
-in `proxy_auths`); when the message reads like a dead refresh token (`invalid_grant`,
-`authentication_error`, `re-authenticate`) or the provider answers 401/403, the entry gets
+in `proxy_auths`); when the proxy holds the credential in error (or unavailable) with a message
+that reads like a dead refresh token (`invalid_grant`, `authentication_error`, `re-authenticate`,
+any spelling), or the provider answers 401, the entry gets
 `proxy_auth: {state: "expired", message, observed_at}` and, if it is not `ok`, the error
-"Proxy OAuth expired — re-login proxy". A 429 fallback still applies; a 401/403 still has none.
+"Proxy OAuth expired — re-login proxy". A direct success clears it. A 429 fallback still applies;
+a 401/403 still has none.
+
+Claude entries are keyed by the auth file's name hash, and, when exactly one credential holds the
+address, also by the e-mail and by a rename-proof id `sha256("oauth-account:claude:" + lower(e-mail))[:24]`.
+The proxy renames the auth file on re-login; the previous observation (back-off deadline, last
+value) is then found by the rename-proof or e-mail key. `ai-account-inventory` keeps file-name ids
+and lists the rename-proof id under `aliases`.
 
 `ai-model-probe` (run by the wrapper when the keys file has an `APIKEY=` line;
 `AI_BILLS_MODEL_PROBE=0` disables it, `AI_BILLS_PROBE_URL` overrides the proxy base derived
@@ -154,10 +162,10 @@ with `--summary`; `--dry-run` prints the evaluation without side effects.
 
 ## Guards
 
-`ai-bills-guards` relays the app's `/api/guards` verdicts (`stale`, `consistency`, `probe`)
+`ai-bills-guards` relays the app's `/api/guards` verdicts (`stale`, `consistency`, `probe`, `mapping`)
 to Uptime Kuma push monitors, so a failing guard pages without anyone opening the dashboard.
 Configure `AI_BILLS_GUARDS_URL`, optionally `AI_BILLS_GUARDS_TOKEN` (bearer), and the push
-URLs `AI_BILLS_KUMA_PUSH_STALE`, `AI_BILLS_KUMA_PUSH_CONSISTENCY`, `AI_BILLS_KUMA_PUSH_PROBE`
+URLs `AI_BILLS_KUMA_PUSH_STALE`, `AI_BILLS_KUMA_PUSH_CONSISTENCY`, `AI_BILLS_KUMA_PUSH_PROBE`, `AI_BILLS_KUMA_PUSH_MAPPING`
 (an unset one is skipped); `AI_BILLS_GUARDS_ENV_FILE` names a private `KEY=VALUE` file read
 without shell evaluation, explicit environment winning. Each push sets `status=up|down` and
 `msg` (200 chars), replacing those parameters if the copied push URL already has them. An

@@ -37,6 +37,12 @@ EXPIRED_AUTH = re.compile(r'invalid[ _-]?grant|authentication[ _-]?error|re-?aut
 EXPIRED_ERROR = 'Proxy OAuth expired — re-login proxy'
 
 
+def credential_id(provider, email):
+    """The credential's identity across proxy renames: provider and account e-mail. The proxy renames an auth file
+    on re-login (adding an org hash), which changes the file-name identity every consumer keyed on."""
+    return hashlib.sha256(('oauth-account:%s:%s' % (provider, email.strip().lower())).encode()).hexdigest()[:24]
+
+
 def parse_time(value):
     try:
         parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
@@ -244,19 +250,35 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
     if not Path(auth_dir).is_dir():
         raise FileNotFoundError('Proxy auth inventory is unavailable')
     previous, proxy_quota, proxy_auth = previous or {}, proxy_quota or {}, proxy_auth or {}
-    result, emails = {}, {}
+    result = {}
+    files = []
     for path in sorted(Path(auth_dir).glob('*.json')):
         try:
             auth = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if not isinstance(auth, dict) or auth.get('type') != 'claude':
-            continue
+        if isinstance(auth, dict) and auth.get('type') == 'claude':
+            files.append((path, auth))
+    # An address held by one credential only identifies it; with two, neither may inherit the other's history.
+    holders = {}
+    for _, auth in files:
+        if isinstance(auth.get('email'), str) and auth['email'].strip():
+            normalized = auth['email'].strip().lower()
+            holders[normalized] = holders.get(normalized, 0) + 1
+    for path, auth in files:
         identity = hashlib.sha256(('oauth:' + path.name).encode()).hexdigest()[:24]
         attempted = now or datetime.now(timezone.utc)
         entry = {'ok': False, 'fetched_at': attempted.isoformat(), 'status': None}
         token, email = auth.get('access_token'), auth.get('email')
-        deadline, backoff = pending_backoff(previous.get(identity), attempted)
+        unique = isinstance(email, str) and email.strip() and holders.get(email.strip().lower()) == 1
+        stable = credential_id('claude', email) if unique else None
+        # The previous observation of this credential: by its own file id, or, after the proxy renamed the file, by the
+        # stable or e-mail key when exactly one current credential holds the address.
+        prior = previous.get(identity) if isinstance(previous.get(identity), dict) else None
+        if prior is None and unique:
+            prior = next((previous[key] for key in (stable, email) if isinstance(previous.get(key), dict)), None)
+        previous_view = {identity: prior} if prior else {}
+        deadline, backoff = pending_backoff(prior, attempted)
         if auth.get('disabled'):
             entry['error'] = 'Proxy account is disabled; quota was not queried'
         elif not token:
@@ -266,7 +288,7 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
             error = 'Rate limited by the provider; next attempt after %s' % deadline.astimezone(timezone.utc).strftime('%H:%M UTC')
             entry.update(status=429, error=error, direct={'status': 429, 'error': error, 'attempted_at': backoff.get('attempted_at') or entry['fetched_at'],
                                                             'retry_after_until': deadline.isoformat()})
-            fallback(entry, identity, email, previous, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
+            fallback(entry, identity, email, previous_view, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
         else:
             request = Request('https://api.anthropic.com/api/oauth/usage', headers={
                 'Authorization': 'Bearer ' + token, 'anthropic-beta': 'oauth-2025-04-20', 'Accept': 'application/json'})
@@ -278,15 +300,14 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
                 if status == 429:
                     entry['direct'] = {'status': 429, 'error': payload, 'attempted_at': entry['fetched_at'],
                                        'retry_after_until': retry_after_until(retry_after, attempted).isoformat()}
-                fallback(entry, identity, email, previous, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
+                fallback(entry, identity, email, previous_view, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
         if not auth.get('disabled'):
             mark_proxy_auth(entry, proxy_auth.get(email) if email else None, attempted)
         result[identity] = entry
-        if email:
-            emails.setdefault(email, []).append(entry)
-    for email, entries in emails.items():
-        if len(entries) == 1:
-            result[email] = entries[0]
+        if email and unique:
+            # E-mail and stable keys only when one credential holds the address; the file-name key stays for old configs.
+            result[email] = entry
+            result[stable] = entry
     return result
 
 

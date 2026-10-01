@@ -113,7 +113,21 @@ authenticates management writes as a client request, `client_key` is required.
 
 ### Quota guards
 
-`GET /api/guards` reports three up/down guards: no usable Claude quota from any
+`GET /api/guards` reports four up/down guards: no usable Claude quota from any
 source for more than 5 hours, proxy and website disagreeing on two consecutive
-checks (state, or more than 10 percentage points), and the collector's hourly model
-probe. `collector/ai-bills-guards` relays them to push monitors.
+checks (state, or more than 10 percentage points), the collector's hourly model
+probe, and configured quota links (`quota_snapshot_key`, a collector-shaped
+`proxy_account_id`, Claude/Codex binding members) that name nothing in the snapshot.
+A collector outage is reported as unchecked, not as drift. `collector/ai-bills-guards`
+relays them to push monitors.
+
+### Credential renames
+
+The proxy renames an OAuth credential's auth file on re-login, which changes every
+file-name id. The collector therefore also publishes each Claude quota under a
+rename-proof id, `sha256("oauth-account:claude:" + lower(e-mail))[:24]`, and the
+inventory carries it as an alias of the file-name row. Configure
+`quota_snapshot_key` and binding members with that id to survive renames; until then
+a stale key falls back to the e-mail key when no other configured account of the
+provider shares the address. When several credentials hold one e-mail, neither key
+is published and only the file id identifies a credential.

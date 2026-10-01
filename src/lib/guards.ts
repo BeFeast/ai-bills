@@ -1,4 +1,5 @@
-import { loadConfig } from './config';
+import { loadConfig, tenantAccounts, type AppConfig } from './config';
+import { quotaEntry } from './snapshot-keys';
 import { consistencyChecks, CHECK_INTERVAL_MS, type AccountCheck } from './quota-consistency';
 import { readSnapshot, type Scope } from './storage';
 import { CLAUDE_LAST_KNOWN_MS } from './usage-evidence';
@@ -10,14 +11,20 @@ import { isPendingObservation, type ProviderUsage } from './usage';
  * message, so an external push monitor can relay it and deduplicate transitions:
  * - stale: an account had no usable quota observation from any source for longer than one Claude session window;
  * - consistency: the proxy and the website disagreed on consecutive cross-checks (see quota-consistency);
- * - probe: the collector's hourly synthetic call found a catalogued model that cannot be called.
+ * - probe: the collector's hourly synthetic call found a catalogued model that cannot be called;
+ * - mapping: a configured link to a collector observation (quota_snapshot_key, a browser's proxy_account_id, a quota
+ *   binding's members) names something the snapshot no longer has, e.g. after the proxy renamed a credential file.
+ *   The card may still look right through the e-mail fallback; the configuration has drifted all the same.
  */
 export type GuardStatus = 'up' | 'down';
 export type Guard = { status: GuardStatus; message: string; lastRunAt: string | null };
 export type ProbeModel = { model: string; outcome: string; http_status: number | null; retried?: boolean; message?: string };
 export type GuardsReport = {
   generatedAt: string;
-  guards: { stale: Guard; consistency: Guard; probe: Guard };
+  guards: { stale: Guard; consistency: Guard; probe: Guard; mapping: Guard };
+  mapping: { subject: string; problem: string }[];
+  /** Mapping checks that could not run because the snapshot did not carry their evidence (an outage, not drift). */
+  mappingSkipped: string[];
   stale: { accountKey: string; label: string; lastObservedAt: string | null }[];
   checks: AccountCheck[];
   probe: { checkedAt: string | null; status: string | null; message: string | null; models: ProbeModel[] };
@@ -67,21 +74,95 @@ function probeGuard(snapshot: unknown, now: number): { guard: Guard; probe: Guar
   if (now - checked > PROBE_MAX_AGE_MS) return { probe, guard: { status: 'down', message: `Model probe stopped: last run ${clock(checkedAt)}`, lastRunAt: checkedAt } };
   // `partial`: the run ran out of time before every model; what it did check passed, and the next collect continues.
   if (probe.status !== 'up' && probe.status !== 'partial') {
-    const failing = models.filter((model) => !['ok', 'rate_limited'].includes(model.outcome));
+    const failing = models.filter((model) => !['ok', 'rate_limited', 'retired', 'skipped'].includes(model.outcome));
     return { probe, guard: { status: 'down', message: failing.length ? `Models failing: ${failing.map((model) => `${model.model} ${model.outcome}${model.http_status ? ` (HTTP ${model.http_status})` : ''}`).join(', ')}` : probe.message ?? 'Model probe failed', lastRunAt: checkedAt } };
   }
   if (probe.status === 'partial') return { probe, guard: { status: 'up', message: probe.message ?? 'Model probe ran out of time; checked models are callable', lastRunAt: checkedAt } };
-  return { probe, guard: { status: 'up', message: `${models.length} model${models.length === 1 ? '' : 's'} callable (${models.filter((model) => model.outcome === 'rate_limited').length} rate-limited)`, lastRunAt: checkedAt } };
+  const retired = models.filter((model) => model.outcome === 'retired').length;
+  const callable = models.length - retired;
+  return { probe, guard: { status: 'up', message: `${callable} model${callable === 1 ? '' : 's'} callable (${models.filter((model) => model.outcome === 'rate_limited').length} rate-limited${retired ? `, ${retired} retired upstream` : ''})`, lastRunAt: checkedAt } };
 }
 
-export function buildGuardsReport({ accounts, checks, snapshot, now }: { accounts: ProviderUsage[]; checks: AccountCheck[]; snapshot: unknown; now: number }): GuardsReport {
+const keysOf = (value: unknown) => new Set(Object.keys(row(value)));
+
+/** Collector-observed providers: their links point at collector keys. Kimi/Cursor bindings are declared, not observed. */
+const COLLECTED = new Set(['claude', 'codex']);
+const COLLECTOR_ID = /^[a-f0-9]{24}$/;
+
+/**
+ * Configured links into the snapshot that point at nothing. Only what the snapshot actually carries is judged: an
+ * empty quota bucket or a failed OAuth inventory is a collector outage, not drift, and is listed under `skipped` so
+ * the guard never claims a link resolved when it was not checked.
+ */
+export function mappingCheck(config: Pick<AppConfig, 'accounts' | 'account_browsers' | 'accounting'>, snapshot: unknown): { problems: GuardsReport['mapping']; skipped: string[] } {
+  const body = row(snapshot);
+  const problems: GuardsReport['mapping'] = [];
+  const skipped: string[] = [];
+  const carried = (value: unknown) => keysOf(value).size > 0;
+  const usage = { claude: body.claude_usage, codex: body.codex_usage } as Record<string, unknown>;
+  const registry = row(body.account_registry);
+  const inventory = Array.isArray(registry.accounts) ? registry.accounts.map(row) : [];
+  // The OAuth inventory feeds the credential ids; the configured-key source is unrelated to these links.
+  const sources = (Array.isArray(registry.sources) ? registry.sources : []).map(row).filter((source) => ['oauth', 'inventory'].includes(text(source.id) ?? ''));
+  const inventoryComplete = inventory.length > 0 && sources.every((source) => source.status === 'fresh');
+  // An alias two credentials carry identifies neither (the binding rule in accounts.ts); it is no evidence of a match.
+  const aliasCount = new Map<string, number>();
+  for (const entry of inventory) for (const alias of new Set((Array.isArray(entry.aliases) ? entry.aliases : []).map(text))) if (alias) aliasCount.set(alias, (aliasCount.get(alias) ?? 0) + 1);
+  const registered = inventoryComplete ? new Set(inventory.flatMap((entry) => [text(entry.id), ...(Array.isArray(entry.aliases) ? entry.aliases.map(text).filter((alias) => alias && aliasCount.get(alias) === 1) : [])]).filter((id): id is string => Boolean(id))) : null;
+  const accounts = tenantAccounts(config as AppConfig, snapshot);
+  const provider = new Map(accounts.map((account) => [account.key, account.provider as string]));
+  for (const name of ['claude', 'codex']) {
+    if (accounts.some((account) => account.provider === name && account.quota_snapshot_key) && !carried(usage[name])) skipped.push(`${name} quota keys not checked: the snapshot carries no ${name} observations`);
+  }
+  if (!registered && (config.accounting?.account_bindings ?? []).some((binding) => COLLECTED.has(provider.get(binding.quota_account_key ?? '') ?? ''))) skipped.push('bindings not checked: the proxy inventory is missing or incomplete');
+  for (const account of accounts) {
+    const bucket = usage[account.provider];
+    if (!account.quota_snapshot_key || !COLLECTED.has(account.provider) || !carried(bucket)) continue;
+    const keys = keysOf(bucket);
+    if (keys.has(account.quota_snapshot_key)) continue;
+    // Say what the card does, by the card's own rule.
+    const fallback = quotaEntry(bucket as Record<string, unknown>, account, accounts).viaEmailFallback;
+    const meanwhile = fallback ? 'the card uses the e-mail key meanwhile' : account.provider === 'claude' && account.claude_web_quota ? 'the card shows only the website reading' : 'the card has no proxy observation';
+    problems.push({ subject: account.key, problem: `quota_snapshot_key is not in the snapshot; ${meanwhile}` });
+  }
+  // proxy_account_id is the routing policy's account id. It is judged only where it has the shape of a collector id
+  // (the deployed configs use one) and is not the id of a binding, which the binding check below covers.
+  const bindingIds = new Set((config.accounting?.account_bindings ?? []).map((binding) => binding.id));
+  const observed = new Set([...keysOf(usage.claude), ...keysOf(usage.codex), ...(registered ?? [])]);
+  const judged = (config.account_browsers ?? []).filter((binding) => binding.proxy_account_id && COLLECTOR_ID.test(binding.proxy_account_id)
+    && !bindingIds.has(binding.proxy_account_id) && COLLECTED.has(provider.get(binding.account_key) ?? ''));
+  if ((carried(usage.claude) || carried(usage.codex)) && registered) {
+    for (const binding of judged) {
+      if (!observed.has(binding.proxy_account_id!)) problems.push({ subject: binding.account_key, problem: 'the account browser\'s proxy_account_id is not in the snapshot' });
+    }
+  } else if (judged.length) skipped.push('account browser proxy_account_id not checked: the proxy inventory or quota observations are missing');
+  if (registered) {
+    for (const binding of config.accounting?.account_bindings ?? []) {
+      if (!binding.quota_account_key || !COLLECTED.has(provider.get(binding.quota_account_key) ?? '')) continue;
+      if (![binding.id, ...(binding.members ?? [])].some((member) => registered.has(member))) problems.push({ subject: binding.quota_account_key, problem: `binding ${binding.label ?? binding.id} matches no credential in the proxy inventory` });
+    }
+  }
+  return { problems, skipped };
+}
+
+export const mappingProblems = (config: Pick<AppConfig, 'accounts' | 'account_browsers' | 'accounting'>, snapshot: unknown) => mappingCheck(config, snapshot).problems;
+
+function mappingGuard(problems: GuardsReport['mapping'], skipped: string[], now: number): Guard {
+  const unchecked = skipped.length ? ` (${skipped.join('; ')})` : '';
+  return { status: problems.length ? 'down' : 'up', lastRunAt: new Date(now).toISOString(),
+    message: problems.length ? `Configuration no longer matches the collector: ${problems.map((entry) => `${entry.subject}: ${entry.problem}`).join('; ')}${unchecked}`
+      : skipped.length ? `No drift found in what the snapshot carries${unchecked}` : 'Every configured quota link resolves in the snapshot' };
+}
+
+export function buildGuardsReport({ accounts, checks, snapshot, now, config }: { accounts: ProviderUsage[]; checks: AccountCheck[]; snapshot: unknown; now: number; config?: Pick<AppConfig, 'accounts' | 'account_browsers' | 'accounting'> }): GuardsReport {
   const { guard: stale, stale: staleAccounts } = staleGuard(accounts, now);
   const { guard: probe, probe: probeReport } = probeGuard(snapshot, now);
-  return { generatedAt: new Date(now).toISOString(), guards: { stale, consistency: consistencyGuard(checks, now), probe }, stale: staleAccounts, checks, probe: probeReport };
+  const { problems: mapping, skipped: mappingSkipped } = config ? mappingCheck(config, snapshot) : { problems: [], skipped: [] };
+  return { generatedAt: new Date(now).toISOString(), guards: { stale, consistency: consistencyGuard(checks, now), probe, mapping: mappingGuard(mapping, mappingSkipped, now) }, stale: staleAccounts, checks, probe: probeReport, mapping, mappingSkipped };
 }
 
 export async function guardsReport(scope: Scope, now = Date.now()): Promise<GuardsReport> {
   const config = loadConfig();
   const [usage, snapshot] = await Promise.all([getUsageResponse(false, scope), readSnapshot(config, scope)]);
-  return buildGuardsReport({ accounts: usage.accounts, checks: consistencyChecks(scope?.id ?? null), snapshot: snapshot.body, now });
+  return buildGuardsReport({ accounts: usage.accounts, checks: consistencyChecks(scope?.id ?? null), snapshot: snapshot.body, now, config });
 }

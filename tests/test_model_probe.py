@@ -110,12 +110,17 @@ class ModelProbeTests(unittest.TestCase):
         for status, body, outcome, down in ((401, b'{"error":"invalid api key ' + KEY.encode() + b'"}', 'unauthorized', True),
                                             (403, b'', 'unauthorized', True), (503, b'upstream', 'server_error', True),
                                             (None, b'', 'unreachable', True), (400, b'{"error":{"message":"max_tokens too small"}}', 'rejected', False),
-                                            (404, b'{"error":{"type":"not_found_error","message":"model: claude-opus-5"}}', 'unknown_model', True)):
+                                            # A model the provider retired while the proxy still lists it: visible, not an outage.
+                                            (404, b'{"error":{"type":"not_found_error","message":"model: claude-opus-5"}}', 'retired', False)):
             with self.subTest(status=status):
                 result, _ = run(FakeProxy({'claude-opus-5': [(status, body)]}))
                 row = self.rows(result)['claude-opus-5']
                 self.assertEqual((row['outcome'], row['http_status'], row['retried'], result['status']), (outcome, status, down, 'down' if down else 'up'))
                 self.assertNotIn(KEY, json.dumps(result))
+
+    def test_retired_models_are_counted_in_the_message(self):
+        result, _ = run(FakeProxy({'claude-opus-5': [(404, b'{"error":{"type":"not_found_error","message":"model: claude-opus-5"}}')]}))
+        self.assertEqual((result['status'], result['message']), ('up', '1 Claude models callable, 1 retired upstream'))
 
     def test_catalog_failure_is_down_with_no_results(self):
         for proxy, reason in ((FakeProxy({}, catalog_status=None), 'unreachable'), (FakeProxy({}, catalog_status=401), 'HTTP 401'),

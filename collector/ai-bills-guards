@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 GUARDS = (('stale', 'AI_BILLS_KUMA_PUSH_STALE'), ('consistency', 'AI_BILLS_KUMA_PUSH_CONSISTENCY'),
-          ('probe', 'AI_BILLS_KUMA_PUSH_PROBE'))
+          ('probe', 'AI_BILLS_KUMA_PUSH_PROBE'), ('mapping', 'AI_BILLS_KUMA_PUSH_MAPPING'))
 MESSAGE_LIMIT = 200
 
 

@@ -6,11 +6,14 @@ import { loadConfig, type AppConfig } from './config';
 import { freshness, opaqueId, type Freshness, type AccountBinding } from './accounting';
 import { openRouterFunds, type OpenRouterFunds } from './openrouter';
 import { peekUsageObservations } from './usage-observations';
+import { credentialId, quotaEntry } from './snapshot-keys';
 import { claudeLimitingWindow, codexPrimaryWindow, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, type ProviderUsage, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload } from './usage';
 
 /** The proxy's own view of a credential it holds: state and today's request counters, never tokens. */
 export type ProxyCredential = { kind: 'oauth' | 'upstream-key'; status: string; successToday: number; failedToday: number; email?: string; observedAt: string | null };
-export type RegistryAccount = { id: string; provider: string; label: string; origin: 'declared' | 'oauth' | 'configured' | 'external'; funds?: OpenRouterFunds; proxyConfigured?: boolean; proxyCredential?: ProxyCredential; websiteUrl?: string; operatorNote?: string; billingMode: 'included' | 'metered' | 'unknown'; routingEnrolled: boolean | null; memberIds?: string[]; quota: { status: 'fresh' | 'stale' | 'error' | 'unknown'; remaining: number | null; resetAt: string | null; observedAt?: string | null; unit?: 'percent' | 'requests' }; coverage: { status: 'partial' | 'unsupported' | 'available'; reason: string }; observedAt: string };
+export type RegistryAccount = { id: string; provider: string; label: string; origin: 'declared' | 'oauth' | 'configured' | 'external'; funds?: OpenRouterFunds; proxyConfigured?: boolean; proxyCredential?: ProxyCredential; websiteUrl?: string; operatorNote?: string; billingMode: 'included' | 'metered' | 'unknown'; routingEnrolled: boolean | null; memberIds?: string[];
+  /** Other ids of the same credential, e.g. the rename-proof provider+e-mail id beside the file-name id; a binding may list either. */
+  aliasIds?: string[]; quota: { status: 'fresh' | 'stale' | 'error' | 'unknown'; remaining: number | null; resetAt: string | null; observedAt?: string | null; unit?: 'percent' | 'requests' }; coverage: { status: 'partial' | 'unsupported' | 'available'; reason: string }; observedAt: string };
 export type AccountRegistry = { generatedAt: string; accounts: RegistryAccount[]; sources: Freshness[]; complete: boolean };
 type ObjectRow = Record<string, unknown>;
 const object = (value: unknown): ObjectRow => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectRow : {};
@@ -63,6 +66,8 @@ export async function accountRegistry(config: AppConfig = loadConfig(), scope?: 
         if (!/^[a-f0-9]{24}$/.test(text(row.id))) continue;
         const a = account('remote-placeholder', text(row.provider) || 'unknown', text(row.label) || 'Discovered account', ['oauth', 'configured', 'external'].includes(text(row.origin)) ? row.origin as RegistryAccount['origin'] : 'declared', observedAt);
         a.id = text(row.id);
+        const aliases = (Array.isArray(row.aliases) ? row.aliases : []).map(text).filter(alias => /^[a-f0-9]{24}$/.test(alias));
+        if (aliases.length) a.aliasIds = aliases;
         // Snapshot is inventory evidence, not permission or billing classification.
         accounts.push(a);
       }
@@ -93,7 +98,9 @@ export async function accountRegistry(config: AppConfig = loadConfig(), scope?: 
         try {
           const row = object(JSON.parse(await readFile(join(authDir, name), 'utf8')));
           const provider = text(row.type) || text(row.provider) || 'unknown';
-          accounts.push(account(`oauth:${name}`, provider, text(row.label) || `${provider} OAuth ${opaqueId(name).slice(0, 6)}`, 'oauth', generatedAt));
+          const discovered = account(`oauth:${name}`, provider, text(row.label) || `${provider} OAuth ${opaqueId(name).slice(0, 6)}`, 'oauth', generatedAt);
+          if (text(row.email)) discovered.aliasIds = [credentialId(provider, text(row.email))];
+          accounts.push(discovered);
         } catch { failures++; }
       }
       source('proxy-oauth', failures ? 'error' : 'fresh', failures ? `${failures} auth records could not be read; inventory is incomplete` : `${names.length} OAuth records discovered`, generatedAt);
@@ -112,7 +119,7 @@ export async function accountRegistry(config: AppConfig = loadConfig(), scope?: 
   const observations = [...peekUsageObservations()];
   for (const configured of config.accounts) {
     const entries = object(snapshot[`${configured.provider}_usage`]);
-    const entry = object(entries[configured.quota_snapshot_key || configured.email]);
+    const entry = object(quotaEntry(entries, configured, config.accounts).entry);
     if (Object.keys(entry).length) observations.push({ account: configured, ok: entry.ok === true, status: typeof entry.status === 'number' ? entry.status : entry.ok ? 200 : undefined,
       data: entry.ok ? object(entry.data) : undefined, fetchedAt: text(entry.fetched_at), sourceUrl: 'collector-quota', error: entry.ok ? undefined : 'Collector quota request failed' });
   }
@@ -176,8 +183,12 @@ export function bindAccountIdentities(accounts: RegistryAccount[], bindings: Acc
     }
   }
   const result = new Map<string, RegistryAccount>();
+  // An alias two credentials share (one e-mail, two auth files) identifies neither; only unique aliases bind.
+  const aliasCount = new Map<string, number>();
+  for (const row of accounts) for (const alias of new Set(row.aliasIds ?? [])) aliasCount.set(alias, (aliasCount.get(alias) ?? 0) + 1);
   for (const row of accounts) {
-    const id = owners.get(row.id) || row.id;
+    // A binding may name the credential by its file-name id or by its rename-proof alias.
+    const id = owners.get(row.id) || (row.aliasIds ?? []).filter(alias => aliasCount.get(alias) === 1).map(alias => owners.get(alias)).find(Boolean) || row.id;
     const binding = bindings.find((item) => item.id === id);
     const existing = result.get(id);
     if (existing) { existing.websiteUrl ||= row.websiteUrl; existing.operatorNote ||= row.operatorNote; existing.memberIds = [...new Set([...(existing.memberIds || []), row.id])]; continue; }
