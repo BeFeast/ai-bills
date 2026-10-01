@@ -80,6 +80,11 @@ describe('quota guards', () => {
     expect(broken.probe.models[0].retried).toBe(true);
   });
 
+  it('stays up when the probe ran out of time but every checked model passed', () => {
+    const report = buildGuardsReport({ accounts: [], checks: [], now, snapshot: { model_probe: { checked_at: at(5), status: 'partial', message: '3 of 5 Claude models checked before the time budget ran out', models: [] } } });
+    expect(report.guards.probe).toMatchObject({ status: 'up', message: '3 of 5 Claude models checked before the time budget ran out' });
+  });
+
   it('goes down when the probe stopped reporting', () => {
     expect(buildGuardsReport({ accounts: [], checks: [], now, snapshot: probe(2 * 60 + 1, 'up', []) }).guards.probe).toMatchObject({ status: 'down', message: expect.stringContaining('stopped') });
     expect(buildGuardsReport({ accounts: [], checks: [], now, snapshot: {} }).guards.probe.status).toBe('down');

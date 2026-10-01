@@ -241,6 +241,20 @@ describe('account-specific website management', () => {
     expect((await accountBrowser(settings, { accountKey: 'personal' }, 'manage', browser(null, []))).status).toBe('identity_unknown');
   });
 
+  it('closes the probe tab over HTTP when the CDP connection can no longer send', async () => {
+    const settings = config();
+    const deps = browser({ state: 'authenticated', email: 'intended@example.test' }, []);
+    const send = deps.send.getMockImplementation()!;
+    deps.send.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Target.closeTarget') throw new Error('Account browser deadline exceeded');
+      return send(method, params);
+    });
+    const http = vi.fn(async () => new Response('Target is closing'));
+    vi.stubGlobal('fetch', http);
+    expect((await accountBrowser(settings, { accountKey: 'personal' }, undefined, deps)).status).toBe('ready');
+    expect(http).toHaveBeenCalledWith(expect.stringMatching(/^http:\/\/127\.0\.0\.1:18811\/json\/close\/created-\d+$/), expect.anything());
+  });
+
   it('focuses a tab already showing the billing page after a restart instead of opening another', async () => {
     const settings = config();
     const deps = browser({ state: 'authenticated', email: 'intended@example.test' }, [{ targetId: 'provider', type: 'page', url: 'https://claude.ai/new' }, { targetId: 'billing', type: 'page', url: 'https://claude.ai/settings/billing' }]);

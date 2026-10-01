@@ -3,6 +3,7 @@ import { loadConfig } from '@/lib/config';
 import { hasAllowedOrigin } from '@/lib/request-origin';
 import { reauthConfigured, reauthJob, startProxyReauth } from '@/lib/proxy-reauth';
 import { requireTenant } from '@/lib/tenant';
+import { isOperator } from '@/lib/operator';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'cache-control': 'no-store' };
@@ -15,10 +16,11 @@ export async function GET(request: Request) {
   return NextResponse.json({ configured: reauthConfigured(loadConfig()), job: reauthJob(tenant.id, key) }, { headers });
 }
 
-/** Starts the proxy's OAuth flow for one account. A person clicked it: never the ingest or a device token. */
+/** Starts the proxy's OAuth flow for one account. The proxy and its browser profiles are the instance's, not a tenant's:
+ * only a signed-in platform operator may drive them, never an ingest or a device token. */
 export async function POST(request: Request) {
   const { tenant, forbidden } = await requireTenant(); if (forbidden) return forbidden;
-  if (tenant.access !== 'session' || tenant.role !== 'admin') return NextResponse.json({ error: 'Only a signed-in admin can reconnect the proxy' }, { status: 403, headers });
+  if (tenant.access !== 'session' || !isOperator(tenant)) return NextResponse.json({ error: 'Only a signed-in operator can reconnect the proxy' }, { status: 403, headers });
   if (!hasAllowedOrigin(request)) return NextResponse.json({ error: 'Cross-origin proxy reconnect is not allowed' }, { status: 403, headers });
   const config = loadConfig();
   if (!reauthConfigured(config)) return NextResponse.json({ error: 'Proxy management is not configured on this instance' }, { status: 409, headers });

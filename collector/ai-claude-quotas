@@ -225,12 +225,16 @@ def pending_backoff(prior, now):
 
 
 def mark_proxy_auth(entry, auth, attempted):
-    """Attach the proxy's verdict on the OAuth credential: expired when its status message says so
-    or the provider rejected the token outright. A healthy credential adds nothing."""
-    rejected = not entry['ok'] and entry.get('status') in (401, 403)
-    if not auth_expired(auth) and not rejected:
+    """Attach the proxy's verdict on the OAuth credential. Expired needs evidence: the proxy holds the credential in
+    error (or unavailable) with a dead-login message, or the provider answered the token with 401. A direct success
+    proves the token works, whatever an older status message still says. A healthy credential adds nothing."""
+    if entry['ok'] and entry.get('source') == 'direct':
         return
-    message = str(auth['status_message'])[:300] if auth_expired(auth) else 'Provider rejected the proxy credential (HTTP %s)' % entry['status']
+    held = isinstance(auth, dict) and (auth.get('status') == 'error' or auth.get('unavailable') is True) and auth_expired(auth)
+    rejected = not entry['ok'] and entry.get('status') == 401
+    if not held and not rejected:
+        return
+    message = str(auth['status_message'])[:300] if held else 'Provider rejected the proxy credential (HTTP 401)'
     entry['proxy_auth'] = {'state': 'expired', 'message': message, 'observed_at': attempted.isoformat()}
     if not entry['ok']:
         entry['error'] = EXPIRED_ERROR

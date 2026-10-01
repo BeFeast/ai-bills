@@ -261,12 +261,17 @@ class QuotaFallbackTests(unittest.TestCase):
                 entry, _ = self.collect(module, request, proxy_auth=auth)
                 self.assertEqual((entry['ok'], entry['status'], entry['error'], entry['proxy_auth']['state']), (False, 429, 'Proxy OAuth expired — re-login proxy', 'expired'))
                 self.assertIn('retry_after_until', entry['direct'])
-        # A direct success keeps its data; the access token may outlive the refresh token briefly.
-        auth = {'a@example.invalid': {'status': 'error', 'status_message': 'x' * 400 + ' invalid_grant'}}
+        # The message is kept to 300 characters.
+        auth = {'a@example.invalid': {'status': 'error', 'status_message': 'x' * 400 + ' invalid_grant', 'unavailable': True}}
+        entry, _ = self.collect(module, self.rejecting([429])[0], proxy_auth=auth)
+        self.assertEqual(len(entry['proxy_auth']['message']), 300)
+        # A direct success proves the token works, whatever the proxy's last message still says.
         entry, _ = self.collect(module, self.rejecting([200])[0], proxy_auth=auth)
-        self.assertEqual((entry['ok'], entry['source'], len(entry['proxy_auth']['message'])), (True, 'direct', 300))
-        # A healthy credential, or one with an unrelated message, adds nothing.
-        for healthy in ({'status': 'active', 'status_message': '', 'unavailable': False}, {'status': 'error', 'status_message': 'quota exceeded'}):
+        self.assertEqual((entry['ok'], entry['source']), (True, 'direct'))
+        self.assertNotIn('proxy_auth', entry)
+        # A healthy credential, an unrelated message, or an old message on an active credential adds nothing.
+        for healthy in ({'status': 'active', 'status_message': '', 'unavailable': False}, {'status': 'error', 'status_message': 'quota exceeded'},
+                        {'status': 'active', 'status_message': 'invalid grant (retrying)', 'unavailable': False}):
             entry, _ = self.collect(module, self.rejecting([429])[0], previous=previous, proxy_auth={'a@example.invalid': healthy})
             self.assertNotIn('proxy_auth', entry)
 
@@ -274,13 +279,15 @@ class QuotaFallbackTests(unittest.TestCase):
         module = load('ai-claude-quotas')
         identity = hashlib.sha256(b'oauth:claude-a.json').hexdigest()[:24]
         previous = {identity: {'ok': True, 'fetched_at': '2026-09-21T08:30:04+00:00', 'data': {'five_hour': {'utilization': 12, 'resets_at': None}}}}
-        for code in (401, 403):
-            with self.subTest(code=code):
-                request, calls = self.rejecting([code])
-                entry, _ = self.collect(module, request, previous=previous)
-                self.assertEqual((entry['ok'], entry['status'], entry['error'], len(calls)), (False, code, 'Proxy OAuth expired — re-login proxy', 1))
-                self.assertEqual(entry['proxy_auth'], {'state': 'expired', 'message': 'Provider rejected the proxy credential (HTTP %s)' % code, 'observed_at': self.NOW.isoformat()})
-                self.assertNotIn('data', entry); self.assertNotIn('source', entry)
+        request, calls = self.rejecting([401])
+        entry, _ = self.collect(module, request, previous=previous)
+        self.assertEqual((entry['ok'], entry['status'], entry['error'], len(calls)), (False, 401, 'Proxy OAuth expired — re-login proxy', 1))
+        self.assertEqual(entry['proxy_auth'], {'state': 'expired', 'message': 'Provider rejected the proxy credential (HTTP 401)', 'observed_at': self.NOW.isoformat()})
+        self.assertNotIn('data', entry); self.assertNotIn('source', entry)
+        # A 403 (scope, policy) is a definite rejection without a fallback, but not evidence of a dead login.
+        entry, _ = self.collect(module, self.rejecting([403])[0], previous=previous)
+        self.assertEqual((entry['ok'], entry['status'], entry['error']), (False, 403, 'Proxy quota request rejected (HTTP 403)'))
+        self.assertNotIn('proxy_auth', entry)
 
     def test_the_newer_of_proxy_and_retained_observations_wins(self):
         module = load('ai-claude-quotas')

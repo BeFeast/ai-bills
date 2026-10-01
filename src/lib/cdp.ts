@@ -54,8 +54,20 @@ const holds = new Map<string, number>();
 const ownTargets = new Set<string>();
 /** Endpoints already swept for tabs a previous process left behind. */
 const sweptEndpoints = new Set<string>();
-/** Set as `window.name` on each quota tab; survives same-site navigation and identifies the tab after a restart. */
+/** Set as `window.name` on each quota tab (`<mark>:<boot>:<ms>`); survives same-site navigation and identifies the
+ * tab after a restart. A tab from another boot is closed only once it is older than any fetch could take, so a second
+ * instance on the same profile (a rolling deploy) never loses a tab mid-read. */
 const TAB_MARK = 'zecori-quota';
+const BOOT = Math.random().toString(36).slice(2, 10);
+// Twice the longest a fetch may hold its tab (startup budget plus evaluation timeout).
+const ORPHAN_AFTER_MS = 100_000;
+export function isOrphanMark(value: unknown, now = Date.now()): boolean {
+  if (typeof value !== 'string' || !value.startsWith(TAB_MARK)) return false;
+  const [, boot, at] = value.split(':');
+  if (boot === BOOT) return false;
+  const stamped = Number(at);
+  return !Number.isFinite(stamped) || now - stamped > ORPHAN_AFTER_MS;
+}
 const EVALUATE_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 20_000;
 const CLEANUP_TIMEOUT_MS = 2_000;
@@ -328,7 +340,7 @@ async function establishSession(account: ProviderConfig, endpoint: string, signa
     await startupSend('Page.navigate', { url: navUrl }, session.sessionId);
     await waitForReady(session, budget);
     await waitForExecutionContext(session, budget);
-    await startupSend('Runtime.evaluate', { expression: `window.name = ${JSON.stringify(TAB_MARK)}`, returnByValue: true }, session.sessionId);
+    await startupSend('Runtime.evaluate', { expression: `window.name = ${JSON.stringify(`${TAB_MARK}:${BOOT}:${Date.now()}`)}`, returnByValue: true }, session.sessionId);
     return session;
   } catch (error) {
     await disposeSession(session).catch(() => undefined);
@@ -492,7 +504,7 @@ async function sweepOrphanTabs(session: CdpSession, budget: CdpStartupBudget) {
       if (typeof attached?.sessionId !== 'string') continue;
       const named = await call('Runtime.evaluate', { expression: 'window.name', returnByValue: true }, attached.sessionId).catch(() => null);
       await call('Target.detachFromTarget', { sessionId: attached.sessionId }).catch(() => undefined);
-      if (named?.result?.value === TAB_MARK) await call('Target.closeTarget', { targetId: page.targetId }).catch(() => undefined);
+      if (isOrphanMark(named?.result?.value)) await call('Target.closeTarget', { targetId: page.targetId }).catch(() => undefined);
     }
   } catch (error) {
     if (error instanceof CdpStartupCancelledError) throw error;
@@ -719,7 +731,8 @@ export async function fetchClaude(account: ProviderConfig, options: CdpFetchOpti
   if (due || (!proxyCurrent && (!cached || now - cached.at >= CLAUDE_WEB_FALLBACK_INTERVAL_MS))) {
     web = await readWeb(account, options.signal);
     webReads.set(account.key, { result: web, at: now });
-    recordCheck(scope, account.key, account.provider, compareReadings(proxyClaudeReading(proxy, now), webClaudeReading(web)), now);
+    // Fallback reads in between only feed the card; the checker counts one run per interval.
+    if (due) recordCheck(scope, account.key, account.provider, compareReadings(proxyClaudeReading(proxy, now), webClaudeReading(web)), now);
   }
   if (proxyCurrent || !web?.ok || age(web, now) > CLAUDE_LAST_KNOWN_MS) return proxy;
   if (proxy.ok && age(proxy, now) <= age(web, now)) return proxy;
@@ -750,7 +763,7 @@ export async function fetchClaudeWebUsage(account: ProviderConfig, signal?: Abor
       error: valid ? undefined : signedOut ? 'claude.ai is signed out in the account browser' : `claude.ai usage request failed (HTTP ${result?.status ?? 'unknown'})`,
       fetchedAt, sourceUrl, source: 'web' };
   } catch (error) {
-    if (!(error instanceof CdpStartupCancelledError)) await closeSession(account.key).catch(() => undefined);
+    // The tab closes when its last holder leaves (unhold); closing here would cut another caller's read.
     return { account, ok: false, error: error instanceof Error ? error.message : String(error), fetchedAt, sourceUrl, source: 'web' };
   } finally {
     if (held) await unhold(account.key);

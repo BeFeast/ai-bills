@@ -65,10 +65,12 @@ function probeGuard(snapshot: unknown, now: number): { guard: Guard; probe: Guar
   const checked = time(checkedAt);
   if (checked === null) return { probe, guard: { status: 'down', message: 'No model probe result in the latest snapshot', lastRunAt: null } };
   if (now - checked > PROBE_MAX_AGE_MS) return { probe, guard: { status: 'down', message: `Model probe stopped: last run ${clock(checkedAt)}`, lastRunAt: checkedAt } };
-  if (probe.status !== 'up') {
+  // `partial`: the run ran out of time before every model; what it did check passed, and the next collect continues.
+  if (probe.status !== 'up' && probe.status !== 'partial') {
     const failing = models.filter((model) => !['ok', 'rate_limited'].includes(model.outcome));
     return { probe, guard: { status: 'down', message: failing.length ? `Models failing: ${failing.map((model) => `${model.model} ${model.outcome}${model.http_status ? ` (HTTP ${model.http_status})` : ''}`).join(', ')}` : probe.message ?? 'Model probe failed', lastRunAt: checkedAt } };
   }
+  if (probe.status === 'partial') return { probe, guard: { status: 'up', message: probe.message ?? 'Model probe ran out of time; checked models are callable', lastRunAt: checkedAt } };
   return { probe, guard: { status: 'up', message: `${models.length} model${models.length === 1 ? '' : 's'} callable (${models.filter((model) => model.outcome === 'rate_limited').length} rate-limited)`, lastRunAt: checkedAt } };
 }
 

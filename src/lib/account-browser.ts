@@ -100,8 +100,9 @@ export function identityExpression(provider: AccountConfig['provider']): string 
 
 type Identity = { status: AccountBrowserStatus; verifiedEmail?: string };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-/** How long a probe tab may take to reach the provider's origin. */
-const PROBE_TAB_WAIT_MS = 6_000;
+/** How long a probe tab may take to reach the provider's origin: well inside the connection's 12 s deadline, so the
+ * tab can still be closed over the same connection afterwards. */
+const PROBE_TAB_WAIT_MS = 4_000;
 
 async function probeTab(connection: AccountBrowserConnection, targetId: string, expression: string, account: AccountConfig, loading: boolean): Promise<Identity> {
   const attached = await connection.send('Target.attachToTarget', { targetId, flatten: true });
@@ -124,7 +125,7 @@ async function probeTab(connection: AccountBrowserConnection, targetId: string, 
 
 /** `login_required` needs auth evidence: the provider answered 401/403 (or reported no user). A shared resident
  * profile without an open tab of this provider is normal, so the probe opens a background tab and closes it again. */
-async function identity(connection: AccountBrowserConnection, targets: BrowserTarget[], account: AccountConfig): Promise<Identity> {
+async function identity(connection: AccountBrowserConnection, targets: BrowserTarget[], account: AccountConfig, endpoint: string): Promise<Identity> {
   const expression = identityExpression(account.provider);
   if (!expression) return { status: 'identity_unknown' };
   const origin = account.provider === 'claude' ? 'https://claude.ai' : account.provider === 'cursor' ? 'https://cursor.com' : 'https://chatgpt.com';
@@ -137,7 +138,11 @@ async function identity(connection: AccountBrowserConnection, targets: BrowserTa
     created = result.targetId;
     return await probeTab(connection, created, expression, account, true);
   } catch { return { status: 'identity_unknown' }; }
-  finally { if (created) await connection.send('Target.closeTarget', { targetId: created }).catch(() => undefined); }
+  finally {
+    // Past the connection's deadline the CDP close cannot be sent; the endpoint's HTTP interface still closes the tab.
+    if (created) await connection.send('Target.closeTarget', { targetId: created }).catch(() =>
+      fetch(`${endpoint}/json/close/${encodeURIComponent(created!)}`, { signal: AbortSignal.timeout(2_000), redirect: 'error' }).catch(() => undefined));
+  }
 }
 
 async function openTab(connection: AccountBrowserConnection, binding: AccountBrowserConfig, account: AccountConfig, targets: BrowserTarget[], action: 'login' | 'manage') {
@@ -256,7 +261,7 @@ async function observeBrowser(config: AppConfig, selector: AccountBrowserSelecto
     connection = await deps.connect(endpoint);
     const result = await connection.send('Target.getTargets');
     const targets: BrowserTarget[] = Array.isArray(result.targetInfos) ? result.targetInfos : [];
-    Object.assign(state, await identity(connection, targets, account), { observedAt: new Date().toISOString() });
+    Object.assign(state, await identity(connection, targets, account, endpoint), { observedAt: new Date().toISOString() });
     // Every manage action re-verifies identity; a cached GET never grants access.
     if (action === 'login' || (action === 'manage' && state.status === 'ready')) await openTab(connection, binding, account, targets, action);
   } catch (error) {

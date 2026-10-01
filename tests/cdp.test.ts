@@ -634,13 +634,16 @@ describe('CDP startup lifetime and ownership', () => {
 
   test('closes marked tabs a previous process left behind, and only those', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(versionResponse())));
-    state.pages = [{ targetId: 'orphan', name: 'zecori-quota' }, { targetId: 'users-own-tab', name: null }];
+    state.pages = [{ targetId: 'orphan', name: 'zecori-quota:oldboot:1000' }, { targetId: 'users-own-tab', name: null },
+      { targetId: 'other-instance-busy', name: `zecori-quota:otherboot:${Date.now()}` }];
 
     expect((await fetchUsageThroughCdp(account())).ok).toBe(true);
     expect((await fetchUsageThroughCdp(account())).ok).toBe(true);
 
     expect(state.closedTargets.filter((id) => id === 'orphan')).toHaveLength(1);
     expect(state.closedTargets).not.toContain('users-own-tab');
+    // A tab another live instance opened moments ago is not an orphan yet.
+    expect(state.closedTargets).not.toContain('other-instance-busy');
     // Once per endpoint and process: the second fetch does not sweep again.
     expect(state.methods.filter((method) => method === 'Target.getTargets')).toHaveLength(1);
   });

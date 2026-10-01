@@ -129,32 +129,35 @@ async function runReauth(config: AppConfig, job: ReauthJob, deps: ReauthDeps): P
     const deadline = deps.now() + WINDOW_MS;
     let clickedFor: string | null = null;
     while (deps.now() < deadline) {
-      const history = await connection.send('Page.getNavigationHistory', {}, session);
-      const entries: { url?: string }[] = Array.isArray(history.entries) ? history.entries : [];
-      callback = entries.map(entry => entry.url ?? '').find(url => url.startsWith(CALLBACK_PREFIX)) ?? null;
-      if (callback) break;
-      const href = entries[typeof history.currentIndex === 'number' ? history.currentIndex : entries.length - 1]?.url ?? '';
-      const onClaude = host(href) === 'claude.ai';
-      // Never pull the tab away from another host (Google sign-in) mid-login; restart only on claude.ai.
-      if (deps.now() - flow.at > FLOW_TTL_MS && clickedFor !== flow.state && onClaude) {
-        flow = await startFlow(deps);
-        await connection.send('Page.navigate', { url: flow.url }, session);
-        await deps.sleep(1_000);
-        continue;
-      }
-      if (onClaude && new URL(href).pathname.startsWith('/oauth/authorize') && clickedFor !== flow.state) {
-        const email = await evaluate(ACCOUNT_EMAIL);
-        if (typeof email !== 'string') {
+      try {
+        const history = await connection.send('Page.getNavigationHistory', {}, session);
+        const entries: { url?: string }[] = Array.isArray(history.entries) ? history.entries : [];
+        callback = entries.map(entry => entry.url ?? '').find(url => url.startsWith(CALLBACK_PREFIX)) ?? null;
+        if (callback) break;
+        const href = entries[typeof history.currentIndex === 'number' ? history.currentIndex : entries.length - 1]?.url ?? '';
+        const onClaude = host(href) === 'claude.ai';
+        const onAuthorize = onClaude && new URL(href).pathname.startsWith('/oauth/authorize');
+        // Restart only on the authorize page itself: never mid-login on claude.ai's own login page or another host.
+        if (deps.now() - flow.at > FLOW_TTL_MS && clickedFor !== flow.state && onAuthorize) {
+          flow = await startFlow(deps);
+          await connection.send('Page.navigate', { url: flow.url }, session);
+        } else if (onAuthorize && clickedFor !== flow.state) {
+          const email = await evaluate(ACCOUNT_EMAIL);
+          if (typeof email !== 'string') {
+            Object.assign(job, { state: 'waiting_for_login', message: 'Sign in to claude.ai in the account browser; the reconnect continues by itself.', suggestAccountBrowser: true });
+          } else if (email.trim().toLowerCase() !== expected) {
+            finish(job, deps, 'failed', 'The consent page belongs to a different claude.ai account; nothing was authorized. Open the account browser and switch accounts.', true);
+            return job;
+          } else if (await evaluate(CLICK_AUTHORIZE) === 'clicked') {
+            clickedFor = flow.state;
+            Object.assign(job, { state: 'authorizing', message: 'Authorized for the expected account; waiting for the proxy callback', suggestAccountBrowser: false });
+          }
+        } else if (onClaude && clickedFor !== flow.state) {
           Object.assign(job, { state: 'waiting_for_login', message: 'Sign in to claude.ai in the account browser; the reconnect continues by itself.', suggestAccountBrowser: true });
-        } else if (email.trim().toLowerCase() !== expected) {
-          finish(job, deps, 'failed', 'The consent page belongs to a different claude.ai account; nothing was authorized. Open the account browser and switch accounts.', true);
-          return job;
-        } else if (await evaluate(CLICK_AUTHORIZE) === 'clicked') {
-          clickedFor = flow.state;
-          Object.assign(job, { state: 'authorizing', message: 'Authorized for the expected account; waiting for the proxy callback', suggestAccountBrowser: false });
         }
-      } else if (onClaude && clickedFor !== flow.state) {
-        Object.assign(job, { state: 'waiting_for_login', message: 'Sign in to claude.ai in the account browser; the reconnect continues by itself.', suggestAccountBrowser: true });
+      } catch (error) {
+        // A page in the middle of a redirect (destroyed context, slow evaluate) is "not yet"; a dead connection is not.
+        if (error instanceof Error && /connection closed|deadline exceeded|send failed/i.test(error.message)) throw error;
       }
       await deps.sleep(1_000);
     }

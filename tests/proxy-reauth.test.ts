@@ -81,14 +81,33 @@ describe('Reconnect proxy', () => {
     expect(h.deps.connect).not.toHaveBeenCalled();
   });
 
-  it('waits on the login page, restarting the proxy flow before it expires, then times out and still closes the tab', async () => {
-    const h = harness({ pages: () => ['https://claude.ai/login'] });
+  it('restarts the proxy flow before it expires while the authorize page waits, then times out and still closes the tab', async () => {
+    const h = harness({ pages: (flow) => [AUTHORIZE + flow], email: null });
     const job = await startProxyReauth(config(), null, 'claude-personal', h.deps).done;
     expect(job.state).toBe('failed');
     expect(job.message).toContain('15 minutes');
     expect(h.flows()).toBeGreaterThanOrEqual(Math.floor(15 * 60_000 / FLOW_TTL_MS));
     expect(h.calls.filter(call => call.method === 'Page.navigate').every(call => String(call.params?.url).startsWith(AUTHORIZE))).toBe(true);
     expect(closed(h.calls)).toBe(true);
+  });
+
+  it('keeps going through a page that is mid-redirect', async () => {
+    const h = harness({ pages: (flow) => [AUTHORIZE + flow, AUTHORIZE + flow, CALLBACK + flow] });
+    const send = (h.connection.send as ReturnType<typeof vi.fn>).getMockImplementation()!;
+    let failures = 1;
+    (h.connection.send as ReturnType<typeof vi.fn>).mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Runtime.evaluate' && failures-- > 0) { h.calls.push({ method, params }); throw new Error('Account browser Runtime.evaluate failed'); }
+      return send(method, params);
+    });
+    expect((await startProxyReauth(config(), null, 'claude-personal', h.deps).done).state).toBe('succeeded');
+    expect(closed(h.calls)).toBe(true);
+  });
+
+  it('never restarts the flow while the person is on a login page', async () => {
+    const h = harness({ pages: () => ['https://claude.ai/login'] });
+    await startProxyReauth(config(), null, 'claude-personal', h.deps).done;
+    expect(h.flows()).toBe(1);
+    expect(h.calls.some(call => call.method === 'Page.navigate')).toBe(false);
   });
 
   it('never pulls the tab away from another host mid-login', async () => {

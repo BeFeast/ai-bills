@@ -11,8 +11,9 @@ import { claudeWindows, type ClaudeUsagePayload, type ProviderUsage } from './us
 export const CHECK_INTERVAL_MS = 30 * 60_000;
 export const DELTA_LIMIT_PP = 10;
 export const FLAG_AFTER = 2;
-/** A proxy-derived observation older than this says nothing about the account now. */
-const PROXY_MAX_AGE_MS = 60 * 60_000;
+/** Numbers are compared only when the proxy observation is this close to the website read: a busy session window
+ * moves several points in half an hour, which would read as disagreement. The collector runs every 5 minutes. */
+const PROXY_MAX_AGE_MS = 10 * 60_000;
 
 export type QuotaState = 'sign_in' | 'available' | 'exhausted' | 'unknown';
 /** Used percent per window label, plus the account state the windows imply. */

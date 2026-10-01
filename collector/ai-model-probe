@@ -121,20 +121,27 @@ def check(base, key, model, open_url, timeout=TIMEOUT):
 def probe(base, key, previous=None, open_url=urlopen, sleep=time.sleep, now=None, clock=time.monotonic):
     now = now or datetime.now(timezone.utc)
     deadline = clock() + BUDGET
-    if isinstance(previous, dict):
+    # Only a passing result is repeated for the hour; a failing one is re-checked on the next collect, so one bad
+    # run neither pages for an hour nor hides a recovery.
+    if isinstance(previous, dict) and previous.get('status') == 'up':
         checked = parse_time(previous.get('checked_at'))
         if checked and 0 <= (now - checked).total_seconds() < PROBE_INTERVAL:
             return previous
     base = base.rstrip('/')
     result = {'checked_at': now.isoformat(), 'status': 'up', 'message': '', 'models': []}
     try:
-        models = catalog(base, key, open_url)
+        try:
+            models = catalog(base, key, open_url)
+        except RuntimeError:
+            sleep(RETRY_PAUSE)
+            models = catalog(base, key, open_url)
     except RuntimeError as error:
         return dict(result, status='down', message=short(error, key))
     for model in models:
         left = deadline - clock()
         if left < 5:
-            result['models'].append({'model': model, 'outcome': 'unreachable', 'http_status': None, 'retried': False, 'message': 'probe time budget exhausted before this model'})
+            # Not an outage finding: the run ran out of time. The next collect probes again (the result is not 'up' for the gate).
+            result['models'].append({'model': model, 'outcome': 'skipped', 'http_status': None, 'retried': False, 'message': 'probe time budget exhausted before this model'})
             continue
         outcome, status, message = check(base, key, model, open_url, min(TIMEOUT, left))
         retried = outcome in ALERTS and deadline - clock() > RETRY_PAUSE + 5
@@ -143,7 +150,11 @@ def probe(base, key, previous=None, open_url=urlopen, sleep=time.sleep, now=None
             outcome, status, message = check(base, key, model, open_url, min(TIMEOUT, max(1, deadline - clock())))
         result['models'].append({'model': model, 'outcome': outcome, 'http_status': status, 'retried': retried, 'message': message})
     failing = [row for row in result['models'] if row['outcome'] in ALERTS]
-    if failing:
+    skipped = [row for row in result['models'] if row['outcome'] == 'skipped']
+    if skipped and not failing:
+        result['status'] = 'partial'
+        result['message'] = '%d of %d Claude models checked before the time budget ran out' % (len(models) - len(skipped), len(models))
+    elif failing:
         result['status'] = 'down'
         result['message'] = short('; '.join('%s: %s' % (row['model'], row['outcome']) for row in failing), key)
     else:
