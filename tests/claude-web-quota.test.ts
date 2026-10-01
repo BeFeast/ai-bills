@@ -62,6 +62,15 @@ describe('claude.ai as the second Claude quota source', () => {
     expect(await fetchClaude(account, { snapshot: snapshot(rejected429) }, old, now)).toMatchObject({ ok: false, status: 429 });
   });
 
+  it('keeps a good recent website read when the next one fails transiently, but not when the site signs out', async () => {
+    const reads = [web(payload(0, 74, 100)), { ...signedOut(), status: undefined, error: 'Account browser Runtime.evaluate timed out' } as ProviderUsage, signedOut()];
+    const readWeb = vi.fn(async () => reads.shift()!);
+    expect((await fetchClaude(account, { snapshot: snapshot(rejected429) }, readWeb, now)).source).toBe('web');
+    const kept = await fetchClaude(account, { snapshot: snapshot(rejected429) }, readWeb, now + 5 * 60_000);
+    expect(kept).toMatchObject({ ok: true, source: 'web', fetchedAt: at(0) });
+    expect(await fetchClaude(account, { snapshot: snapshot(rejected429) }, readWeb, now + 10 * 60_000)).toMatchObject({ ok: false, status: 429 });
+  });
+
   it('returns the proxy failure unchanged when the website is signed out', async () => {
     const result = await fetchClaude(account, { snapshot: snapshot(expired) }, vi.fn(async () => signedOut()), now);
     expect(result).toMatchObject({ ok: false, status: 429, proxyAuth: { state: 'expired' } });

@@ -24,6 +24,7 @@ const CALLBACK_PREFIX = 'http://localhost:54545/callback';
 export const FLOW_TTL_MS = 270_000;
 export const WINDOW_MS = 15 * 60_000;
 const STATUS_POLL_MS = 2_000;
+const FLOW_RETRY_MS = 30_000;
 const STATUS_TIMEOUT_MS = 90_000;
 
 type ProxyAnswer = { status: number; body: Record<string, unknown> };
@@ -128,6 +129,7 @@ async function runReauth(config: AppConfig, job: ReauthJob, deps: ReauthDeps): P
     const evaluate = async (expression: string) => (await connection!.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, session)).result?.value;
     const deadline = deps.now() + WINDOW_MS;
     let clickedFor: string | null = null;
+    let retryFlowAt = 0;
     while (deps.now() < deadline) {
       try {
         const history = await connection.send('Page.getNavigationHistory', {}, session);
@@ -138,9 +140,12 @@ async function runReauth(config: AppConfig, job: ReauthJob, deps: ReauthDeps): P
         const onClaude = host(href) === 'claude.ai';
         const onAuthorize = onClaude && new URL(href).pathname.startsWith('/oauth/authorize');
         // Restart only on the authorize page itself: never mid-login on claude.ai's own login page or another host.
-        if (deps.now() - flow.at > FLOW_TTL_MS && clickedFor !== flow.state && onAuthorize) {
-          flow = await startFlow(deps);
-          await connection.send('Page.navigate', { url: flow.url }, session);
+        if (deps.now() - flow.at > FLOW_TTL_MS && clickedFor !== flow.state && onAuthorize && deps.now() >= retryFlowAt) {
+          // A failed restart is retried after a pause, not every second; the old flow stays current until the tab shows the new one.
+          retryFlowAt = deps.now() + FLOW_RETRY_MS;
+          const next = await startFlow(deps);
+          await connection.send('Page.navigate', { url: next.url }, session);
+          flow = next;
         } else if (onAuthorize && clickedFor !== flow.state) {
           const email = await evaluate(ACCOUNT_EMAIL);
           if (typeof email !== 'string') {

@@ -95,8 +95,9 @@ class ModelProbeTests(unittest.TestCase):
         self.assertEqual(rows['claude-fable-5']['outcome'], 'ok')
         self.assertEqual((rows['claude-opus-5']['outcome'], rows['claude-opus-5']['message']), ('skipped', 'probe time budget exhausted before this model'))
         self.assertEqual((result['status'], len(proxy.messages())), ('partial', 1))
-        # A partial run is not repeated: the next collect probes again.
-        self.assertNotEqual(probe.probe(BASE, KEY, result, open_url=FakeProxy({}), sleep=lambda _: None, now=NOW)['status'], 'partial')
+        # A partial run is re-checked after ten minutes rather than repeated for the hour.
+        later = NOW + timedelta(minutes=10)
+        self.assertEqual(probe.probe(BASE, KEY, result, open_url=FakeProxy({}), sleep=lambda _: None, now=later)['status'], 'up')
 
     def test_rate_limited_model_is_not_an_alert_and_not_retried(self):
         proxy = FakeProxy({'claude-fable-5': [(429, b'{"error":{"type":"rate_limit_error","message":"weekly limit reached"}}')]})
@@ -138,9 +139,17 @@ class ModelProbeTests(unittest.TestCase):
         self.assertEqual((result['status'], slept), ('up', [10]))
 
     def test_a_failing_result_is_not_repeated_for_the_hour(self):
-        previous = {'checked_at': (NOW - timedelta(minutes=10)).isoformat(), 'status': 'down', 'message': 'x', 'models': []}
-        result, _ = run(FakeProxy({}), previous=previous)
+        previous = {'checked_at': (NOW - timedelta(minutes=5)).isoformat(), 'status': 'down', 'message': 'x', 'models': []}
+        self.assertIs(run(FakeProxy({}), previous=previous)[0], previous)
+        result, _ = run(FakeProxy({}), previous=dict(previous, checked_at=(NOW - timedelta(minutes=10)).isoformat()))
         self.assertEqual((result['status'], result['checked_at']), ('up', NOW.isoformat()))
+
+    def test_models_skipped_last_time_go_first(self):
+        previous = {'checked_at': (NOW - timedelta(minutes=10)).isoformat(), 'status': 'partial', 'message': 'x',
+                    'models': [{'model': 'claude-opus-5', 'outcome': 'skipped'}]}
+        proxy = FakeProxy({})
+        run(proxy, previous=previous)
+        self.assertEqual([json.loads(call.data)['model'] for call in proxy.messages()], ['claude-opus-5', 'claude-fable-5'])
 
     def test_hourly_gate_carries_the_previous_result(self):
         previous = {'checked_at': (NOW - timedelta(minutes=50)).isoformat(), 'status': 'up', 'message': '2 Claude models callable', 'models': []}

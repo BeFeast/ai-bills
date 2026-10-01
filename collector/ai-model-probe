@@ -21,6 +21,8 @@ from urllib.request import Request, urlopen
 
 # A */5 schedule must not drift to 65 minutes, so the gate opens 5 minutes early.
 PROBE_INTERVAL = 3600 - 300
+# A failing or incomplete run is checked again sooner, but not on every collect.
+RECHECK_INTERVAL = 600 - 60
 RETRY_PAUSE = 10
 TIMEOUT = 30
 # The whole run stays well inside the 5-minute collect slot; models left when it runs out are reported, not skipped silently.
@@ -121,14 +123,17 @@ def check(base, key, model, open_url, timeout=TIMEOUT):
 def probe(base, key, previous=None, open_url=urlopen, sleep=time.sleep, now=None, clock=time.monotonic):
     now = now or datetime.now(timezone.utc)
     deadline = clock() + BUDGET
-    # Only a passing result is repeated for the hour; a failing one is re-checked on the next collect, so one bad
+    # A passing result is repeated for the hour; a failing or incomplete one is re-checked after ten minutes, so one bad
     # run neither pages for an hour nor hides a recovery.
-    if isinstance(previous, dict) and previous.get('status') == 'up':
+    if isinstance(previous, dict):
         checked = parse_time(previous.get('checked_at'))
-        if checked and 0 <= (now - checked).total_seconds() < PROBE_INTERVAL:
+        interval = PROBE_INTERVAL if previous.get('status') == 'up' else RECHECK_INTERVAL
+        if checked and 0 <= (now - checked).total_seconds() < interval:
             return previous
     base = base.rstrip('/')
     result = {'checked_at': now.isoformat(), 'status': 'up', 'message': '', 'models': []}
+    # Models the last run had no time for go first, so a budget that always runs out never leaves the same ones unchecked.
+    skipped_before = {row.get('model') for row in (previous or {}).get('models') or [] if isinstance(row, dict) and row.get('outcome') == 'skipped'} if isinstance(previous, dict) else set()
     try:
         try:
             models = catalog(base, key, open_url)
@@ -137,7 +142,7 @@ def probe(base, key, previous=None, open_url=urlopen, sleep=time.sleep, now=None
             models = catalog(base, key, open_url)
     except RuntimeError as error:
         return dict(result, status='down', message=short(error, key))
-    for model in models:
+    for model in sorted(models, key=lambda name: name not in skipped_before):
         left = deadline - clock()
         if left < 5:
             # Not an outage finding: the run ran out of time. The next collect probes again (the result is not 'up' for the gate).

@@ -59,8 +59,8 @@ const sweptEndpoints = new Set<string>();
  * instance on the same profile (a rolling deploy) never loses a tab mid-read. */
 const TAB_MARK = 'zecori-quota';
 const BOOT = Math.random().toString(36).slice(2, 10);
-// Twice the longest a fetch may hold its tab (startup budget plus evaluation timeout).
-const ORPHAN_AFTER_MS = 100_000;
+// Well past the longest a fetch may hold its tab (startup, two Kimi evaluations and a reload), with overlap to spare.
+const ORPHAN_AFTER_MS = 10 * 60_000;
 export function isOrphanMark(value: unknown, now = Date.now()): boolean {
   if (typeof value !== 'string' || !value.startsWith(TAB_MARK)) return false;
   const [, boot, at] = value.split(':');
@@ -729,10 +729,13 @@ export async function fetchClaude(account: ProviderConfig, options: CdpFetchOpti
   const due = checkDue(scope, account.key, now);
   let web = cached?.result;
   if (due || (!proxyCurrent && (!cached || now - cached.at >= CLAUDE_WEB_FALLBACK_INTERVAL_MS))) {
-    web = await readWeb(account, options.signal);
+    const read = await readWeb(account, options.signal);
+    // A transient failure must not discard a good recent read; only a signed-out answer replaces it.
+    const signedOut = read.status === 401 || read.status === 403;
+    web = read.ok || signedOut || !cached?.result.ok ? read : cached.result;
     webReads.set(account.key, { result: web, at: now });
     // Fallback reads in between only feed the card; the checker counts one run per interval.
-    if (due) recordCheck(scope, account.key, account.provider, compareReadings(proxyClaudeReading(proxy, now), webClaudeReading(web)), now);
+    if (due) recordCheck(scope, account.key, account.provider, compareReadings(proxyClaudeReading(proxy, now), webClaudeReading(read)), now);
   }
   if (proxyCurrent || !web?.ok || age(web, now) > CLAUDE_LAST_KNOWN_MS) return proxy;
   if (proxy.ok && age(proxy, now) <= age(web, now)) return proxy;

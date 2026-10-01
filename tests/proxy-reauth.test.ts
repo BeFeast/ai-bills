@@ -103,6 +103,23 @@ describe('Reconnect proxy', () => {
     expect(closed(h.calls)).toBe(true);
   });
 
+  it('backs off when the proxy cannot start a new flow, and keeps the old one current until the tab shows the new one', async () => {
+    const h = harness({ pages: (flow) => [AUTHORIZE + flow], email: null });
+    let refuse = false;
+    const proxy = h.deps.proxy as ReturnType<typeof vi.fn>;
+    const issue = proxy.getMockImplementation()!;
+    proxy.mockImplementation(async (method: string, path: string, body?: unknown) => {
+      if (path === '/v0/management/anthropic-auth-url' && refuse) return { status: 401, body: { error: { code: 'authentication_failed' } } };
+      refuse = true;
+      return issue(method, path, body);
+    });
+    await startProxyReauth(config(), null, 'claude-personal', h.deps).done;
+    const attempts = proxy.mock.calls.filter(([, path]) => path === '/v0/management/anthropic-auth-url').length;
+    // 15 minutes, first restart after 4.5, then at most one try per 30 s.
+    expect(attempts).toBeLessThanOrEqual(1 + Math.ceil((15 * 60_000 - FLOW_TTL_MS) / 30_000) + 1);
+    expect(h.calls.some(call => call.method === 'Page.navigate')).toBe(false);
+  });
+
   it('never restarts the flow while the person is on a login page', async () => {
     const h = harness({ pages: () => ['https://claude.ai/login'] });
     await startProxyReauth(config(), null, 'claude-personal', h.deps).done;

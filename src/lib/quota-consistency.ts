@@ -68,11 +68,13 @@ export function checkDue(scope: string | null, accountKey: string, now = Date.no
   return !last || now - Date.parse(last.checkedAt) >= CHECK_INTERVAL_MS;
 }
 
-/** Records one run. A mismatch extends the streak, anything else ends it; an insufficient run is no evidence either way. */
+/** Records one run. A mismatch extends the streak, agreement ends it; an insufficient run is no evidence either way and
+ * leaves the streak as it was (a long proxy back-off must not hide a disagreement on either side of it). */
 export function recordCheck(scope: string | null, accountKey: string, provider: string, result: CheckResult, now = Date.now()): AccountCheck {
   const previous = checks.get(slot(scope, accountKey));
-  const streak = result.verdict === 'mismatch' ? (previous?.streak ?? 0) + 1 : 0;
-  const check: AccountCheck = { ...result, accountKey, provider, checkedAt: new Date(now).toISOString(), streak, flagged: streak >= FLAG_AFTER };
+  const streak = result.verdict === 'mismatch' ? (previous?.streak ?? 0) + 1 : result.verdict === 'insufficient' ? previous?.streak ?? 0 : 0;
+  const check: AccountCheck = { ...result, accountKey, provider, checkedAt: new Date(now).toISOString(), streak,
+    flagged: streak >= FLAG_AFTER && (result.verdict === 'mismatch' || previous?.flagged === true) };
   checks.set(slot(scope, accountKey), check);
   return check;
 }

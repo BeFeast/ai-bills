@@ -44,6 +44,10 @@ describe('consistency checker', () => {
 
   it('does not count a run without both observations as evidence either way', () => {
     expect(compareReadings({ state: 'unknown', used: {} }, reading(40))).toMatchObject({ verdict: 'insufficient' });
+    // A mismatch, a proxy back-off, then another mismatch: still two in a row.
+    recordCheck(null, 'claude-work', 'claude', compareReadings(reading(40), reading(60)), now);
+    expect(recordCheck(null, 'claude-work', 'claude', compareReadings({ state: 'unknown', used: {} }, reading(60)), now + 30 * 60_000)).toMatchObject({ streak: 1, flagged: false });
+    expect(recordCheck(null, 'claude-work', 'claude', compareReadings(reading(40), reading(60)), now + 60 * 60_000)).toMatchObject({ streak: 2, flagged: true });
   });
 });
 
