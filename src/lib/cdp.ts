@@ -52,8 +52,8 @@ const sessionStarts = new Map<string, SessionStart>();
 const holds = new Map<string, number>();
 /** Every tab this process created: an orphan sweep must never close one of them. */
 const ownTargets = new Set<string>();
-/** Endpoints already swept for tabs a previous process left behind. */
-const sweptEndpoints = new Set<string>();
+/** When each endpoint was last swept for tabs a previous process left behind. */
+const sweptEndpoints = new Map<string, number>();
 /** Set as `window.name` on each quota tab (`<mark>:<boot>:<ms>`); survives same-site navigation and identifies the
  * tab after a restart. A tab from another boot is closed only once it is older than any fetch could take, so a second
  * instance on the same profile (a rolling deploy) never loses a tab mid-read. */
@@ -493,8 +493,10 @@ async function reloadPage(session: CdpSession, signal?: AbortSignal) {
  * targets whose `window.name` carries TAB_MARK and that this process did not create. Best effort, once per endpoint.
  */
 async function sweepOrphanTabs(session: CdpSession, budget: CdpStartupBudget) {
-  if (sweptEndpoints.has(session.endpoint)) return;
-  sweptEndpoints.add(session.endpoint);
+  // Tabs of a process that crashed moments ago are not orphans yet; sweeping again once they could be catches them.
+  const last = sweptEndpoints.get(session.endpoint);
+  if (last !== undefined && Date.now() - last < ORPHAN_AFTER_MS) return;
+  sweptEndpoints.set(session.endpoint, Date.now());
   const call = (method: string, params: Record<string, unknown> = {}, sessionId?: string) => send(session, method, params, sessionId, { signal: budget.signal, timeoutMs: Math.min(CLEANUP_TIMEOUT_MS, budget.remaining()) });
   try {
     const listed = await call('Target.getTargets');

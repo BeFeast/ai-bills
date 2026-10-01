@@ -644,8 +644,22 @@ describe('CDP startup lifetime and ownership', () => {
     expect(state.closedTargets).not.toContain('users-own-tab');
     // A tab another live instance opened moments ago is not an orphan yet.
     expect(state.closedTargets).not.toContain('other-instance-busy');
-    // Once per endpoint and process: the second fetch does not sweep again.
+    // Not on every fetch: the second one within ten minutes does not sweep again.
     expect(state.methods.filter((method) => method === 'Target.getTargets')).toHaveLength(1);
+  });
+
+  test('sweeps again later, so tabs of a process that crashed just before this one started are still closed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.parse('2026-10-01T09:00:00Z'));
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(versionResponse())));
+    state.pages = [{ targetId: 'crashed-just-now', name: `zecori-quota:crashedboot:${Date.now() - 30_000}` }];
+
+    expect((await fetchUsageThroughCdp(account())).ok).toBe(true);
+    expect(state.closedTargets).not.toContain('crashed-just-now');
+
+    vi.setSystemTime(Date.parse('2026-10-01T09:11:00Z'));
+    expect((await fetchUsageThroughCdp(account())).ok).toBe(true);
+    expect(state.closedTargets).toContain('crashed-just-now');
   });
 
   test('reloads a Kimi page whose token stayed expired instead of sending it', async () => {

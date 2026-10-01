@@ -146,7 +146,7 @@ async function runReauth(config: AppConfig, job: ReauthJob, deps: ReauthDeps): P
           const next = await startFlow(deps);
           await connection.send('Page.navigate', { url: next.url }, session);
           flow = next;
-        } else if (onAuthorize && clickedFor !== flow.state) {
+        } else if (onAuthorize && clickedFor !== flow.state && deps.now() - flow.at <= FLOW_TTL_MS) {
           const email = await evaluate(ACCOUNT_EMAIL);
           if (typeof email !== 'string') {
             Object.assign(job, { state: 'waiting_for_login', message: 'Sign in to claude.ai in the account browser; the reconnect continues by itself.', suggestAccountBrowser: true });
