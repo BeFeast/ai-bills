@@ -68,9 +68,12 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
   const usageSubtitle = data.usage.tokens === null ? (confirmedSubset ? `≥ ${fmtTokens(confirmedTokens ?? 0)} tokens · ≥ ${data.usage.reconciliation?.confirmedRequests?.toLocaleString() ?? 'Unknown'} requests · confirmed subset` : 'Monthly usage unavailable') : `${fmtTokens(data.usage.tokens)} tokens · ${data.usage.requests?.toLocaleString() ?? 'Unknown'} requests`;
   const shownSubscriptions = view === 'overview' ? subscriptions.slice(0, 4) : data.subscriptions;
 
+  const endedButActive = (s: ProductSubscription) => s.status === 'active' && !s.renewsAt && Boolean(s.endsAt) && s.endsAt!.slice(0, 10) < today;
+
   function subscriptionCell(s: ProductSubscription, column: Column<typeof subscriptionColumns[number]['key']>): ReactNode {
     switch (column.key) {
-      case 'sub': return <div className="identity"><ProviderIcon provider={s.provider} /><Cell main={s.label} sub={`${s.provider}${s.status === 'cancelled' || s.status === 'expired' ? ` · ${s.status}` : s.status !== 'active' ? ' · status unverified' : ''}`} /></div>;
+      // A recorded service period that is over contradicts an `active` status: say so instead of counting the plan as current.
+      case 'sub': return <div className="identity"><ProviderIcon provider={s.provider} /><Cell main={s.label} sub={`${s.provider}${s.status === 'cancelled' || s.status === 'expired' ? ` · ${s.status}` : s.status !== 'active' ? ' · status unverified' : endedButActive(s) ? ' · ended, still marked active' : ''}`} /></div>;
       case 'plan': return s.plan || 'Plan not recorded';
       case 'cost': return <Cell main={<span className="tabular">{money(s.amount, s.currency)}</span>} sub={s.amount !== null ? `per ${s.period === 'year' ? 'year' : s.period === 'month' ? 'month' : 'billing period'}${s.costEvidence === 'estimated' ? ' · estimate' : ''}` : null} />;
       case 'renew': return s.renewsAt ? <Cell main={date(s.renewsAt)} sub={s.renewsAt.slice(0,10) < today ? 'Past renewal; check billing' : 'Renews'} /> : s.endsAt ? <Cell main={date(s.endsAt)} sub={s.endsAt.slice(0,10) < today ? 'Recorded end date' : 'Ends'} /> : <Cell main={<span className="date-missing">Date not recorded</span>} sub="Check account billing" />;

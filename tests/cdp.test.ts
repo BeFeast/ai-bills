@@ -6,7 +6,7 @@ vi.hoisted(() => {
   process.env.AI_BILLS_CONFIG = `${process.cwd()}/tests/fixtures/accounts.toml`;
 });
 
-import { closeAllSessions, fetchUsageThroughCdp } from '../src/lib/cdp';
+import { closeAllSessions, fetchUsageThroughCdp, resetCdpHousekeepingForTests } from '../src/lib/cdp';
 import { setCdpWebSocketConstructorForTests } from '../src/lib/cdp-startup';
 import { loadConfig, type AccountConfig } from '../src/lib/config';
 
@@ -29,6 +29,12 @@ const state = {
   browserProbeRaw: undefined as string | undefined,
   attachError: undefined as string | undefined,
   closedSockets: 0,
+  /** Page targets the browser reports, and the `window.name` each one carries. */
+  pages: [] as { targetId: string; name: string | null }[],
+  attachedTo: '' as string,
+  closedTargets: [] as string[],
+  /** Values for the next provider evaluations, in order; the default cursor payload once exhausted. */
+  providerValues: [] as unknown[],
 };
 
 class FakeWebSocket {
@@ -95,7 +101,13 @@ class FakeWebSocket {
 
     let response: Record<string, unknown>;
     if (message.method === 'Target.createTarget') response = { id: message.id, result: { targetId: 'target-1' } };
+    else if (message.method === 'Target.getTargets') response = { id: message.id, result: { targetInfos: state.pages.map((page) => ({ targetId: page.targetId, type: 'page', url: 'https://www.kimi.ai/' })) } };
+    else if (message.method === 'Target.closeTarget') {
+      state.closedTargets.push(String(message.params?.targetId));
+      response = { id: message.id, result: {} };
+    }
     else if (message.method === 'Target.attachToTarget') {
+      state.attachedTo = String(message.params?.targetId);
       response = state.attachError
         ? { id: message.id, error: { message: state.attachError } }
         : { id: message.id, result: { sessionId: 'session-1' } };
@@ -107,13 +119,18 @@ class FakeWebSocket {
         : { id: message.id, result: { product: 'Chrome/140.0.0.0' } };
     } else if (message.method === 'Runtime.evaluate' && message.params?.expression === 'document.readyState') {
       response = { id: message.id, result: { result: { value: 'complete' } } };
+    } else if (message.method === 'Runtime.evaluate' && String(message.params?.expression).startsWith('window.name')) {
+      // Tab marking and the orphan sweep's read: housekeeping, not a provider action.
+      const page = state.pages.find((entry) => entry.targetId === state.attachedTo);
+      response = { id: message.id, result: { result: { value: message.params?.expression === 'window.name' ? page?.name ?? null : null } } };
     } else if (message.method === 'Runtime.evaluate' && message.params?.expression === 'location.origin') {
       response = { id: message.id, result: { result: { value: 'https://cursor.com' } } };
     } else if (message.method === 'Runtime.evaluate') {
       state.providerDispatches += 1;
+      const queued = state.providerValues.length ? state.providerValues.shift() : undefined;
       response = state.providerError
         ? { id: message.id, error: { message: state.providerError } }
-        : {
+        : queued !== undefined ? { id: message.id, result: { result: { value: queued } } } : {
             id: message.id,
             result: {
               result: {
@@ -201,6 +218,11 @@ beforeEach(() => {
   state.browserProbeRaw = undefined;
   state.attachError = undefined;
   state.closedSockets = 0;
+  state.pages = [];
+  state.attachedTo = '';
+  state.closedTargets = [];
+  state.providerValues = [];
+  resetCdpHousekeepingForTests();
   vi.useRealTimers();
   setCdpWebSocketConstructorForTests(FakeWebSocket as never);
 });
@@ -595,21 +617,55 @@ describe('CDP startup lifetime and ownership', () => {
     expect(state.sockets.every((socket) => socket.readyState === FakeWebSocket.CLOSED)).toBe(true);
   });
 
-  test('rebuilds a half-dead cached session before the next provider dispatch', async () => {
+  test('closes its tab after every fetch, so no provider tab stays open between fetches', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(versionResponse()));
     vi.stubGlobal('fetch', fetchMock);
 
     const first = await fetchUsageThroughCdp(account());
-    state.browserProbeErrors.push('connection is gone');
     const second = await fetchUsageThroughCdp(account());
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(state.methods.filter((method) => method === 'Browser.getVersion')).toHaveLength(3);
     expect(state.methods.filter((method) => method === 'Target.createTarget')).toHaveLength(2);
+    expect(state.methods.filter((method) => method === 'Target.closeTarget')).toHaveLength(2);
+    expect(state.closedSockets).toBe(2);
     expect(state.providerDispatches).toBe(2);
-    expect(state.closedSockets).toBe(1);
+  });
+
+  test('closes marked tabs a previous process left behind, and only those', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(versionResponse())));
+    state.pages = [{ targetId: 'orphan', name: 'zecori-quota' }, { targetId: 'users-own-tab', name: null }];
+
+    expect((await fetchUsageThroughCdp(account())).ok).toBe(true);
+    expect((await fetchUsageThroughCdp(account())).ok).toBe(true);
+
+    expect(state.closedTargets.filter((id) => id === 'orphan')).toHaveLength(1);
+    expect(state.closedTargets).not.toContain('users-own-tab');
+    // Once per endpoint and process: the second fetch does not sweep again.
+    expect(state.methods.filter((method) => method === 'Target.getTargets')).toHaveLength(1);
+  });
+
+  test('reloads a Kimi page whose token stayed expired instead of sending it', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(versionResponse())));
+    state.providerValues = [{ ok: false, status: null, expiredToken: true, data: null }, { ok: true, status: 200, statusText: 'OK', data: { totalQuota: { limit: '100', remaining: '96' } } }];
+
+    const result = await fetchUsageThroughCdp(account({ key: 'kimi-test', provider: 'kimi', label: 'Kimi test' }));
+
+    expect(result.error).toBeUndefined();
+    expect(result.ok).toBe(true);
+    expect(state.methods.filter((method) => method === 'Page.reload')).toHaveLength(1);
+    expect(state.providerDispatches).toBe(2);
+  });
+
+  test('fails a Kimi fetch whose token is still expired after the reload, without sending it', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(versionResponse())));
+    state.providerValues = [{ ok: false, status: null, expiredToken: true, data: null }, { ok: false, status: null, expiredToken: true, data: null }];
+
+    const result = await fetchUsageThroughCdp(account({ key: 'kimi-test', provider: 'kimi', label: 'Kimi test' }));
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('stayed expired');
+    expect(state.methods.filter((method) => method === 'Target.closeTarget')).toHaveLength(1);
   });
 
   test('closes a target and socket when session attachment fails', async () => {

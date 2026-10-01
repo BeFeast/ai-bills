@@ -35,13 +35,14 @@ read-only WHAM request with the proxy-owned access token and account header. It
 never refreshes tokens. Each account has its opaque registry ID; an email lookup
 is added only when unique. Failures retain their observation time and HTTP status.
 
-`ai-claude-quotas` and `ai-codex-quotas` retry a rejected (HTTP 429, 5xx) or failed direct
+`ai-claude-quotas` and `ai-codex-quotas` retry a rejected (HTTP 5xx, and 429 for Codex) or failed direct
 request twice with jittered delays. When the direct request still fails, the entry falls
 back to the newer of two honest alternatives and says so in `source`: `proxy_headers`,
 the quota the proxy read from response headers of the account's own traffic (passed by
 the wrapper through `AI_BILLS_PROXY_QUOTA_FILE`, no extra provider request), or
 `retained`, the last successful observation from the previous snapshot
-(`AI_BILLS_PREVIOUS_SNAPSHOT`, the collector's own copy of what it last delivered), kept for at most six hours. A fallback entry keeps `ok`
+(`AI_BILLS_PREVIOUS_SNAPSHOT`, the collector's own copy of what it last delivered), kept for at most six hours
+(Claude: five hours, one session window, which also bounds the age of proxy header quota and carried per-model limits). A fallback entry keeps `ok`
 and `data` with the fallback's own `fetched_at`, has `status: null`, and records how the
 direct request ended under `direct` (`status`, `error`, `attempted_at`). The dashboard
 shows the number with a "Check rate-limited" or "Check failed" badge and the fallback's
@@ -49,6 +50,27 @@ observation time; alerts report the source as degraded, not failed. Only transie
 failures fall back: a definite rejection such as HTTP 401 or 403 means the credential is
 the problem and the entry stays `ok: false` with the direct status and error, as it does
 when no alternative exists.
+
+Claude never retries a 429 in the same run. The entry records `direct.retry_after_until`
+(from `Retry-After`, seconds or HTTP date, default 15 minutes, capped at five hours), and
+later runs send no direct request until then: the entry is a failed 429 observation ("next
+attempt after HH:MM UTC") that keeps the deadline and still falls back as above. The wrapper
+also passes each auth file's `status`, `status_message` (300 chars) and `unavailable` (also
+in `proxy_auths`); when the message reads like a dead refresh token (`invalid_grant`,
+`authentication_error`, `re-authenticate`) or the provider answers 401/403, the entry gets
+`proxy_auth: {state: "expired", message, observed_at}` and, if it is not `ok`, the error
+"Proxy OAuth expired — re-login proxy". A 429 fallback still applies; a 401/403 still has none.
+
+`ai-model-probe` (run by the wrapper when the keys file has an `APIKEY=` line;
+`AI_BILLS_MODEL_PROBE=0` disables it, `AI_BILLS_PROBE_URL` overrides the proxy base derived
+from the management URL) checks hourly that every `claude-*` model in the proxy's
+`/v1/models` answers a 1-token `/v1/messages` request. The snapshot's `model_probe` holds
+`{checked_at, status: up|down, message, models: [{model, outcome, http_status, retried,
+message}]}`; between checks the previous result is repeated. Outcomes: `ok`, `rate_limited`
+(429, normal), `rejected` (other 4xx), and the alert classes `unknown_model`,
+`unauthorized`, `server_error`, `unreachable`, each retried once after 10 s before it
+counts. `status` is `down` on any alert-class outcome or when the catalog cannot be read.
+No request or response body is stored.
 `AI_USAGE_REPORT_BIN` overrides the report executable for staged deployments.
 `ai-browser-refresh` (run by the wrapper when `AI_BILLS_BROWSER_REFRESH_URL` is set) sends
 `AI_BILLS_BROWSER_REFRESH_TOKEN` as a bearer when present, which a hosted instance requires.
@@ -129,6 +151,19 @@ under `alerts` so the dashboard shows current conditions and recent events. Deli
 ntfy topics from the private config (`config/alerts.example.yml`); with none configured
 the process still records state and history. Run it after each collect and once a day
 with `--summary`; `--dry-run` prints the evaluation without side effects.
+
+## Guards
+
+`ai-bills-guards` relays the app's `/api/guards` verdicts (`stale`, `consistency`, `probe`)
+to Uptime Kuma push monitors, so a failing guard pages without anyone opening the dashboard.
+Configure `AI_BILLS_GUARDS_URL`, optionally `AI_BILLS_GUARDS_TOKEN` (bearer), and the push
+URLs `AI_BILLS_KUMA_PUSH_STALE`, `AI_BILLS_KUMA_PUSH_CONSISTENCY`, `AI_BILLS_KUMA_PUSH_PROBE`
+(an unset one is skipped); `AI_BILLS_GUARDS_ENV_FILE` names a private `KEY=VALUE` file read
+without shell evaluation, explicit environment winning. Each push sets `status=up|down` and
+`msg` (200 chars), replacing those parameters if the copied push URL already has them. An
+unreadable endpoint pushes `down` to every monitor; a missing guard pushes `down`. Push
+failures are logged without URLs or tokens and the exit status stays 0. Schedule it like the
+alerts, after each collect.
 
 ## Portable partner collector
 

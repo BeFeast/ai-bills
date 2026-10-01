@@ -6,6 +6,13 @@ import { parseTokenDigests } from '@/lib/snapshot-ingest';
 import { dbJournalStore, dbOverridesStore } from '@/lib/storage';
 import { subscriptionOverridesPath } from '@/lib/subscription-overrides';
 import { ensureIngestTokens } from '@/lib/tenant';
+import { closeAllSessions } from '@/lib/cdp';
+
+/** A container stop sends SIGTERM: close the quota tabs this process holds open in shared browser profiles while
+ * Next.js drains its server (it exits the process itself). A tab missed here is swept by the next start. */
+export function closeBrowserTabsOnShutdown(): void {
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => { void closeAllSessions().catch(() => undefined); });
+}
 
 /**
  * When a database is configured, migrations are applied and the instance's default tenant exists

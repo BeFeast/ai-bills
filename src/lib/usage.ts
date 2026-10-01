@@ -214,8 +214,13 @@ export type CodexUsagePayload = {
 export const PENDING_OBSERVATION = 'Waiting for the first quota observation';
 export const isPendingObservation = (result: ProviderUsage) => !result.ok && result.status === undefined && result.error === PENDING_OBSERVATION;
 
-/** Where a collector observation came from when the direct quota request did not succeed. */
-export type UsageFallbackSource = 'proxy_headers' | 'retained';
+/** Where an observation came from when the direct quota request did not succeed: the collector's two
+ * fallbacks, or the signed-in website read through the account's own browser profile (Claude). */
+export type UsageFallbackSource = 'proxy_headers' | 'retained' | 'web';
+
+/** The proxy's OAuth credential for the account needs an interactive re-login. Evidence is the proxy's own
+ * auth-file status or a definite 401/403 to the direct request, never a 429 or a missing browser tab. */
+export type ProxyAuthEvidence = { state: 'expired'; message: string; observedAt: string | null };
 
 export type ProviderUsage = {
   account: PublicUsageAccount;
@@ -230,6 +235,7 @@ export type ProviderUsage = {
   source?: 'direct' | UsageFallbackSource;
   /** How the direct request ended when `data` comes from a fallback; `fetchedAt` is then the fallback's own observation time. */
   direct?: { status: number | null; error: string; attemptedAt: string | null };
+  proxyAuth?: ProxyAuthEvidence;
 };
 
 export function usageUrl(account: ProviderConfig): string {

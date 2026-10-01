@@ -40,6 +40,7 @@ import { fmtDate, fmtNumber, fmtPct, normalizePct, pickPct, refillLabel, resetLa
 import { CodexAuthBox, useCodexAuth } from './CodexAuth';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
+import { ProxyReconnect } from './ProxyReconnect';
 import { Button, ButtonLink, Notice, Pill, type PillTone } from './ui';
 
 type CardProps = { result: ProviderUsage; now: number; tz: string; onAuthorized: () => void };
@@ -78,7 +79,8 @@ function AccountGroup({ result, title, availability, tools, belowHeader, footer,
         </div>
       </div>
       {belowHeader}
-      {!result.ok ? <Notice tone="bad" role="alert">{result.error || 'Unknown error'}</Notice> : null}
+      {result.proxyAuth ? <ProxyAuthNotice result={result} /> : null}
+      {!result.ok && !result.proxyAuth ? <Notice tone="bad" role="alert">{result.error || 'Unknown error'}</Notice> : null}
       {children}
       <span className="acct__foot">{footer}</span>
     </section>
@@ -145,10 +147,23 @@ function KvCard({ title, rows }: { title: string; rows: KvRows }) {
   return <div className="bf-card acct-kv-card"><h3 className="t-h3">{title}</h3><KvStrip rows={rows} flat /></div>;
 }
 
-const fallbackSource: Record<UsageFallbackSource, string> = { proxy_headers: "quota read by the proxy from the account's own traffic", retained: 'the last successful observation' };
+const fallbackSource: Record<UsageFallbackSource, string> = { proxy_headers: "quota read by the proxy from the account's own traffic", retained: 'the last successful observation', web: 'the signed-in claude.ai session (account browser)' };
+const sourceLabel: Record<UsageFallbackSource, string> = { proxy_headers: 'proxy headers', retained: 'last success', web: 'claude.ai' };
+
+/** The proxy credential is dead: only a proxy re-login fixes it; the website sign-in is a separate login. */
+function ProxyAuthNotice({ result }: { result: ProviderUsage }) {
+  return <Notice tone="bad" role="alert"><strong>Proxy OAuth expired — re-login proxy.</strong> The proxy reports: {result.proxyAuth?.message}. Opening the account browser does not fix this; the proxy credential needs its own sign-in.
+    {result.account.provider === 'claude' ? <ProxyReconnect accountKey={result.account.key} /> : null}</Notice>;
+}
+
+/** Last known numbers: when they were seen, which source they came from and why nothing newer exists. */
+function LastKnownNotice({ result, tz }: { result: ProviderUsage; tz: string }) {
+  const source = result.source && result.source !== 'direct' ? sourceLabel[result.source] : 'proxy';
+  return <Notice tone="warn">Last known quota · observed {fmtDate(result.fetchedAt, tz)} · source: {source} · refresh failed: {result.direct?.error ?? 'no newer observation'}</Notice>;
+}
 
 function Meta({ result, tz, prefix }: { result: ProviderUsage; tz: string; prefix?: string }) {
-  const fallback = result.source === 'proxy_headers' || result.source === 'retained' ? result.source : null;
+  const fallback = result.source === 'proxy_headers' || result.source === 'retained' || result.source === 'web' ? result.source : null;
   return <>{prefix}HTTP {result.status ?? 'n/a'} · {fallback ? 'observed' : 'fetched'} {fmtDate(result.fetchedAt, tz)}{fallback ? ` · ${result.direct?.error ?? 'The direct quota request failed'}; showing ${fallbackSource[fallback]}` : ''}</>;
 }
 
@@ -168,7 +183,7 @@ function UnknownCard({ result, tz, evidence }: { result: ProviderUsage; tz: stri
         <Pill tone={evidence.state === 'error' ? 'bad' : 'warn'}>{evidence.state === 'stale' ? 'Stale observation' : evidence.state === 'error' ? 'Source error' : 'Unknown'}</Pill>
       </div>
       <span className="t-small">{evidence.message}</span>
-      <KvStrip flat rows={[['Quota remaining', 'Unknown'], ...(evidence.state === 'stale' ? [lastKnownRow(result, tz)].filter((row): row is [string, ReactNode] => row !== null) : []), ['Last observation', fmtDate(result.fetchedAt, tz)], ['HTTP status', result.status ?? 'Unknown']]} />
+      <KvStrip flat rows={[['Quota remaining', 'Unknown'], ...(evidence.state === 'stale' || (evidence.state === 'error' && result.ok) ? [lastKnownRow(result, tz)].filter((row): row is [string, ReactNode] => row !== null) : []), ['Last observation', fmtDate(result.fetchedAt, tz)], ['HTTP status', result.status ?? 'Unknown']]} />
     </div>
   );
 }
@@ -213,12 +228,14 @@ function ClaudeCard({ result, now, tz, evidence }: ProviderCardProps) {
   const sessionPct = pickPct(d.five_hour?.utilization, sessionLimit?.percent);
   const weeklyPct = pickPct(d.seven_day?.utilization, weeklyLimit?.percent);
   const scoped = (d.limits || []).filter((l) => l?.kind === 'weekly_scoped');
-  const fresh = evidence.state === 'fresh';
+  // Last known numbers within the 5 h window stay on screen, labelled; only older or missing data becomes "Availability unknown".
+  const fresh = evidence.state === 'fresh' || evidence.lastKnown === true;
   const spend = d.spend && typeof d.spend === 'object' ? Object.entries(d.spend as Record<string, unknown>).filter(([, v]) => v !== null && v !== undefined).slice(0, 10).map(([k, v]): [string, ReactNode] => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)]) : [];
   const name = providerName(result.account.provider);
   return (
-    <AccountGroup result={result} title={`${result.account.label} · ${result.account.email || 'Email not recorded'}`} availability={fresh ? deriveModelAvailability(d) : undefined} footer={<Meta result={result} tz={tz} />}>
+    <AccountGroup result={result} title={`${result.account.label} · ${result.account.email || 'Email not recorded'}`} availability={evidence.state === 'fresh' ? deriveModelAvailability(d) : undefined} footer={<Meta result={result} tz={tz} />}>
       {!fresh ? <UnknownCard result={result} tz={tz} evidence={evidence} /> : <>
+        {evidence.lastKnown ? <LastKnownNotice result={result} tz={tz} /> : null}
         <LimitCard label="Current session" provider={name} pct={sessionPct} reset={d.five_hour?.resets_at || sessionLimit?.resets_at} badge={claudeBadge(sessionLimit)} tone={limitTone(sessionPct, sessionLimit?.severity)} rows={claudeRows(sessionLimit, d.five_hour, sessionPct, d.five_hour?.resets_at || sessionLimit?.resets_at, now, tz)} now={now} tz={tz} />
         <LimitCard label="Weekly all models" provider={name} pct={weeklyPct} reset={d.seven_day?.resets_at || weeklyLimit?.resets_at} badge={claudeBadge(weeklyLimit)} tone={limitTone(weeklyPct, weeklyLimit?.severity)} rows={claudeRows(weeklyLimit, d.seven_day, weeklyPct, d.seven_day?.resets_at || weeklyLimit?.resets_at, now, tz)} now={now} tz={tz} />
         {scoped.length ? scoped.map((limit, i) => {

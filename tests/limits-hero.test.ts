@@ -118,14 +118,27 @@ describe('limits hero', () => {
     expect((byId['codex-work'] as { fallback: unknown }).fallback).toEqual({ kind: 'retained', status: null, error: 'Proxy quota request failed; credentials were not refreshed' });
     expect((byId['claude-personal'] as { fallback: unknown }).fallback).toBeNull();
   });
-  it('shows the last known limiting window on a stale card instead of forgetting it', () => {
+  it('keeps a Claude observation under 5 h on a quota card labelled last known, and turns it into an error after 5 h', () => {
     const stale = { ...claude('claude-work', 'work@example.invalid', 7, 43, 83), fetchedAt: new Date(now - 45 * 60_000).toISOString() };
     const hero = buildLimitsHero({ usage: [stale, kimiError], registry: [], last24h, now });
     const [card, kimi] = hero.cards;
-    expect(card.kind).toBe('error');
-    expect((card as { state: string; lastKnown: { label: string; remainingPercent: number } | null }).state).toBe('stale');
-    expect((card as { lastKnown: { label: string; remainingPercent: number } | null }).lastKnown).toMatchObject({ label: 'Fable weekly', remainingPercent: 17 });
+    expect(card).toMatchObject({ kind: 'quota', lastKnown: true, limiting: { label: 'Fable weekly', remainingPercent: 17 } });
     expect((kimi as { lastKnown: unknown }).lastKnown).toBeNull();
+    const old = { ...stale, fetchedAt: new Date(now - 5 * 3600_000 - 60_000).toISOString() };
+    const [expired] = buildLimitsHero({ usage: [old], registry: [], last24h, now }).cards;
+    expect(expired).toMatchObject({ kind: 'error', state: 'error', lastKnown: null });
+  });
+  it('keeps a stale non-Claude observation as an error card with its last known window', () => {
+    const stale = { ...codex('codex-work', 'work@example.invalid', 60), fetchedAt: new Date(now - 45 * 60_000).toISOString() };
+    const [card] = buildLimitsHero({ usage: [stale], registry: [], last24h: undefined, now }).cards;
+    expect(card).toMatchObject({ kind: 'error', state: 'stale' });
+    expect((card as { lastKnown: unknown }).lastKnown).not.toBeNull();
+  });
+  it('flags a dead proxy credential on the card even while the website supplies the numbers', () => {
+    const web = { ...claude('claude-work', 'work@example.invalid', 7, 43, 83), source: 'web' as const, direct: { status: 429, error: 'Proxy OAuth expired — re-login proxy', attemptedAt: null },
+      proxyAuth: { state: 'expired' as const, message: 'invalid grant (retrying)', observedAt: null } };
+    const [card] = buildLimitsHero({ usage: [web], registry: [], last24h, now }).cards;
+    expect(card).toMatchObject({ kind: 'quota', lastKnown: false, fallback: { kind: 'web' }, proxyAuth: { state: 'expired' } });
   });
   it('enumerates Codex windows with the blocked flag', () => {
     const blocked = codex('codex-work', 'work@example.invalid', 60);

@@ -80,3 +80,40 @@ September10 follow-up, the active Kimi manual profile passed public WebSocket an
 1920×1080 canvas verification with `view_only=true` and shared VNC; the idle Cursor
 URL returned HTTP503 with the generic unavailable placeholder. Without the user's
 specific URL, these observations do not identify which page their screenshot showed.
+
+### Identity without an open provider tab
+
+A shared resident profile often has no tab of a given provider open. That is not
+missing auth: the identity probe opens a background tab on the provider's origin,
+asks the provider's own account endpoint, and closes the tab again. Only a 401/403
+from that endpoint (or a session without a user) is `login_required`. Manage and
+login actions focus a tab that already shows the configured page instead of
+opening another one after a restart.
+
+### Claude quota from the signed-in website
+
+With `claude_web_quota = true` on a Claude `[[accounts]]` entry (it also needs
+`claude_org_id`, `cdp_http` and `cdp_profile_id` of the account's resident profile),
+the dashboard reads `claude.ai`'s own usage answer for the organisation in a
+background tab that is closed afterwards. It is the fallback while the proxy's
+observation fails (at most every 5 minutes) and the second source of the
+consistency checker (every 30 minutes). The card names the source; a dead proxy
+credential stays visible beside website numbers. Without the flag nothing changes.
+
+### Reconnect proxy
+
+`[proxy_management]` (`base_url`, `management_key`, optional `client_key`, both
+secret references) enables the "Reconnect proxy" button on a card whose proxy
+credential is expired. A signed-in admin confirms it; the proxy's Claude OAuth flow
+then runs in a foreground tab of the account's profile. Authorize is clicked only on
+claude.ai's consent page while claude.ai reports the expected e-mail; a different
+account stops the flow without a callback, and a profile that is not signed in gets
+"Open account browser" instead. The tab is closed in every outcome. Where the proxy
+authenticates management writes as a client request, `client_key` is required.
+
+### Quota guards
+
+`GET /api/guards` reports three up/down guards: no usable Claude quota from any
+source for more than 5 hours, proxy and website disagreeing on two consecutive
+checks (state, or more than 10 percentage points), and the collector's hourly model
+probe. `collector/ai-bills-guards` relays them to push monitors.

@@ -56,11 +56,14 @@ fi
 # --- proxy: auth-file (subscription) health + upstream request counters ---
 curl -sf -m 10 "$CLIPROXY_MGMT_URL/auth-files" -H "Authorization: Bearer $MGMT" > "$AUTH_FILES" || echo '{"files":[]}' > "$AUTH_FILES"
 AUTHS=$(jq '[.files[] | {provider, email, status,
+        status_message: ((.status_message // "") | tostring | .[0:300]), unavailable,
         today_success: ([.recent_requests[]?.success] | add // 0),
         today_failed:  ([.recent_requests[]?.failed]  | add // 0)}]' "$AUTH_FILES") || AUTHS='[]'
 # Quota the proxy read from response headers of each credential's own traffic: the quota
 # collectors fall back to it when the provider rejects the direct request, with no extra call.
-jq '[.files[] | {type, email, quota}]' "$AUTH_FILES" > "$PROXY_QUOTA" 2>/dev/null || echo '[]' > "$PROXY_QUOTA"
+# The status fields carry the proxy's verdict on the OAuth credential (e.g. a dead refresh token).
+jq '[.files[] | {type, email, quota, status, status_message: ((.status_message // "") | tostring | .[0:300]), unavailable}]' \
+  "$AUTH_FILES" > "$PROXY_QUOTA" 2>/dev/null || echo '[]' > "$PROXY_QUOTA"
 export AI_BILLS_PROXY_QUOTA_FILE="$PROXY_QUOTA"
 # The previous snapshot lets a failed request keep the last successful observation instead of forgetting it.
 PREVIOUS_SNAPSHOT="${AI_BILLS_PREVIOUS_SNAPSHOT:-${AI_BILLS_SNAPSHOT_TARGET:-}}"
@@ -77,6 +80,19 @@ USAGE=$(curl -sf -m 10 "$CLIPROXY_MGMT_URL/api-key-usage" -H "Authorization: Bea
 # keeps refreshed in /opt/cliproxyapi/auths/. Tokens never leave the collector host.
 CLAUDE_USAGE=$(uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-claude-quotas") || CLAUDE_USAGE='{}'
 [ -n "$CLAUDE_USAGE" ] || CLAUDE_USAGE='{}'
+
+# --- hourly synthetic probe: every Claude model the proxy catalogues answers a 1-token request ---
+# The probe gates itself on the previous snapshot's model_probe.checked_at; between runs it
+# repeats that result. The client key goes to the probe through its environment only.
+MODEL_PROBE='{}'
+PROBE_KEY=$(sed -n '/^APIKEY=/{s/^APIKEY=//p;q;}' "$CLIPROXY_KEYS_FILE") || PROBE_KEY=''
+if [ "${AI_BILLS_MODEL_PROBE:-1}" != 0 ] && [ -n "$PROBE_KEY" ]; then
+  PROBE_BASE="${CLIPROXY_MGMT_URL%/}"
+  MODEL_PROBE=$(AI_BILLS_PROBE_URL="${AI_BILLS_PROBE_URL:-${PROBE_BASE%/v0/management}}" AI_BILLS_PROBE_API_KEY="$PROBE_KEY" \
+    uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-model-probe") || MODEL_PROBE='{}'
+fi
+unset PROBE_KEY
+printf '%s' "$MODEL_PROBE" | jq -e 'type == "object"' >/dev/null 2>&1 || MODEL_PROBE='{}'
 
 # Read-only Codex quota collection; the proxy remains the OAuth refresh owner.
 CODEX_USAGE=$(AI_BILLS_CLIPROXY_AUTH_DIR="$CLIPROXY_AUTH_DIR" uv run --project "$COLLECTOR_DIR" --frozen python "$COLLECTOR_DIR/ai-codex-quotas") || CODEX_USAGE='{}'
@@ -152,10 +168,12 @@ jq -n \
   --argjson codex_usage "$CODEX_USAGE" \
   --argjson account_quotas "$ACCOUNT_QUOTAS" \
   --argjson alerts "$ALERTS" \
+  --argjson model_probe "$MODEL_PROBE" \
   '{generated: (now | todate), source_receipts: [{id: "provider-subscriptions", status: $providers_status, observedAt: (now|todate)}, {id: "payments", status: $payments_status, observedAt: (now|todate)}, {id: "token-ledger", status: $ledger_status, observedAt: (now|todate)}], runpod: $runpod, vast: $vast, openrouter: $openrouter,
     proxy_auths: $auths, proxy_usage: $usage,
     maestro_cost_today: $cost, providers: $providers, subscriptions: $subscriptions, payments: $payments,
-    usage_ledger: $ledger, claude_usage: $claude_usage, codex_usage: $codex_usage, account_quotas:$account_quotas, account_registry: $registry, alerts: $alerts}' > "$OUT"
+    usage_ledger: $ledger, claude_usage: $claude_usage, codex_usage: $codex_usage, account_quotas:$account_quotas, account_registry: $registry, alerts: $alerts,
+    model_probe: $model_probe}' > "$OUT"
 
 # Hosted instance: PUT the snapshot over HTTPS with a bearer token read from the secret
 # manager at run time. Additive to the SSH/SCP path so both targets can be fed.

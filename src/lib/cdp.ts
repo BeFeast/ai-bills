@@ -11,7 +11,9 @@ import {
   validateCdpEndpoint,
   waitForCdpStartup,
 } from './cdp-startup';
-import { parseCursorUsagePayload, parseKimiUsagePayload, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload, type ProviderConfig, type ProviderUsage, usageUrl } from './usage';
+import { parseCursorUsagePayload, parseKimiUsagePayload, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload, type ProviderConfig, type ProviderUsage, type ProxyAuthEvidence, usageUrl } from './usage';
+import { checkDue, compareReadings, proxyClaudeReading, recordCheck, webClaudeReading } from './quota-consistency';
+import { CLAUDE_LAST_KNOWN_MS, FRESH_MS } from './usage-evidence';
 
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
 
@@ -38,10 +40,22 @@ export type CdpFetchOptions = {
   signal?: AbortSignal;
   /** The collector snapshot already read by the caller (tenancy phase 3); without it the file is read. */
   snapshot?: unknown;
+  /** Tenant the observation belongs to; keys the consistency checker's memory. */
+  scope?: string | null;
 };
 
 const sessions = new Map<string, CdpSession>();
 const sessionStarts = new Map<string, SessionStart>();
+/** Callers currently using an account's tab. The last one out closes it, so neither an idle instance nor a
+ * restart leaves provider tabs behind in a shared browser profile. Counted per account before the session
+ * exists, so concurrent callers that join one startup keep the tab open for each other. */
+const holds = new Map<string, number>();
+/** Every tab this process created: an orphan sweep must never close one of them. */
+const ownTargets = new Set<string>();
+/** Endpoints already swept for tabs a previous process left behind. */
+const sweptEndpoints = new Set<string>();
+/** Set as `window.name` on each quota tab; survives same-site navigation and identifies the tab after a restart. */
+const TAB_MARK = 'zecori-quota';
 const EVALUATE_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 20_000;
 const CLEANUP_TIMEOUT_MS = 2_000;
@@ -59,22 +73,30 @@ export async function fetchUsageThroughCdp(account: ProviderConfig, options: Cdp
   const fetchedAt = new Date().toISOString();
   const sourceUrl = usageUrl(account);
   let lease: BrowserLease | null = null;
+  let held = false;
   try {
     if (account.provider === 'codex') {
       const proxyQuota = fetchCodexFromSnapshot(account, options.snapshot);
       if (proxyQuota) return proxyQuota;
       return await fetchCodexStatus(account, fetchedAt, sourceUrl);
     }
-    if (account.provider === 'claude') return fetchClaudeFromSnapshot(account, options.snapshot);
+    if (account.provider === 'claude') return await fetchClaude(account, options);
     lease = await acquireBrowserLease(account.cdp_profile_id, 'quota');
+    held = hold(account.key);
     const session = await getSession(account, options.signal);
     throwIfCdpStartupCancelled(options.signal, cdpName(account));
 
     // This is the provider action boundary. Startup transport may retry before this
     // point; provider fetch/evaluation is deliberately dispatched exactly once.
-    const result = account.provider === 'cursor'
+    let result = account.provider === 'cursor'
       ? await evaluateCursorFetch(session)
       : await evaluateKimiFetch(session, sourceUrl);
+    // The page did not renew its token in time: reload once instead of ever sending an expired one.
+    if (result?.expiredToken) {
+      await reloadPage(session, options.signal);
+      result = await evaluateKimiFetch(session, sourceUrl);
+    }
+    if (result?.expiredToken) throw new Error('Kimi access token stayed expired after a page reload; the browser profile may be signed out of kimi.ai');
     return {
       account,
       ok: Boolean(result.ok),
@@ -97,7 +119,22 @@ export async function fetchUsageThroughCdp(account: ProviderConfig, options: Cdp
       fetchedAt,
       sourceUrl,
     };
-  } finally { await releaseBrowserLease(lease); }
+  } finally {
+    if (held) await unhold(account.key);
+    await releaseBrowserLease(lease);
+  }
+}
+
+function hold(key: string): true {
+  holds.set(key, (holds.get(key) ?? 0) + 1);
+  return true;
+}
+
+async function unhold(key: string): Promise<void> {
+  const left = (holds.get(key) ?? 1) - 1;
+  if (left > 0) { holds.set(key, left); return; }
+  holds.delete(key);
+  await closeSession(key).catch(() => undefined);
 }
 
 function normalizePayload(account: ProviderConfig, data: unknown): ClaudeUsagePayload | KimiUsagePayload | CodexUsagePayload | CursorUsagePayload | undefined {
@@ -271,11 +308,13 @@ async function establishSession(account: ProviderConfig, endpoint: string, signa
       sessionId,
       { signal, timeoutMs: budget.remaining() },
     );
-    const target = await startupSend('Target.createTarget', { url: 'about:blank', background: false });
+    await sweepOrphanTabs(session, budget);
+    const target = await startupSend('Target.createTarget', { url: 'about:blank', background: true });
     if (typeof target?.targetId !== 'string' || !target.targetId) {
       throw new Error(`${cdpName(account)}: Target.createTarget returned no targetId`);
     }
     session.targetId = target.targetId;
+    ownTargets.add(target.targetId);
     const attached = await startupSend('Target.attachToTarget', { targetId: target.targetId, flatten: true });
     if (typeof attached?.sessionId !== 'string' || !attached.sessionId) {
       throw new Error(`${cdpName(account)}: Target.attachToTarget returned no sessionId`);
@@ -284,10 +323,12 @@ async function establishSession(account: ProviderConfig, endpoint: string, signa
     await startupSend('Page.enable', {}, session.sessionId);
     await startupSend('Runtime.enable', {}, session.sessionId);
     // Kimi moved its international site to kimi.ai (2026-09); the token lives in the page's localStorage there.
-    const navUrl = account.provider === 'kimi' ? 'https://www.kimi.ai/' : 'https://cursor.com';
+    // Claude only needs a same-origin document for its usage request; robots.txt loads without the app.
+    const navUrl = account.provider === 'kimi' ? 'https://www.kimi.ai/' : account.provider === 'claude' ? CLAUDE_WEB_PAGE : 'https://cursor.com';
     await startupSend('Page.navigate', { url: navUrl }, session.sessionId);
     await waitForReady(session, budget);
     await waitForExecutionContext(session, budget);
+    await startupSend('Runtime.evaluate', { expression: `window.name = ${JSON.stringify(TAB_MARK)}`, returnByValue: true }, session.sessionId);
     return session;
   } catch (error) {
     await disposeSession(session).catch(() => undefined);
@@ -328,7 +369,10 @@ async function evaluateKimiFetch(session: CdpSession, url: string) {
       const authCookie = document.cookie
         .split('; ')
         .find((part) => part.startsWith('kimi-auth='));
-      const authValue = (await stored()) || (authCookie ? decodeURIComponent(authCookie.slice('kimi-auth='.length)) : '');
+      const token = await stored();
+      const tokenExpiry = token ? expiresAt(token) : null;
+      if (token && tokenExpiry !== null && tokenExpiry <= Date.now() + 30000) return { ok: false, status: null, expiredToken: true, data: null };
+      const authValue = token || (authCookie ? decodeURIComponent(authCookie.slice('kimi-auth='.length)) : '');
       if (!authValue) throw new Error('Missing Kimi access token: the browser profile is not signed in to kimi.ai');
       const response = await fetch(${JSON.stringify(url)}, {
         method: 'POST',
@@ -421,6 +465,38 @@ async function evaluateInPage(session: CdpSession, expression: string) {
   }, session.sessionId);
   if (evaluated.exceptionDetails) throw new Error(`${cdpName(session.account)}: ${evaluated.exceptionDetails.text ?? 'Runtime.evaluate failed'}`);
   return evaluated.result?.value;
+}
+
+async function reloadPage(session: CdpSession, signal?: AbortSignal) {
+  if (!session.sessionId) throw new Error(`${cdpName(session.account)}: no page session`);
+  const budget = new CdpStartupBudget(cdpName(session.account), signal ?? new AbortController().signal);
+  await send(session, 'Page.reload', { ignoreCache: false }, session.sessionId, { signal, timeoutMs: budget.remaining() });
+  await sleep(500);
+  await waitForReady(session, budget);
+  await waitForExecutionContext(session, budget);
+}
+
+/**
+ * Closes quota tabs a previous process left behind on this endpoint (a crash or kill before its `finally`): page
+ * targets whose `window.name` carries TAB_MARK and that this process did not create. Best effort, once per endpoint.
+ */
+async function sweepOrphanTabs(session: CdpSession, budget: CdpStartupBudget) {
+  if (sweptEndpoints.has(session.endpoint)) return;
+  sweptEndpoints.add(session.endpoint);
+  const call = (method: string, params: Record<string, unknown> = {}, sessionId?: string) => send(session, method, params, sessionId, { signal: budget.signal, timeoutMs: Math.min(CLEANUP_TIMEOUT_MS, budget.remaining()) });
+  try {
+    const listed = await call('Target.getTargets');
+    const pages = (Array.isArray(listed?.targetInfos) ? listed.targetInfos : []).filter((target: { type?: string; targetId?: string }) => target.type === 'page' && typeof target.targetId === 'string' && !ownTargets.has(target.targetId));
+    for (const page of pages) {
+      const attached = await call('Target.attachToTarget', { targetId: page.targetId, flatten: true }).catch(() => null);
+      if (typeof attached?.sessionId !== 'string') continue;
+      const named = await call('Runtime.evaluate', { expression: 'window.name', returnByValue: true }, attached.sessionId).catch(() => null);
+      await call('Target.detachFromTarget', { sessionId: attached.sessionId }).catch(() => undefined);
+      if (named?.result?.value === TAB_MARK) await call('Target.closeTarget', { targetId: page.targetId }).catch(() => undefined);
+    }
+  } catch (error) {
+    if (error instanceof CdpStartupCancelledError) throw error;
+  }
 }
 
 async function waitForReady(session: CdpSession, budget: CdpStartupBudget) {
@@ -538,8 +614,12 @@ async function disposeSession(session: CdpSession): Promise<void> {
         undefined,
         { timeoutMs: CLEANUP_TIMEOUT_MS },
       ).catch(() => undefined);
+    } else if (session.targetId) {
+      // The socket is gone but the tab is not: close it through the endpoint's HTTP interface instead.
+      await fetch(`${session.endpoint}/json/close/${encodeURIComponent(session.targetId)}`, { signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS), redirect: 'error' }).catch(() => undefined);
     }
   } finally {
+    if (session.targetId) ownTargets.delete(session.targetId);
     rejectAll(session, `${cdpName(session.account)}: CDP session closed`);
     try { session.browserWs.close(); } catch {}
   }
@@ -571,12 +651,17 @@ function extractError(data: unknown) {
 }
 
 const CLAUDE_SNAPSHOT_SOURCE = 'https://api.anthropic.com/api/oauth/usage (maestro collector, cliproxy OAuth token)';
+const CLAUDE_WEB_SOURCE = 'claude.ai usage (account browser)';
+const CLAUDE_WEB_PAGE = 'https://claude.ai/robots.txt';
+/** While the proxy's observation fails, the website is read at most this often. */
+const CLAUDE_WEB_FALLBACK_INTERVAL_MS = 5 * 60_000;
 
 /** Claude usage comes from snapshot.json, fetched on the collector host by ai-bill-collect.sh with
  *  cliproxy-refreshed OAuth tokens. The browser/CDP transport died with the example-host
  *  workstation (2026-08-20); the endpoint returns the same shape as the old claude.ai one. */
 type SnapshotQuotaEntry<T> = { ok?: boolean; status?: number | null; fetched_at?: string; error?: string; data?: T;
-  source?: string; direct?: { status?: number | null; error?: string; attempted_at?: string } };
+  source?: string; direct?: { status?: number | null; error?: string; attempted_at?: string };
+  proxy_auth?: { state?: string; message?: string; observed_at?: string } };
 
 /** A collector entry whose data came from the proxy's header-observed quota or the last success says so; its status is then null. */
 function snapshotObservationFields(entry: SnapshotQuotaEntry<unknown>): Pick<ProviderUsage, 'status' | 'source' | 'direct'> {
@@ -586,24 +671,111 @@ function snapshotObservationFields(entry: SnapshotQuotaEntry<unknown>): Pick<Pro
     error: entry.direct?.error || 'The direct quota request failed', attemptedAt: entry.direct?.attempted_at || null } };
 }
 
+/** The collector's proxy credential evidence, passed through only in its one recognised state. */
+function snapshotProxyAuth(entry: SnapshotQuotaEntry<unknown>): { proxyAuth?: ProxyAuthEvidence } {
+  const auth = entry.proxy_auth;
+  if (auth?.state !== 'expired') return {};
+  return { proxyAuth: { state: 'expired', message: typeof auth.message === 'string' && auth.message ? auth.message.slice(0, 300) : 'The proxy credential needs a re-login',
+    observedAt: typeof auth.observed_at === 'string' ? auth.observed_at : null } };
+}
+
 /** The snapshot handed in by the caller (the tenant's newest stored one); nothing else is read here. */
 const snapshotBody = (provided: unknown): unknown => provided ?? {};
 
-function fetchClaudeFromSnapshot(account: ProviderConfig, provided?: unknown): ProviderUsage {
+export function fetchClaudeFromSnapshot(account: ProviderConfig, provided?: unknown): ProviderUsage {
   const fetchedAt = ""; // Missing observation time is unknown, never a fresh fetch.
   const sourceUrl = CLAUDE_SNAPSHOT_SOURCE;
   try {
     const snapshot = snapshotBody(provided) as { claude_usage?: Record<string, SnapshotQuotaEntry<ClaudeUsagePayload>> };
-    const entry = snapshot.claude_usage?.[account.email ?? ''];
+    const entry = snapshot.claude_usage?.[account.quota_snapshot_key || account.email || ''];
     if (!entry) return { account, ok: false, error: 'no claude_usage entry in snapshot', fetchedAt, sourceUrl };
     if (!entry.ok || !entry.data) {
-      return { account, ok: false, status: typeof entry.status === 'number' ? entry.status : undefined, error: entry.error ?? 'collector fetch failed', fetchedAt: entry.fetched_at ?? fetchedAt, sourceUrl };
+      return { account, ok: false, status: typeof entry.status === 'number' ? entry.status : undefined, error: entry.error ?? 'collector fetch failed', fetchedAt: entry.fetched_at ?? fetchedAt, sourceUrl, ...snapshotProxyAuth(entry) };
     }
-    return { account, ok: true, ...snapshotObservationFields(entry), data: entry.data, fetchedAt: entry.fetched_at ?? fetchedAt, sourceUrl };
+    return { account, ok: true, ...snapshotObservationFields(entry), data: entry.data, fetchedAt: entry.fetched_at ?? fetchedAt, sourceUrl, ...snapshotProxyAuth(entry) };
   } catch (error) {
     return { account, ok: false, error: error instanceof Error ? error.message : String(error), fetchedAt, sourceUrl };
   }
 }
+
+const webReads = new Map<string, { result: ProviderUsage; at: number }>();
+const age = (result: ProviderUsage, now: number) => now - (Date.parse(result.fetchedAt) || 0);
+const isDirect = (result: ProviderUsage) => result.source === undefined || result.source === 'direct';
+
+/**
+ * The proxy's observation (the collector snapshot) is the primary Claude source. With `claude_web_quota` the signed-in
+ * claude.ai session is the second one: read when the primary has no current answer, and every CHECK_INTERVAL for the
+ * consistency checker. Whichever usable observation is newest is shown; how the proxy failed and its credential state
+ * stay attached, so a website number never hides a dead proxy credential.
+ */
+export async function fetchClaude(account: ProviderConfig, options: CdpFetchOptions, readWeb = fetchClaudeWebUsage, now = Date.now()): Promise<ProviderUsage> {
+  const proxy = fetchClaudeFromSnapshot(account, options.snapshot);
+  if (!account.claude_web_quota) return proxy;
+  const scope = options.scope ?? null;
+  const proxyCurrent = proxy.ok && isDirect(proxy) && age(proxy, now) <= FRESH_MS && !proxy.proxyAuth;
+  const cached = webReads.get(account.key);
+  const due = checkDue(scope, account.key, now);
+  let web = cached?.result;
+  if (due || (!proxyCurrent && (!cached || now - cached.at >= CLAUDE_WEB_FALLBACK_INTERVAL_MS))) {
+    web = await readWeb(account, options.signal);
+    webReads.set(account.key, { result: web, at: now });
+    recordCheck(scope, account.key, account.provider, compareReadings(proxyClaudeReading(proxy, now), webClaudeReading(web)), now);
+  }
+  if (proxyCurrent || !web?.ok || age(web, now) > CLAUDE_LAST_KNOWN_MS) return proxy;
+  if (proxy.ok && age(proxy, now) <= age(web, now)) return proxy;
+  const failure = proxy.ok ? proxy.direct : undefined;
+  return { ...web, source: 'web',
+    direct: { status: failure ? failure.status : proxy.status ?? null, error: failure ? failure.error : proxy.proxyAuth ? 'Proxy OAuth expired — re-login proxy' : proxy.error ?? 'The proxy quota observation is not current',
+      attemptedAt: failure ? failure.attemptedAt : proxy.fetchedAt || null },
+    ...(proxy.proxyAuth ? { proxyAuth: proxy.proxyAuth } : {}) };
+}
+
+/** claude.ai's own usage answer for the organisation, read in a background tab of the account's profile that is closed afterwards. */
+export async function fetchClaudeWebUsage(account: ProviderConfig, signal?: AbortSignal): Promise<ProviderUsage> {
+  const fetchedAt = new Date().toISOString();
+  const sourceUrl = CLAUDE_WEB_SOURCE;
+  let lease: BrowserLease | null = null;
+  let held = false;
+  try {
+    if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(account.claude_org_id ?? '')) throw new Error(`${cdpName(account)}: claude_org_id is required for claude_web_quota`);
+    lease = await acquireBrowserLease(account.cdp_profile_id, 'quota');
+    held = hold(account.key);
+    const session = await getSession(account, signal);
+    throwIfCdpStartupCancelled(signal, cdpName(account));
+    const result = await evaluateClaudeFetch(session, new URL(usageUrl(account)).pathname);
+    const signedOut = result?.status === 401 || result?.status === 403;
+    const data = result?.ok ? result.data as ClaudeUsagePayload : undefined;
+    const valid = Boolean(data && (data.five_hour || data.seven_day || data.limits?.length));
+    return { account, ok: valid, status: result?.status, data: valid ? data : undefined,
+      error: valid ? undefined : signedOut ? 'claude.ai is signed out in the account browser' : `claude.ai usage request failed (HTTP ${result?.status ?? 'unknown'})`,
+      fetchedAt, sourceUrl, source: 'web' };
+  } catch (error) {
+    if (!(error instanceof CdpStartupCancelledError)) await closeSession(account.key).catch(() => undefined);
+    return { account, ok: false, error: error instanceof Error ? error.message : String(error), fetchedAt, sourceUrl, source: 'web' };
+  } finally {
+    if (held) await unhold(account.key);
+    await releaseBrowserLease(lease);
+  }
+}
+
+/** Same-origin request with the page's own session; only the usage numbers come back over CDP. */
+async function evaluateClaudeFetch(session: CdpSession, path: string) {
+  return evaluateInPage(session, `
+    (async () => {
+      if (location.origin !== 'https://claude.ai') return { ok: false, status: null, data: null };
+      const response = await fetch(${JSON.stringify(path)}, { credentials: 'include', cache: 'no-store', redirect: 'error', headers: { accept: 'application/json' } });
+      let data = null;
+      try { data = response.ok ? await response.json() : null; } catch (_) {}
+      return { ok: response.ok, status: response.status, data };
+    })()
+  `);
+}
+
+/** Test hook: forget website reads. */
+export function resetClaudeWebReadsForTests(): void { webReads.clear(); }
+
+/** Test hook: forget which endpoints were swept and which tabs this process created. */
+export function resetCdpHousekeepingForTests(): void { sweptEndpoints.clear(); ownTargets.clear(); }
 
 /** Prefer proxy-owned quota observations when a matching or explicitly bound source exists.
  * An error observation must not trigger a second credential refresh owner. */

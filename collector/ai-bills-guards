@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Report the app's guard verdicts to Uptime Kuma push monitors.
+
+The app computes each guard (stale snapshot, cross-source consistency, model probe) from
+what it already holds; this process only relays them, so the monitor goes red without
+anyone opening the dashboard. A guards endpoint that cannot be read is itself a failure:
+every configured monitor is pushed `down`, never left silent until Kuma's own timeout.
+Push URLs embed the monitor token and the guards endpoint may need a bearer, so neither
+is ever printed."""
+import json
+import os
+import sys
+import urllib.parse
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+GUARDS = (('stale', 'AI_BILLS_KUMA_PUSH_STALE'), ('consistency', 'AI_BILLS_KUMA_PUSH_CONSISTENCY'),
+          ('probe', 'AI_BILLS_KUMA_PUSH_PROBE'))
+MESSAGE_LIMIT = 200
+
+
+def load_env_file(path, environ):
+    """KEY=VALUE lines without shell evaluation; values already in the environment win."""
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        name, value = line.removeprefix('export ').split('=', 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
+            value = value[1:-1]
+        environ.setdefault(name.strip(), value)
+
+
+def fetch_guards(url, token, open_url):
+    headers = {'Accept': 'application/json', 'User-Agent': 'ai-bills-guards', **({'Authorization': 'Bearer ' + token} if token else {})}
+    with open_url(Request(url, headers=headers), timeout=20) as response:
+        data = json.load(response)
+    if not isinstance(data, dict) or not isinstance(data.get('guards'), dict):
+        raise ValueError('unexpected response shape')
+    return data['guards']
+
+
+def verdict(guards, name):
+    guard = guards.get(name)
+    if not isinstance(guard, dict):
+        return 'down', 'guard missing'
+    status = guard.get('status')
+    if status not in ('up', 'down'):
+        return 'down', 'guard status invalid'
+    return status, str(guard.get('message') or status)
+
+
+def push_url(url, status, message):
+    """The push URL with `status` and `msg` set; its other query parameters (and token) are kept.
+    A copied Kuma URL already carries `status=up&msg=OK&ping=`: those are replaced, not duplicated."""
+    parts = urllib.parse.urlsplit(url)
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True) if k not in ('status', 'msg', 'ping')]
+    query += [('status', status), ('msg', ' '.join(message.split())[:MESSAGE_LIMIT])]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+
+
+def reason(error):
+    return 'HTTP %s' % error.code if isinstance(error, HTTPError) else type(error).__name__
+
+
+def run(environ, open_url=urlopen, log=lambda line: print(line, file=sys.stderr)):
+    url, token = environ.get('AI_BILLS_GUARDS_URL', '').strip(), environ.get('AI_BILLS_GUARDS_TOKEN', '').strip()
+    targets = [(name, environ[key].strip()) for name, key in GUARDS if environ.get(key, '').strip()]
+    guards, failure = None, None
+    try:
+        if urllib.parse.urlsplit(url).scheme not in ('http', 'https'):
+            raise ValueError('AI_BILLS_GUARDS_URL is not configured')
+        guards = fetch_guards(url, token, open_url)
+    except Exception as error:
+        failure = 'guards endpoint unavailable: %s' % (str(error) if isinstance(error, ValueError) else reason(error))
+    pushed = {}
+    for name, target in targets:
+        status, message = ('down', failure) if failure else verdict(guards, name)
+        try:
+            open_url(Request(push_url(target, status, message), headers={'User-Agent': 'ai-bills-guards'}), timeout=20).close()
+            pushed[name] = status
+        except Exception as error:
+            log('ai-bills-guards: push for %s failed (%s)' % (name, reason(error)))
+            pushed[name] = 'push_failed'
+    return pushed
+
+
+if __name__ == '__main__':
+    if os.environ.get('AI_BILLS_GUARDS_ENV_FILE'):
+        load_env_file(os.environ['AI_BILLS_GUARDS_ENV_FILE'], os.environ)
+    print(json.dumps(run(os.environ)))

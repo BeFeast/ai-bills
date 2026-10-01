@@ -9,8 +9,8 @@ export interface AccountBrowserConnection {
 
 /** Reuse the existing bounded, redirect-rejecting CDP startup transport. Unlike
  * usage collection, closing this socket never closes or navigates a browser tab. */
-export async function connectAccountBrowser(endpoint: string): Promise<AccountBrowserConnection> {
-  const signal = AbortSignal.timeout(12_000);
+export async function connectAccountBrowser(endpoint: string, deadlineMs = 12_000): Promise<AccountBrowserConnection> {
+  const signal = AbortSignal.timeout(deadlineMs);
   const ws = await connectCdpBrowser(endpoint, new CdpStartupBudget('Account browser', signal));
   let nextId = 1;
   const pending = new Map<number, { method: string; reject: (error: Error) => void; resolve: (value: Record<string, any>) => void }>();

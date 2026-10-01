@@ -32,8 +32,20 @@ describe('collector-observed sources', () => {
   it('keeps ageing and failure visible', () => {
     write({ ok: true, fetched_at: at(70) }, { ok: false, fetched_at: at(1), error: 'collector fetch failed' });
     const health = check(now);
-    expect(health.sources.map(row => row.status)).toEqual(['stale', 'error']);
+    // Claude keeps its last good numbers for 5 h; Codex has no such window.
+    expect(health.sources.map(row => row.status)).toEqual(['fallback', 'error']);
     expect(health.collection).toBe('degraded');
+    write({ ok: true, fetched_at: at(5 * 60 + 1) }, { ok: true, fetched_at: at(1) });
+    expect(check(now).sources.map(row => row.status)).toEqual(['stale', 'fresh']);
+  });
+
+  it('is not degraded by a Claude 429 while a fallback under 5 h is shown', () => {
+    write({ ok: true, fetched_at: at(40), source: 'retained' }, { ok: true, fetched_at: at(1) });
+    const health = check(now);
+    expect(health.collection).toBe('fresh');
+    expect(health.sources[0]).toMatchObject({ status: 'fallback', fallback: { source: 'retained' }, maxAgeSeconds: 5 * 3600 });
+    write({ ok: true, fetched_at: at(2), source: 'proxy_headers' }, { ok: true, fetched_at: at(1) });
+    expect(check(now).sources[0]).toMatchObject({ status: 'fallback', fallback: { source: 'proxy_headers' } });
   });
 
   it('prefers whichever observation is newer and survives a missing snapshot', () => {
@@ -42,9 +54,9 @@ describe('collector-observed sources', () => {
     expect(check(now).sources[0]).toMatchObject({ status: 'fresh', observedAt: at(2) });
     // The in-process reader is older than the collector's own observation: the collector's wins.
     rememberUsageObservations([{ account: { key: 'claude-work', provider: 'claude', label: 'Work', email: 'work@example.test' }, ok: true, fetchedAt: at(90), sourceUrl: 'snapshot' }]);
-    expect(check(now).sources[0]).toMatchObject({ status: 'stale', observedAt: at(30) });
+    expect(check(now).sources[0]).toMatchObject({ status: 'fallback', observedAt: at(30) });
     snapshot = {};
-    expect(check(now).sources.map(row => row.status)).toEqual(['stale', 'missing']);
+    expect(check(now).sources.map(row => row.status)).toEqual(['fallback', 'missing']);
   });
 
   it('never publishes an address or a payload', () => {

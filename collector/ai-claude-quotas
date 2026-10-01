@@ -4,23 +4,37 @@
 The direct usage endpoint is the primary source. When it rejects or fails the request after
 retries, the observation falls back to the newer of: the quota the proxy read from response
 headers of the account's own traffic (no extra provider request), and the last successful
-observation, kept for at most RETAIN_SECONDS. A fallback entry keeps `ok` and `data` so
+observation, each usable for at most STALE_SECONDS. A fallback entry keeps `ok` and `data` so
 consumers show a number with its age instead of forgetting it, and records under `direct`
-how the direct request ended so nothing pretends the check succeeded."""
+how the direct request ended so nothing pretends the check succeeded.
+
+A 429 is not retried: the provider asked us to back off, and retrying within the same run only
+extends the block. Its `Retry-After` becomes `direct.retry_after_until`, and later runs skip the
+direct request until then. The proxy's own view of the OAuth credential (from its management
+API, passed alongside the header quota) marks entries whose credential needs a re-login."""
 import hashlib
 import json
 import os
 import random
+import re
 import time
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 # Uniform jitter inside each band: a second poller on the same account must not collide again on retry.
 RETRY_DELAYS = ((3, 6), (8, 14))
-RETRYABLE = {429, 500, 502, 503, 504}
-RETAIN_SECONDS = 6 * 3600
+RETRIED = {500, 502, 503, 504}
+# Transient outcomes may fall back to an older number; a 429 is transient but never retried in-run.
+TRANSIENT = RETRIED | {429}
+# One 5-hour window: an observation older than that may describe a window that has already reset.
+STALE_SECONDS = 5 * 3600
+DEFAULT_BACKOFF = timedelta(minutes=15)
+# The proxy reports a dead refresh token in its status message, in a few spellings.
+EXPIRED_AUTH = re.compile(r'invalid[ _-]?grant|authentication[ _-]?error|re-?authenticat', re.IGNORECASE)
+EXPIRED_ERROR = 'Proxy OAuth expired — re-login proxy'
 
 
 def parse_time(value):
@@ -31,24 +45,51 @@ def parse_time(value):
         return None
 
 
+def retry_after_until(value, now):
+    """Deadline from a Retry-After header (delta seconds or HTTP-date), DEFAULT_BACKOFF when absent
+    or unparseable, capped at STALE_SECONDS so a bogus header cannot silence the check for good."""
+    deadline = None
+    if value is not None:
+        text = str(value).strip()
+        try:
+            deadline = now + timedelta(seconds=max(0, int(text)))
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(text)
+                deadline = parsed if parsed.tzinfo else None
+            except (TypeError, ValueError, IndexError):
+                deadline = None
+    if deadline is None:
+        deadline = now + DEFAULT_BACKOFF
+    return min(deadline, now + timedelta(seconds=STALE_SECONDS)).astimezone(timezone.utc)
+
+
+def header(headers, name):
+    try:
+        return next((v for k, v in (headers or {}).items() if str(k).lower() == name), None)
+    except AttributeError:
+        return None
+
+
 def request_quota(request, open_url, sleep, validate, error_text):
-    """One direct request with bounded retries. Returns (ok, status, data_or_error)."""
+    """One direct request with bounded retries. Returns (ok, status, data_or_error, retry_after):
+    retry_after is the raw Retry-After header of a 429, otherwise None."""
     for delay in RETRY_DELAYS + (None,):
         try:
             with open_url(request, timeout=15) as response:
                 data = json.load(response)
                 validate(data)
-                return True, 200, data
+                return True, 200, data, None
         except HTTPError as error:
-            code = error.code
+            code, retry_after = error.code, header(error.headers, 'retry-after')
             error.close()
-            if code not in RETRYABLE or delay is None:
-                return False, code, 'Proxy quota request rejected (HTTP %s)' % code
+            if code not in RETRIED or delay is None:
+                return False, code, 'Proxy quota request rejected (HTTP %s)' % code, retry_after if code == 429 else None
         except ValueError:
-            return False, None, error_text
+            return False, None, error_text, None
         except Exception:
             if delay is None:
-                return False, None, error_text
+                return False, None, error_text, None
         sleep(random.uniform(*delay))
 
 
@@ -69,8 +110,8 @@ def proxy_quota_payload(signals):
     return windows or None
 
 
-def load_proxy_quota(path, kind):
-    """{email: {observed_at, signals}} for credentials of one provider type; ambiguous emails are dropped."""
+def load_proxy_rows(path, kind):
+    """{email: row} of the wrapper's auth-file rows for one provider type; ambiguous emails are dropped."""
     if not path:
         return {}
     try:
@@ -80,8 +121,24 @@ def load_proxy_quota(path, kind):
     seen = {}
     for row in rows if isinstance(rows, list) else []:
         if isinstance(row, dict) and row.get('type') == kind and row.get('email'):
-            seen.setdefault(row['email'], []).append(row.get('quota'))
-    return {email: quotas[0] for email, quotas in seen.items() if len(quotas) == 1 and isinstance(quotas[0], dict)}
+            seen.setdefault(row['email'], []).append(row)
+    return {email: found[0] for email, found in seen.items() if len(found) == 1}
+
+
+def load_proxy_quota(path, kind):
+    """{email: {observed_at, signals}} for credentials of one provider type; ambiguous emails are dropped."""
+    return {email: row['quota'] for email, row in load_proxy_rows(path, kind).items() if isinstance(row.get('quota'), dict)}
+
+
+def load_proxy_auth(path, kind):
+    """{email: {status, status_message, unavailable}}: the proxy's own view of each OAuth credential."""
+    return {email: {'status': row.get('status'), 'status_message': row.get('status_message'), 'unavailable': row.get('unavailable')}
+            for email, row in load_proxy_rows(path, kind).items()}
+
+
+def auth_expired(auth):
+    message = auth.get('status_message') if isinstance(auth, dict) else None
+    return bool(message) and bool(EXPIRED_AUTH.search(str(message)))
 
 
 def load_previous(path, bucket):
@@ -101,7 +158,7 @@ def carried_scoped_limits(prior, now):
     Rate-limit headers only carry the account-wide 5-hour and 7-day windows, so a header-based
     fallback would otherwise drop the per-model allowance every time the direct request is refused.
     A carried limit keeps its original `observed_at` across consecutive fallbacks and is dropped once
-    its window has reset or it is older than RETAIN_SECONDS."""
+    its window has reset or it is older than STALE_SECONDS."""
     if not isinstance(prior, dict) or not prior.get('ok') or not isinstance(prior.get('data'), dict):
         return []
     # A limit without its own stamp comes straight from the observation that holds it: a `direct` entry,
@@ -114,7 +171,7 @@ def carried_scoped_limits(prior, now):
             continue
         observed = parse_time(limit.get('observed_at')) or fallback_time
         resets = parse_time(limit.get('resets_at'))
-        if not observed or not 0 <= (now - observed).total_seconds() <= RETAIN_SECONDS:
+        if not observed or not 0 <= (now - observed).total_seconds() <= STALE_SECONDS:
             continue
         if resets and resets <= now:
             continue
@@ -128,20 +185,21 @@ def fallback(entry, identity, email, previous, proxy_quota, now, to_payload, car
     A definite rejection (401/403 and other non-retryable statuses) means the credential itself is
     the problem; no fallback may hide that behind a number, so the entry stays failed. When the
     proxy headers win and `carry` is given, what they cannot express is carried over from the
-    previous observation by `carry(prior, now)`, stamped with its own observation time."""
-    if entry.get('status') is not None and entry['status'] not in RETRYABLE:
+    previous observation by `carry(prior, now)`, stamped with its own observation time. Fields the
+    entry already holds under `direct` (the 429 deadline, the original attempt time) survive."""
+    if entry.get('status') is not None and entry['status'] not in TRANSIENT:
         return
-    direct = {'status': entry.get('status'), 'error': entry.get('error'), 'attempted_at': entry['fetched_at']}
+    direct = {'status': entry.get('status'), 'error': entry.get('error'), 'attempted_at': entry['fetched_at'], **(entry.get('direct') or {})}
     candidates = []
     row = proxy_quota.get(email) if email else None
     if isinstance(row, dict):
         observed, data = parse_time(row.get('observed_at')), to_payload(row.get('signals'))
-        if observed and data and observed <= now:
+        if observed and data and 0 <= (now - observed).total_seconds() <= STALE_SECONDS:
             candidates.append((observed, 'proxy_headers', data))
     prior = previous.get(identity)
     if isinstance(prior, dict) and prior.get('ok') and isinstance(prior.get('data'), dict):
         observed = parse_time(prior.get('fetched_at'))
-        if observed and 0 <= (now - observed).total_seconds() <= RETAIN_SECONDS:
+        if observed and 0 <= (now - observed).total_seconds() <= STALE_SECONDS:
             candidates.append((observed, 'retained', prior['data']))
     if not candidates:
         return
@@ -159,10 +217,29 @@ def validate(data):
         raise ValueError('Missing quota payload')
 
 
-def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=time.sleep, now=None):
+def pending_backoff(prior, now):
+    """The previous run's 429 deadline for this identity while it is still in the future."""
+    direct = prior.get('direct') if isinstance(prior, dict) else None
+    deadline = parse_time(direct.get('retry_after_until')) if isinstance(direct, dict) else None
+    return (deadline, direct) if deadline and deadline > now else (None, None)
+
+
+def mark_proxy_auth(entry, auth, attempted):
+    """Attach the proxy's verdict on the OAuth credential: expired when its status message says so
+    or the provider rejected the token outright. A healthy credential adds nothing."""
+    rejected = not entry['ok'] and entry.get('status') in (401, 403)
+    if not auth_expired(auth) and not rejected:
+        return
+    message = str(auth['status_message'])[:300] if auth_expired(auth) else 'Provider rejected the proxy credential (HTTP %s)' % entry['status']
+    entry['proxy_auth'] = {'state': 'expired', 'message': message, 'observed_at': attempted.isoformat()}
+    if not entry['ok']:
+        entry['error'] = EXPIRED_ERROR
+
+
+def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=time.sleep, now=None, proxy_auth=None):
     if not Path(auth_dir).is_dir():
         raise FileNotFoundError('Proxy auth inventory is unavailable')
-    previous, proxy_quota = previous or {}, proxy_quota or {}
+    previous, proxy_quota, proxy_auth = previous or {}, proxy_quota or {}, proxy_auth or {}
     result, emails = {}, {}
     for path in sorted(Path(auth_dir).glob('*.json')):
         try:
@@ -175,19 +252,31 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
         attempted = now or datetime.now(timezone.utc)
         entry = {'ok': False, 'fetched_at': attempted.isoformat(), 'status': None}
         token, email = auth.get('access_token'), auth.get('email')
+        deadline, backoff = pending_backoff(previous.get(identity), attempted)
         if auth.get('disabled'):
             entry['error'] = 'Proxy account is disabled; quota was not queried'
         elif not token:
             entry['error'] = 'Proxy quota credentials are incomplete'
+        elif deadline:
+            # Still inside the provider's back-off: no request, the number comes from the fallback.
+            error = 'Rate limited by the provider; next attempt after %s' % deadline.astimezone(timezone.utc).strftime('%H:%M UTC')
+            entry.update(status=429, error=error, direct={'status': 429, 'error': error, 'attempted_at': backoff.get('attempted_at') or entry['fetched_at'],
+                                                            'retry_after_until': deadline.isoformat()})
+            fallback(entry, identity, email, previous, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
         else:
             request = Request('https://api.anthropic.com/api/oauth/usage', headers={
                 'Authorization': 'Bearer ' + token, 'anthropic-beta': 'oauth-2025-04-20', 'Accept': 'application/json'})
-            ok, status, payload = request_quota(request, open_url, sleep, validate, 'Proxy quota request failed; credentials were not refreshed')
+            ok, status, payload, retry_after = request_quota(request, open_url, sleep, validate, 'Proxy quota request failed; credentials were not refreshed')
             if ok:
                 entry.update(ok=True, status=status, data=payload, source='direct')
             else:
                 entry.update(status=status, error=payload)
+                if status == 429:
+                    entry['direct'] = {'status': 429, 'error': payload, 'attempted_at': entry['fetched_at'],
+                                       'retry_after_until': retry_after_until(retry_after, attempted).isoformat()}
                 fallback(entry, identity, email, previous, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
+        if not auth.get('disabled'):
+            mark_proxy_auth(entry, proxy_auth.get(email) if email else None, attempted)
         result[identity] = entry
         if email:
             emails.setdefault(email, []).append(entry)
@@ -200,4 +289,5 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
 if __name__ == '__main__':
     print(json.dumps(collect(os.environ['AI_BILLS_CLIPROXY_AUTH_DIR'],
                              previous=load_previous(os.environ.get('AI_BILLS_PREVIOUS_SNAPSHOT'), 'claude_usage'),
-                             proxy_quota=load_proxy_quota(os.environ.get('AI_BILLS_PROXY_QUOTA_FILE'), 'claude'))))
+                             proxy_quota=load_proxy_quota(os.environ.get('AI_BILLS_PROXY_QUOTA_FILE'), 'claude'),
+                             proxy_auth=load_proxy_auth(os.environ.get('AI_BILLS_PROXY_QUOTA_FILE'), 'claude'))))

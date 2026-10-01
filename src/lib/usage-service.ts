@@ -36,7 +36,7 @@ export async function refreshUsage(scope?: Scope): Promise<UsageCache> {
     }));
     slot.cache = { results, generatedAt: new Date().toISOString() };
     const update = async (account: typeof accounts[number], index: number) => {
-      results[index] = { ...await fetchUsageThroughCdp(account, { snapshot: snapshot.body }),
+      results[index] = { ...await fetchUsageThroughCdp(account, { snapshot: snapshot.body, scope: scope?.id ?? null }),
         account: publicUsageAccount(account, config.server.codex_proxy_management_url) };
       rememberUsageObservations([...results]);
     };

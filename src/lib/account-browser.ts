@@ -98,21 +98,46 @@ export function identityExpression(provider: AccountConfig['provider']): string 
   })()`;
 }
 
-async function identity(connection: AccountBrowserConnection, targets: BrowserTarget[], account: AccountConfig): Promise<{ status: AccountBrowserStatus; verifiedEmail?: string }> {
-  const expression = identityExpression(account.provider);
-  if (!expression) return { status: 'identity_unknown' };
-  const origin = account.provider === 'claude' ? 'https://claude.ai' : account.provider === 'cursor' ? 'https://cursor.com' : 'https://chatgpt.com';
-  const pages = targets.filter(target => { try { return target.type === 'page' && new URL(target.url).origin === origin; } catch { return false; } });
-  if (!pages.length) return { status: 'login_required' };
-  const attached = await connection.send('Target.attachToTarget', { targetId: pages[0].targetId, flatten: true });
+type Identity = { status: AccountBrowserStatus; verifiedEmail?: string };
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** How long a probe tab may take to reach the provider's origin. */
+const PROBE_TAB_WAIT_MS = 6_000;
+
+async function probeTab(connection: AccountBrowserConnection, targetId: string, expression: string, account: AccountConfig, loading: boolean): Promise<Identity> {
+  const attached = await connection.send('Target.attachToTarget', { targetId, flatten: true });
   if (typeof attached.sessionId !== 'string') return { status: 'identity_unknown' };
   try {
-    const result = await connection.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, timeout: 2500 }, attached.sessionId);
-    const value = result.exceptionDetails ? null : result.result?.value;
+    const deadline = Date.now() + (loading ? PROBE_TAB_WAIT_MS : 0);
+    let value: { state?: string; email?: unknown } | null | undefined;
+    for (;;) {
+      const result = await connection.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, timeout: 2500 }, attached.sessionId);
+      value = result.exceptionDetails ? null : result.result?.value;
+      // A freshly opened tab answers `unknown` until it has reached the provider's origin.
+      if (value?.state !== 'unknown' || Date.now() >= deadline) break;
+      await sleep(400);
+    }
     if (value?.state === 'login_required') return { status: 'login_required' };
     if (value?.state !== 'authenticated' || !email(value.email)) return { status: 'identity_unknown' };
     return { status: normalizeEmail(value.email) === normalizeEmail(account.email) ? 'ready' : 'mismatch', verifiedEmail: value.email };
   } finally { await connection.send('Target.detachFromTarget', { sessionId: attached.sessionId }).catch(() => undefined); }
+}
+
+/** `login_required` needs auth evidence: the provider answered 401/403 (or reported no user). A shared resident
+ * profile without an open tab of this provider is normal, so the probe opens a background tab and closes it again. */
+async function identity(connection: AccountBrowserConnection, targets: BrowserTarget[], account: AccountConfig): Promise<Identity> {
+  const expression = identityExpression(account.provider);
+  if (!expression) return { status: 'identity_unknown' };
+  const origin = account.provider === 'claude' ? 'https://claude.ai' : account.provider === 'cursor' ? 'https://cursor.com' : 'https://chatgpt.com';
+  const pages = targets.filter(target => { try { return target.type === 'page' && new URL(target.url).origin === origin; } catch { return false; } });
+  if (pages.length) return probeTab(connection, pages[0].targetId, expression, account, false);
+  let created: string | undefined;
+  try {
+    const result = await connection.send('Target.createTarget', { url: `${origin}/robots.txt`, background: true });
+    if (typeof result.targetId !== 'string') return { status: 'identity_unknown' };
+    created = result.targetId;
+    return await probeTab(connection, created, expression, account, true);
+  } catch { return { status: 'identity_unknown' }; }
+  finally { if (created) await connection.send('Target.closeTarget', { targetId: created }).catch(() => undefined); }
 }
 
 async function openTab(connection: AccountBrowserConnection, binding: AccountBrowserConfig, account: AccountConfig, targets: BrowserTarget[], action: 'login' | 'manage') {
@@ -126,7 +151,8 @@ async function openTab(connection: AccountBrowserConnection, binding: AccountBro
     if (action === 'login') return true;
     try { return safeUrl(target.url, providerHosts[account.provider]).href === new URL(url).href; } catch { return false; }
   }) : undefined;
-  let id = target?.targetId;
+  // After a restart the owned-tab map is empty: focus a tab already showing this page instead of opening another one.
+  let id = target?.targetId ?? (known ? undefined : targets.find(candidate => candidate.type === 'page' && candidate.url === url)?.targetId);
   if (!id) {
     const created = await connection.send('Target.createTarget', { url, background: false });
     if (typeof created.targetId !== 'string') throw new Error('Browser did not create a tab');
