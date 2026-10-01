@@ -27,6 +27,9 @@ export type AccountConfig = {
   claude_org_id?: string;
   cdp_http?: string;
   cdp_profile_id?: string;
+  /** Claude only: also read quota from the signed-in claude.ai session in the `cdp_http` profile, as the fallback
+   * when the proxy's observation fails and as the second source of the consistency checker. Needs `claude_org_id`. */
+  claude_web_quota?: boolean;
   codex_home?: string;
   quota_snapshot_key?: string;
 };
@@ -53,6 +56,9 @@ export type AppConfig = {
   accounting?: AccountingConfig;
   subscriptions?: SubscriptionConfig[];
   account_browsers?: AccountBrowserConfig[];
+  /** The proxy's management API, for the "Reconnect proxy" OAuth flow. Both keys are secret references;
+   * `client_key` is a proxy client key, needed where the proxy authenticates management writes as a client. */
+  proxy_management?: { base_url: string; management_key: SecretRef; client_key?: SecretRef };
 };
 
 const DEFAULTS: AppConfig = {
@@ -123,7 +129,8 @@ export function loadConfig(path = configPath()): AppConfig {
   const accounting = raw.accounting as AccountingConfig | undefined;
   const subscriptions = Array.isArray(raw.subscriptions) ? raw.subscriptions as SubscriptionConfig[] : [];
   const account_browsers = Array.isArray(raw.account_browsers) ? raw.account_browsers as AccountBrowserConfig[] : [];
-  cached = { server, infisical, billing, secrets, accounts, accounting, subscriptions, account_browsers };
+  const proxy_management = raw.proxy_management && typeof raw.proxy_management === 'object' ? raw.proxy_management as AppConfig['proxy_management'] : undefined;
+  cached = { server, infisical, billing, secrets, accounts, accounting, subscriptions, account_browsers, ...(proxy_management ? { proxy_management } : {}) };
   return cached;
 }
 

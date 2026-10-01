@@ -11,6 +11,8 @@ import { UsageCard } from './UsageCard';
 import { BillingSection } from './BillingSection';
 import { AccountOverview } from './AccountOverview';
 import { AlertsSection } from './AlertsSection';
+import { QuotaGuards } from './QuotaGuards';
+import type { GuardsReport } from '@/lib/guards';
 import { UserButton } from '@clerk/nextjs';
 import type { AlertsReport } from '@/lib/alerts';
 import { RoutingSection } from './RoutingSection';
@@ -59,6 +61,7 @@ export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
   const [overview, setOverview] = useState<ProductOverview | null>(null);
   const [overviewError, setOverviewError] = useState('');
   const [alerts, setAlerts] = useState<AlertsReport | null>(null);
+  const [guards, setGuards] = useState<GuardsReport | null>(null);
   const [registry, setRegistry] = useState<AccountRegistry | null>(null);
   const [registryError, setRegistryError] = useState('');
   const [usage, setUsage] = useState<UsageResponseBody | null>(null);
@@ -98,6 +101,7 @@ export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
       // Start billing immediately, independently of provider quota latency.
       try {
         fetch('/api/alerts', { cache: 'no-store' }).then(async r => { if (r.ok) setAlerts((await r.json()) as AlertsReport); }).catch(() => { /* alerts stay as last seen */ });
+        fetch('/api/guards', { cache: 'no-store' }).then(async r => { if (r.ok) setGuards((await r.json()) as GuardsReport); }).catch(() => { /* guards stay as last seen */ });
         const bres = await fetch('/api/billing', { cache: 'no-store' });
         setBilling((await bres.json()) as BillingSnapshot);
       } catch (error) {
@@ -165,6 +169,9 @@ export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
       count: id === 'subscriptions' ? activeSubscriptions : id === 'accounts' ? usage?.accounts.length : id === 'alerts' && alerts?.active.length ? alerts.active.length : undefined,
     }));
   const attention = status.tone === 'warn' || status.tone === 'danger';
+  // A dead proxy credential has one fix, and it is not the account browser: name it.
+  const proxyExpired = usage?.accounts.filter((result) => result.proxyAuth?.state === 'expired') ?? [];
+  const guardsDown = guards ? (Object.entries(guards.guards) as [string, { status: string; message: string }][]).filter(([, guard]) => guard.status === 'down') : [];
 
   return (
     <AppShell
@@ -190,11 +197,13 @@ export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
       {overview?.links?.proxyManagementUrl && view === 'accounts' ? <div className="toolbar"><ButtonLink size="sm" href={overview.links.proxyManagementUrl} target="_blank" rel="noreferrer">CLIProxyAPI ↗</ButtonLink></div> : null}
 
       {view === 'overview' && alerts?.active.length ? <Notice tone={alerts.active.some(c => c.state === 'bad') ? 'bad' : 'warn'} role="status">{alerts.active.length} alert{alerts.active.length === 1 ? '' : 's'} active: {alerts.active.slice(0, 3).map(c => c.title).join(' · ')}{alerts.active.length > 3 ? ' · …' : ''} <button type="button" className="text-link" onClick={() => setView('alerts')}>Open alerts →</button></Notice> : null}
-      {view === 'alerts' ? <AlertsSection report={alerts} now={now} tz={tz} /> : null}
+      {view === 'overview' && guardsDown.length ? <Notice tone="bad" role="status">Quota guard down: {guardsDown.map(([, guard]) => guard.message).join(' · ')} <button type="button" className="text-link" onClick={() => setView('alerts')}>Open alerts →</button></Notice> : null}
+      {view === 'alerts' ? <><QuotaGuards report={guards} tz={tz} /><AlertsSection report={alerts} now={now} tz={tz} /></> : null}
       {view !== 'accounts' && view !== 'alerts' ? <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} /> : null}
 
       {view === 'accounts' ? <>
-        {attention ? <Notice tone="warn" role="status">Some quota connections need attention. Use the controls below to reconnect.</Notice> : null}
+        {proxyExpired.length ? <Notice tone="bad" role="alert">Proxy OAuth expired for {proxyExpired.map((result) => result.account.label).join(', ')} — re-login the proxy credential. The account browser sign-in is separate and does not fix it.</Notice> : null}
+        {attention && !proxyExpired.length ? <Notice tone="warn" role="status">Some quota connections need attention. Use the controls below to reconnect.</Notice> : null}
         {usage?.accounts.map((result) => <UsageCard key={result.account.key} result={result} now={now} tz={tz} onAuthorized={() => refresh(true)} />)}
         {usage && !usage.accounts.length ? <p className="t-small">No provider accounts are configured for automatic quota collection.</p> : null}
         {!usage ? <p className="t-small">Loading account quotas…</p> : null}

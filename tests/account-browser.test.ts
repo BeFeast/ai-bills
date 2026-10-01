@@ -6,6 +6,8 @@ import type { AccountBrowserConnection, BrowserTarget } from '../src/lib/account
 import { GET, POST } from '../src/app/api/account-browser/route';
 
 let sequence = 0;
+/** Target ids are unique across fakes that share one target list. */
+let created = 0;
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 function config(): AppConfig {
   return { accounts: [{ key: 'personal', provider: 'claude', label: 'Personal', email: 'intended@example.test' }],
@@ -21,10 +23,11 @@ function browser(value: unknown, initial?: BrowserTarget[]) {
     if (method === 'Target.attachToTarget') return { sessionId: 'attached' };
     if (method === 'Runtime.evaluate') return { result: { value } };
     if (method === 'Target.createTarget') {
-      const targetId = `created-${targets.length}`;
+      const targetId = `created-${++created}`;
       targets.push({ targetId, type: 'page', url: String(params?.url) });
       return { targetId };
     }
+    if (method === 'Target.closeTarget') { const index = targets.findIndex(target => target.targetId === params?.targetId); if (index >= 0) targets.splice(index, 1); }
     return {};
   });
   const close = vi.fn();
@@ -49,8 +52,11 @@ describe('explicit shared browser identity', () => {
     const settings = sharedConfig(); settings.account_browsers!.forEach(b => { b.profile_id = `identity_${sequence}`; });
     const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
     expect((await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps)).status).toBe('ready');
-    // A matching Claude session says nothing about the ChatGPT session.
-    expect((await accountBrowser(settings, { accountKey: 'chat' }, 'manage', deps)).status).toBe('login_required');
+    // A matching Claude session says nothing about the ChatGPT session: that one is probed in its own background tab.
+    const signedOut = browser({ state: 'login_required' }, deps.targets);
+    expect((await accountBrowser(settings, { accountKey: 'chat' }, 'manage', signedOut)).status).toBe('login_required');
+    expect(signedOut.send).toHaveBeenCalledWith('Target.createTarget', { url: 'https://chatgpt.com/robots.txt', background: true });
+    expect(signedOut.targets.some(target => target.url === 'https://chatgpt.com/robots.txt')).toBe(false);
     deps.targets.push({ targetId: 'chat-page', type: 'page', url: 'https://chatgpt.com/' });
     const wrong = browser({ state: 'authenticated', email: 'different@example.test' }, deps.targets);
     expect((await accountBrowser(settings, { accountKey: 'chat' }, 'manage', wrong)).status).toBe('mismatch');
@@ -67,7 +73,9 @@ describe('explicit shared browser identity', () => {
     expect(deps.send).toHaveBeenLastCalledWith('Target.activateTarget', { targetId: claudeTab.targetId });
     await accountBrowser(settings, { accountKey: 'chat' }, 'login', deps);
     expect(deps.send).toHaveBeenLastCalledWith('Target.activateTarget', { targetId: chatTab.targetId });
-    expect(deps.send.mock.calls.filter(([method]) => method === 'Target.createTarget')).toHaveLength(2);
+    // Two login tabs; every other created tab was an identity probe that is closed again.
+    expect(deps.send.mock.calls.filter(([method, params]) => method === 'Target.createTarget' && params?.background === false)).toHaveLength(2);
+    expect(deps.targets).toHaveLength(2);
   });
 
   it('serializes different provider operations on their shared browser', async () => {
@@ -209,16 +217,50 @@ describe('account-specific website management', () => {
     expect(deps.send).toHaveBeenLastCalledWith('Target.activateTarget', { targetId: owned.targetId });
   });
 
-  it('handles a new empty profile as login required, while unsupported identity stays unknown', async () => {
-    const settings = config(); const blank = browser(null, []);
+  it('probes an empty shared profile in a background tab instead of claiming sign-in is required', async () => {
+    const settings = config();
+    // No provider tab and no auth evidence: identity is unknown, never login_required, and the probe tab is closed.
+    const blank = browser(null, []);
     const state = await accountBrowser(settings, { accountKey: 'personal' }, undefined, blank);
-    expect(state.status).toBe('login_required');
-    expect(blank.send.mock.calls.some(([method]) => method === 'Target.createTarget')).toBe(false);
+    expect(state.status).toBe('identity_unknown');
+    expect(blank.send).toHaveBeenCalledWith('Target.createTarget', { url: 'https://claude.ai/robots.txt', background: true });
+    expect(blank.send).toHaveBeenCalledWith('Target.closeTarget', { targetId: expect.stringMatching(/^created-/) });
+    expect(blank.targets).toHaveLength(0);
+    // The same empty profile with a live session: the probe tab verifies the account.
+    const live = browser({ state: 'authenticated', email: 'intended@example.test' }, []);
+    expect((await accountBrowser(settings, { accountKey: 'personal' }, undefined, live)).status).toBe('ready');
+    expect(live.targets).toHaveLength(0);
+    // Only a 401/403 from the provider is sign-in evidence.
+    const signedOut = browser({ state: 'login_required' }, []);
+    expect((await accountBrowser(settings, { accountKey: 'personal' }, undefined, signedOut)).status).toBe('login_required');
+    expect(signedOut.targets).toHaveLength(0);
     await accountBrowser(settings, { accountKey: 'personal' }, 'login', blank);
     expect(blank.send).toHaveBeenCalledWith('Target.createTarget', { url: 'https://claude.ai/login', background: false });
     settings.accounts[0].provider = 'kimi';
     Object.assign(settings.account_browsers![0], { login_url: 'https://www.kimi.com/', manage_url: 'https://www.kimi.com/code/console' });
     expect((await accountBrowser(settings, { accountKey: 'personal' }, 'manage', browser(null, []))).status).toBe('identity_unknown');
+  });
+
+  it('closes the probe tab over HTTP when the CDP connection can no longer send', async () => {
+    const settings = config();
+    const deps = browser({ state: 'authenticated', email: 'intended@example.test' }, []);
+    const send = deps.send.getMockImplementation()!;
+    deps.send.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'Target.closeTarget') throw new Error('Account browser deadline exceeded');
+      return send(method, params);
+    });
+    const http = vi.fn(async () => new Response('Target is closing'));
+    vi.stubGlobal('fetch', http);
+    expect((await accountBrowser(settings, { accountKey: 'personal' }, undefined, deps)).status).toBe('ready');
+    expect(http).toHaveBeenCalledWith(expect.stringMatching(/^http:\/\/127\.0\.0\.1:18811\/json\/close\/created-\d+$/), expect.anything());
+  });
+
+  it('focuses a tab already showing the billing page after a restart instead of opening another', async () => {
+    const settings = config();
+    const deps = browser({ state: 'authenticated', email: 'intended@example.test' }, [{ targetId: 'provider', type: 'page', url: 'https://claude.ai/new' }, { targetId: 'billing', type: 'page', url: 'https://claude.ai/settings/billing' }]);
+    expect((await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps)).status).toBe('ready');
+    expect(deps.send).toHaveBeenLastCalledWith('Target.activateTarget', { targetId: 'billing' });
+    expect(deps.send.mock.calls.some(([method]) => method === 'Target.createTarget')).toBe(false);
   });
 
   it('fails closed on invalid provider URLs, shared profiles and missing expected email before connecting', async () => {

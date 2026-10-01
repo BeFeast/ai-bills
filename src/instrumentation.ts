@@ -4,7 +4,8 @@
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const { initialiseDatabase } = await import('./instrumentation-node');
+    const { initialiseDatabase, closeBrowserTabsOnShutdown } = await import('./instrumentation-node');
+    closeBrowserTabsOnShutdown();
     await initialiseDatabase();
   }
 }

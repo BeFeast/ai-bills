@@ -1,7 +1,7 @@
 import type { RegistryAccount } from './accounts';
 import type { OverviewRecentUsage, OverviewUpstreamActivity } from './overview';
 import { claudeWindows, isPendingObservation, codexPrimaryWindow, codexWindowDurationLabel, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, kimiUsagePercent, quotaTone,
-  type ClaudeUsagePayload, type CodexRateWindow, type CodexUsagePayload, type CursorUsagePayload, type KimiQuotaDetail, type KimiUsagePayload, type ProviderUsage, type QuotaTone, type UsageFallbackSource } from './usage';
+  type ClaudeUsagePayload, type CodexRateWindow, type CodexUsagePayload, type CursorUsagePayload, type KimiQuotaDetail, type KimiUsagePayload, type ProviderUsage, type ProxyAuthEvidence, type QuotaTone, type UsageFallbackSource } from './usage';
 import { usageEvidence, type UsageEvidence } from './usage-evidence';
 
 /** One limit window of an account as the hero shows it. `remaining` is in `unit`; `remainingPercent` drives tone and order. */
@@ -14,8 +14,10 @@ export type HeroIdentity = { key: string; provider: string; label: string; email
 /** The direct quota request failed; `windows` come from the proxy's header-observed quota or the last successful observation. */
 export type HeroFallback = { kind: UsageFallbackSource; status: number | null; error: string };
 export type LimitsHeroCard =
-  | { kind: 'quota'; id: string; account: HeroIdentity; windows: HeroWindow[]; limiting: HeroWindow; tone: QuotaTone; activity: HeroActivity | null; observedAt: string; fallback: HeroFallback | null }
-  | { kind: 'error'; id: string; account: HeroIdentity; state: Exclude<UsageEvidence['state'], 'fresh'>; message: string; status: number | null; activity: HeroActivity | null; observedAt: string;
+  | { kind: 'quota'; id: string; account: HeroIdentity; windows: HeroWindow[]; limiting: HeroWindow; tone: QuotaTone; activity: HeroActivity | null; observedAt: string; fallback: HeroFallback | null;
+      /** The windows are the last known ones (older than the freshness limit, inside the 5 h window); `observedAt` says when. */
+      lastKnown: boolean; proxyAuth: ProxyAuthEvidence | null }
+  | { kind: 'error'; id: string; account: HeroIdentity; state: Exclude<UsageEvidence['state'], 'fresh'>; message: string; status: number | null; activity: HeroActivity | null; observedAt: string; proxyAuth: ProxyAuthEvidence | null;
       /** A stale observation still had windows: the last known limiting one stays visible, labelled as such. */
       lastKnown: HeroWindow | null }
   | { kind: 'outcomes'; id: string; provider: string; label: string; email: string | null; websiteUrl: string | null; balanceUsd: number | null; credentialStatus: string | null; activity: HeroActivity; tone: QuotaTone };
@@ -122,19 +124,20 @@ export function buildLimitsHero({ usage, registry, last24h, now }: { usage: Prov
     const activity = usageActivity(result, upstreams, providerCounts.get(result.account.provider) ?? 0);
     const used = !recencyKnown || (activity?.requests ?? 0) > 0;
     const evidence = usageEvidence(result, now);
-    if (evidence.state !== 'fresh') {
+    if (evidence.state !== 'fresh' && !evidence.lastKnown) {
       // A failing quota source cannot rule out a low remaining allowance, so it stays visible; stale or empty data only matters for accounts in use.
-      if (evidence.state === 'error' || used) errors.push({ kind: 'error', id: result.account.key, account: identity(result), state: evidence.state, message: evidence.message, status: result.status ?? null, activity, observedAt: result.fetchedAt,
+      if (evidence.state === 'error' || used || result.proxyAuth) errors.push({ kind: 'error', id: result.account.key, account: identity(result), state: evidence.state, message: evidence.message, status: result.status ?? null, activity, observedAt: result.fetchedAt, proxyAuth: result.proxyAuth ?? null,
         lastKnown: evidence.state === 'stale' ? accountWindows(result).limiting : null });
       continue;
     }
     const { windows, limiting } = accountWindows(result);
     if (!limiting) continue;
     const low = limiting.remainingPercent !== null && limiting.remainingPercent < LOW_REMAINING_PERCENT;
-    if (!used && !low && !limiting.exhausted) continue;
-    const fallback: HeroFallback | null = result.source === 'proxy_headers' || result.source === 'retained'
+    if (!used && !low && !limiting.exhausted && !result.proxyAuth) continue;
+    const fallback: HeroFallback | null = result.source === 'proxy_headers' || result.source === 'retained' || result.source === 'web'
       ? { kind: result.source, status: result.direct?.status ?? null, error: result.direct?.error ?? 'The direct quota request failed' } : null;
-    quota.push({ kind: 'quota', id: result.account.key, account: identity(result), windows, limiting, tone: limiting.tone, activity, observedAt: result.fetchedAt, fallback });
+    quota.push({ kind: 'quota', id: result.account.key, account: identity(result), windows, limiting, tone: limiting.tone, activity, observedAt: result.fetchedAt, fallback,
+      lastKnown: evidence.lastKnown === true, proxyAuth: result.proxyAuth ?? null });
   }
   const covered = new Set([...QUOTA_PROVIDERS, ...usage.map((result) => normalize(result.account.provider))]);
   for (const row of registry) {

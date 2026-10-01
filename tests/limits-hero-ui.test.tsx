@@ -61,12 +61,30 @@ test('a stale observation shows the last known value labelled as such, never as 
   const stale: ProviderUsage = { ...work, fetchedAt: new Date(now - 45 * 60_000).toISOString() };
   const data = buildProductOverview(config, snapshot, '2026-09');
   const html = renderToStaticMarkup(<ProductOverviewPanel data={data} accounts={[stale]} registry={[]} view="overview" onView={() => {}} now={now} />);
-  expect(html).toContain('Stale observation');
+  expect(html).toContain('Last known');
   expect(html).toContain('>17%<');
-  expect(html).toContain('last known');
   expect(html).toContain('Fable weekly');
   expect(html).not.toContain('>Unknown<');
-  expect(html).not.toContain('Running low');
+  expect(html).not.toContain('Source error');
+});
+
+test('a Claude observation older than 5 h is a source error, not a number', () => {
+  const old: ProviderUsage = { ...work, fetchedAt: new Date(now - 5 * 3600_000 - 60_000).toISOString() };
+  const data = buildProductOverview(config, snapshot, '2026-09');
+  const html = renderToStaticMarkup(<ProductOverviewPanel data={data} accounts={[old]} registry={[]} view="overview" onView={() => {}} now={now} />);
+  expect(html).toContain('Source error');
+  expect(html).toContain('more than 5 hours');
+  expect(html).not.toContain('>17%<');
+});
+
+test('a dead proxy credential is named on the hero card, apart from the browser sign-in', () => {
+  const web: ProviderUsage = { ...work, source: 'web', direct: { status: 429, error: 'Proxy OAuth expired — re-login proxy', attemptedAt: null },
+    proxyAuth: { state: 'expired', message: 'invalid grant (retrying)', observedAt: null } };
+  const data = buildProductOverview(config, snapshot, '2026-09');
+  const html = renderToStaticMarkup(<ProductOverviewPanel data={data} accounts={[web]} registry={[]} view="overview" onView={() => {}} now={now} />);
+  expect(html).toContain('Proxy OAuth expired');
+  expect(html).toContain('signed-in claude.ai session');
+  expect(html).not.toContain('Sign-in required');
 });
 
 test('a per-model window carried from an earlier observation says when it was seen', () => {

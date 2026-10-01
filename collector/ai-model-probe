@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Hourly synthetic check that every Claude model the proxy catalogues is callable.
+
+Quota numbers say nothing about whether a model name still routes: a catalogued model can
+answer "unknown provider" while the account looks healthy. The probe sends each one a
+1-token request through the proxy, the way a client would. A 429 is the account's quota
+working as intended, not an outage. An alert-class outcome is retried once after a short
+pause, so one blip does not page anyone. Only outcome, status and a short message are kept;
+no request or response body leaves this process.
+
+Runs from the snapshot wrapper on every collect but works at most hourly: between runs it
+repeats the previous snapshot's `model_probe` unchanged."""
+import json
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+# A */5 schedule must not drift to 65 minutes, so the gate opens 5 minutes early.
+PROBE_INTERVAL = 3600 - 300
+# A failing or incomplete run is checked again sooner, but not on every collect.
+RECHECK_INTERVAL = 600 - 60
+RETRY_PAUSE = 10
+TIMEOUT = 30
+# The whole run stays well inside the 5-minute collect slot; models left when it runs out are reported, not skipped silently.
+BUDGET = 150
+ALERTS = {'unknown_model', 'unauthorized', 'server_error', 'unreachable'}
+UNKNOWN_MODEL = ('not_found', 'not found', 'unknown provider', 'unknown model')
+
+
+def parse_time(value):
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return parsed if parsed.tzinfo else None
+    except (AttributeError, ValueError, TypeError):
+        return None
+
+
+def short(text, key, limit=200):
+    """One line of at most `limit` characters with the client key masked, should a body echo it."""
+    text = ' '.join(str(text).split())
+    if key:
+        text = text.replace(key, '***')
+    return text[:limit]
+
+
+def error_text(body):
+    """The provider's error message from an Anthropic- or OpenAI-style error body, else the raw body."""
+    try:
+        data = json.loads(body)
+        error = data.get('error') if isinstance(data, dict) else None
+        message = error.get('message') if isinstance(error, dict) else error
+        return str(message or data.get('message') or body)
+    except (ValueError, AttributeError):
+        return body
+
+
+def classify(status, body):
+    if 200 <= status < 300:
+        return 'ok'
+    if status == 429:
+        return 'rate_limited'
+    # The proxy answers 400 for a model it cannot route; the provider answers 404 for one it does not know.
+    if status in (400, 404) and any(marker in body.lower() for marker in UNKNOWN_MODEL):
+        return 'unknown_model'
+    if status in (401, 403):
+        return 'unauthorized'
+    if status >= 500:
+        return 'server_error'
+    return 'rejected'
+
+
+def call(open_url, request, timeout=TIMEOUT):
+    """(http_status or None, body text); network failures and timeouts have no status."""
+    try:
+        with open_url(request, timeout=timeout) as response:
+            return getattr(response, 'status', None) or 200, response.read(4096).decode('utf-8', 'replace')
+    except HTTPError as error:
+        try:
+            body = error.read(4096).decode('utf-8', 'replace')
+        except Exception:
+            body = ''
+        error.close()
+        return error.code, body
+    except Exception as error:
+        return None, type(error).__name__
+
+
+def catalog(base, key, open_url):
+    """Sorted unique `claude-*` ids from the proxy's model list, or raise with a short reason."""
+    status, body = call(open_url, Request(base + '/v1/models', headers={
+        'Authorization': 'Bearer ' + key, 'Accept': 'application/json', 'User-Agent': 'ai-bills-model-probe'}))
+    if status is None:
+        raise RuntimeError('model catalog unreachable (%s)' % body)
+    if not 200 <= status < 300:
+        raise RuntimeError('model catalog rejected (HTTP %s)' % status)
+    try:
+        rows = json.loads(body).get('data')
+        ids = {row.get('id') for row in rows if isinstance(row, dict)}
+    except (ValueError, AttributeError, TypeError):
+        raise RuntimeError('model catalog is not a model list')
+    models = sorted(model for model in ids if isinstance(model, str) and model.startswith('claude-'))
+    if not models:
+        raise RuntimeError('model catalog lists no Claude models')
+    return models
+
+
+def check(base, key, model, open_url, timeout=TIMEOUT):
+    body = json.dumps({'model': model, 'max_tokens': 1, 'messages': [{'role': 'user', 'content': 'ping'}]}).encode()
+    request = Request(base + '/v1/messages', data=body, method='POST', headers={
+        'x-api-key': key, 'Authorization': 'Bearer ' + key, 'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'ai-bills-model-probe'})
+    status, text = call(open_url, request, timeout)
+    if status is None:
+        return 'unreachable', None, short('request failed (%s)' % text, key)
+    outcome = classify(status, text)
+    return outcome, status, 'HTTP %s' % status if outcome == 'ok' else short(error_text(text), key)
+
+
+def probe(base, key, previous=None, open_url=urlopen, sleep=time.sleep, now=None, clock=time.monotonic):
+    now = now or datetime.now(timezone.utc)
+    deadline = clock() + BUDGET
+    # A passing result is repeated for the hour; a failing or incomplete one is re-checked after ten minutes, so one bad
+    # run neither pages for an hour nor hides a recovery.
+    if isinstance(previous, dict):
+        checked = parse_time(previous.get('checked_at'))
+        interval = PROBE_INTERVAL if previous.get('status') == 'up' else RECHECK_INTERVAL
+        if checked and 0 <= (now - checked).total_seconds() < interval:
+            return previous
+    base = base.rstrip('/')
+    result = {'checked_at': now.isoformat(), 'status': 'up', 'message': '', 'models': []}
+    # Models the last run had no time for go first, so a budget that always runs out never leaves the same ones unchecked.
+    skipped_before = {row.get('model') for row in (previous or {}).get('models') or [] if isinstance(row, dict) and row.get('outcome') == 'skipped'} if isinstance(previous, dict) else set()
+    try:
+        try:
+            models = catalog(base, key, open_url)
+        except RuntimeError:
+            sleep(RETRY_PAUSE)
+            models = catalog(base, key, open_url)
+    except RuntimeError as error:
+        return dict(result, status='down', message=short(error, key))
+    for model in sorted(models, key=lambda name: name not in skipped_before):
+        left = deadline - clock()
+        if left < 5:
+            # Not an outage finding: the run ran out of time. The next collect probes again (the result is not 'up' for the gate).
+            result['models'].append({'model': model, 'outcome': 'skipped', 'http_status': None, 'retried': False, 'message': 'probe time budget exhausted before this model'})
+            continue
+        outcome, status, message = check(base, key, model, open_url, min(TIMEOUT, left))
+        retried = outcome in ALERTS and deadline - clock() > RETRY_PAUSE + 5
+        if retried:
+            sleep(RETRY_PAUSE)
+            outcome, status, message = check(base, key, model, open_url, min(TIMEOUT, max(1, deadline - clock())))
+        result['models'].append({'model': model, 'outcome': outcome, 'http_status': status, 'retried': retried, 'message': message})
+    failing = [row for row in result['models'] if row['outcome'] in ALERTS]
+    skipped = [row for row in result['models'] if row['outcome'] == 'skipped']
+    if skipped and not failing:
+        result['status'] = 'partial'
+        result['message'] = '%d of %d Claude models checked before the time budget ran out' % (len(models) - len(skipped), len(models))
+    elif failing:
+        result['status'] = 'down'
+        result['message'] = short('; '.join('%s: %s' % (row['model'], row['outcome']) for row in failing), key)
+    else:
+        result['message'] = '%d Claude models callable' % len(models)
+    return result
+
+
+def load_previous(path):
+    if not path:
+        return None
+    try:
+        return json.loads(Path(path).read_text()).get('model_probe')
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+if __name__ == '__main__':
+    key = os.environ.get('AI_BILLS_PROBE_API_KEY', '').strip()
+    base = os.environ.get('AI_BILLS_PROBE_URL', '').strip()
+    if not key or not base.startswith(('http://', 'https://')):
+        print('ai-model-probe: AI_BILLS_PROBE_URL and AI_BILLS_PROBE_API_KEY are required', file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps(probe(base, key, load_previous(os.environ.get('AI_BILLS_PREVIOUS_SNAPSHOT')))))
