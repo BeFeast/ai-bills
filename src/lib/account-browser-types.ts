@@ -16,3 +16,9 @@ export function canOpenAccountBrowser(state: Pick<AccountBrowserState, 'status' 
   return Boolean(state.remoteUrl) && [200, 409].includes(httpStatus)
     && ['ready', 'login_required', 'identity_unknown', 'mismatch'].includes(state.status);
 }
+
+/** A manual lease whose expiry has passed cannot be extended; the person opens the browser again instead. */
+export function manualLeaseExpired(expiresAt: string | null | undefined, now: number): boolean {
+  const at = expiresAt ? Date.parse(expiresAt) : NaN;
+  return Number.isFinite(at) && at <= now;
+}

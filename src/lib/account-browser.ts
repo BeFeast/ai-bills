@@ -185,6 +185,16 @@ export function projectBrowserProxy(value: unknown, accountId: string): AccountB
     quotaState: typeof health?.quota_state === 'string' ? health.quota_state : null, observedAt: new Date().toISOString() };
 }
 
+const SESSION_ENDED = 'The browser session already ended (it expired or Zecori restarted). Open the account browser to start a new one; saved sign-in is preserved.';
+
+/** HTTP status of a browser action: an unready manage and an extend without a live lease are conflicts the person resolves by opening the browser. */
+export function browserActionStatus(action: BrowserAction, state: Pick<AccountBrowserState, 'status' | 'manualLeaseExpiresAt'>): number {
+  if (action === 'manage' && state.status !== 'ready') return 409;
+  if (state.status === 'unavailable') return 503;
+  if (action === 'renew' && !state.manualLeaseExpiresAt) return 409;
+  return 200;
+}
+
 const messages: Record<AccountBrowserStatus, string> = {
   unconfigured: 'No account browser is configured. A website link uses your current browser account.',
   login_required: 'Open the account browser to sign in and verify the intended website account. Proxy OAuth is separate.',
@@ -247,7 +257,11 @@ async function observeBrowser(config: AppConfig, selector: AccountBrowserSelecto
       return state;
     }
     if (action === 'renew') {
-      if (!lease) throw new Error('No active manual browser lease');
+      // The lease expired, or this process restarted and forgot it. Nothing to extend; the binding is fine.
+      if (!lease) {
+        Object.assign(state, { status: 'identity_unknown', manualLeaseExpiresAt: null, message: SESSION_ENDED, observedAt: new Date().toISOString() });
+        await proxy; return state;
+      }
       lease = await renewBrowserLease(lease); manualLeases.set(binding.profile_id, lease);
       Object.assign(state, { status: 'identity_unknown', manualLeaseExpiresAt: lease.expiresAt,
         message: 'Browser lease renewed.', observedAt: new Date().toISOString() });

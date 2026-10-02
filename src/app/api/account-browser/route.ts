@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { loadConfig } from '@/lib/config';
 import { hasAllowedOrigin } from '@/lib/request-origin';
-import { accountBrowser, AccountBrowserInputError, parseAccountBrowserInput } from '@/lib/account-browser';
+import { accountBrowser, AccountBrowserInputError, browserActionStatus, parseAccountBrowserInput } from '@/lib/account-browser';
 import { requireTenant } from '@/lib/tenant';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     if (body.length > 2048) throw new AccountBrowserInputError('Account browser request is too large');
     const { selector, action } = parseAccountBrowserInput(JSON.parse(body), true);
     const state = await accountBrowser(loadConfig(), selector, action);
-    return NextResponse.json(state, { status: action === 'manage' && state.status !== 'ready' ? 409 : state.status === 'unavailable' ? 503 : 200, headers });
+    return NextResponse.json(state, { status: browserActionStatus(action!, state), headers });
   } catch (error) { return failure(error); }
 }
 function failure(error: unknown) {
