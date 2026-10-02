@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { csvCell, usageCsv } from '@/lib/usage-export';
 
@@ -62,5 +63,19 @@ describe('usageCsv', () => {
   it('yields only a header for a missing dimension or malformed period', () => {
     expect(usageCsv({}, 'client').rows).toBe(0);
     expect(usageCsv(null, 'model').csv.split('\r\n').filter(Boolean)).toHaveLength(1);
+  });
+  it('exports account and upstream names that look like keys as a fingerprint, and keeps model names intact', () => {
+    const keys = ['sk-client-fixture-0123456789abcdefghijklmnop', 'Zx9fixtureOpaqueToken0123456789abcdefXYZ'];
+    const fingerprint = (key: string) => `key:sha256:${createHash('sha256').update(key).digest('hex').slice(0, 10)}`;
+    const period = { ...month, reconciliation: {},
+      by_upstream: [...keys.map(name => ({ name, provider: 'cursor', requests: 1, tokens: 1 })), { name: 'a@example.com', provider: 'claude', requests: 1, tokens: 1 }],
+      by_account: keys.map(name => ({ name, requests: 1, tokens: 1 })),
+      by_model: [{ name: 'accounts/fireworks/models/deepseek-v3p1-terminus-0123456789', requests: 1, tokens: 1 }] };
+    for (const by of ['upstream', 'account'] as const) {
+      const { csv } = usageCsv(period, by);
+      for (const key of keys) { expect(csv).not.toContain(key); expect(csv).not.toContain(key.slice(-4)); expect(csv).toContain(fingerprint(key)); }
+    }
+    expect(usageCsv(period, 'upstream').csv).toContain('a@example.com,claude');
+    expect(usageCsv(period, 'model').csv).toContain('accounts/fireworks/models/deepseek-v3p1-terminus-0123456789,');
   });
 });

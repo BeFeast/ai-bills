@@ -25,7 +25,7 @@ const registry = (id: string, provider: string, label: string, email?: string, e
 const upstream = (provider: string, name: string, requests: number, failed = 0, rateLimited = 0, lastRequestAt: string | null = '2026-09-18T20:10:00Z') => ({ provider, name, requests, tokens: requests * 10, failed, rateLimited, lastRequestAt, apiEquivalentUsd: null, pricedApiEquivalentUsd: null });
 const last24h: OverviewRecentUsage = { windowHours: 24, observedAt: '2026-09-18T20:15:13Z', periodStart: null, periodEnd: null, requests: null, failed: 0, rateLimited: 0, byAccount: [], byUpstream: [
   upstream('claude', 'work@example.invalid', 582, 3), upstream('claude', 'personal@example.invalid', 589, 3), upstream('codex', 'personal@example.invalid', 15), upstream('codex', 'work@example.invalid', 11),
-  upstream('xai', 'work@example.invalid', 4, 2, 2), upstream('openai-compatible-openrouter', 'sk-or-v1…2253', 12), upstream('antigravity', 'personal@example.invalid', 0),
+  upstream('xai', 'work@example.invalid', 4, 2, 2), upstream('openai-compatible-openrouter', 'key:sha256:0a1b2c3d4e', 12), upstream('antigravity', 'personal@example.invalid', 0),
 ] };
 
 describe('per-model allowance carried over a header fallback', () => {
@@ -76,7 +76,7 @@ describe('limits hero', () => {
   });
   it('matches a single account of a provider by provider alone and keeps all fresh accounts when recency is unknown', () => {
     const kimi: ProviderUsage = { ...kimiError, ok: true, status: 200, data: { usages: [{ scope: 'FEATURE_CODING', detail: { limit: 1000, used: 900, remaining: 100, resetTime: '2026-09-19T00:00:00Z' }, limits: [{ duration: 300, timeUnit: 'TIME_UNIT_MINUTE', detail: { limit: 50, used: 10, remaining: 40, resetTime: null } }] }] } as never };
-    const withKey = buildLimitsHero({ usage: [kimi], registry: [], last24h: { ...last24h, byUpstream: [upstream('kimi', 'sk-maest…f35c', 8)] }, now });
+    const withKey = buildLimitsHero({ usage: [kimi], registry: [], last24h: { ...last24h, byUpstream: [upstream('kimi', 'client-key:example-client', 8)] }, now });
     expect(withKey.cards).toHaveLength(1);
     const card = withKey.cards[0]; if (card.kind !== 'quota') throw new Error('expected quota');
     expect(card.limiting).toMatchObject({ label: 'Coding quota', unit: 'requests', remaining: 100, remainingPercent: 10, tone: 'warn' });

@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { buildProductOverview } from '../src/lib/overview';
 import type { AppConfig } from '../src/lib/config';
 const config = { server: { timezone: 'Asia/Jerusalem' }, subscriptions: [] } as unknown as AppConfig;
+const fingerprint = (key: string) => `key:sha256:${createHash('sha256').update(key).digest('hex').slice(0, 10)}`;
 describe('product overview', () => {
   it('exposes the configured management URL and partial accounting without inventing totals', () => {
     const result = buildProductOverview({ ...config, server: { ...config.server,
@@ -87,7 +89,7 @@ describe('product overview', () => {
     const result = buildProductOverview(config, { usage_ledger: { generated: '2026-09-18T20:00:05Z', last_24h: rolling } }, '2026-09');
     expect(result.usage.last24h).toMatchObject({ windowHours: 24, observedAt: '2026-09-18T20:00:05Z', requests: null, failed: 3, rateLimited: 2 });
     expect(result.usage.last24h?.byUpstream.map((row) => [row.provider, row.name, row.requests, row.rateLimited, row.lastRequestAt])).toEqual([
-      ['claude', 'owner@example.com', 40, 2, '2026-09-18T19:59:00+00:00'], ['openai-compatible-openrouter', 'sk-or-v1…cdef', 1, 0, undefined],
+      ['claude', 'owner@example.com', 40, 2, '2026-09-18T19:59:00+00:00'], ['openai-compatible-openrouter', fingerprint('sk-or-v1-0123456789abcdef0123456789abcdef'), 1, 0, undefined],
     ]);
     expect(result.usage.last24h?.byAccount[0].lastRequestAt).toBe('2026-09-18T19:59:00+00:00');
     expect(result.usage.tokens).toBeNull();
@@ -95,10 +97,25 @@ describe('product overview', () => {
     expect(buildProductOverview(config, { usage_ledger: { last_24h: { ...rolling, period: 'day' } } }, '2026-09').usage.last24h).toBeUndefined();
     expect(buildProductOverview(config, { usage_ledger: { today: rolling } }, '2026-09').usage.last24h).toBeUndefined();
     const month = buildProductOverview(config, { usage_ledger: { month: { date: '2026-09', by_account: [{ name: 'sk-maestro-abcdefghijklmnopqrstuvwxyz0123456789', tokens: 5, requests: 1 }] } } }, '2026-09');
-    expect(month.usage.byAccount?.[0].name).toBe('sk-maest…6789');
+    expect(month.usage.byAccount?.[0].name).toBe(fingerprint('sk-maestro-abcdefghijklmnopqrstuvwxyz0123456789'));
     const models = buildProductOverview(config, { usage_ledger: { month: { date: '2026-09', by_model: [{ name: 'meta-llama/llama-3.1-405b-instruct', tokens: 5, requests: 1 }], by_client: [{ name: 'sk-looking-client-id-that-is-long-enough', tokens: 1, requests: 1 }] } } }, '2026-09');
     expect(models.usage.byModel[0].name).toBe('meta-llama/llama-3.1-405b-instruct');
     expect(models.usage.byClient[0].name).toBe('sk-looking-client-id-that-is-long-enough');
+  });
+  it('never renders any part of a raw key as an account or upstream name', () => {
+    const keys = ['sk-client-fixture-0123456789abcdefghijklmnop', 'sk-or-v1-fixture0123456789abcdef0123456789abcdef', 'Zx9fixtureOpaqueToken0123456789abcdefXYZ'];
+    const rows = keys.map((name, index) => ({ name, provider: `provider-${index}`, tokens: 1, requests: 1 }));
+    const result = buildProductOverview(config, { usage_ledger: {
+      month: { date: '2026-09', by_account: [...rows, { name: 'client-key:t3', tokens: 1, requests: 1 }] },
+      last_24h: { period: 'rolling_24h', by_upstream: rows, by_account: rows } } }, '2026-09');
+    const serialized = JSON.stringify(result);
+    for (const key of keys) {
+      expect(serialized).not.toContain(key);
+      expect(serialized).not.toContain(key.slice(-4));
+      expect(serialized).toContain(fingerprint(key));
+    }
+    // The collector's own labels are already safe and pass through unchanged.
+    expect(result.usage.byAccount?.map(row => row.name)).toContain('client-key:t3');
   });
   it('never treats quota reset timestamps as subscription renewal dates', () => {
     const result = buildProductOverview(config, { providers: [{ provider: 'OpenAI', plan: 'Pro', status: 'active', billing: 'subscription', cost_usd_month: '200' }], codex_usage: { account: { data: { rate_limit: { reset_at: 1789379829 } } } } }, '2026-09');

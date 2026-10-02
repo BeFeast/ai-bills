@@ -80,13 +80,23 @@ def window_label(window):
         return f"{name or 'Scoped'} weekly"
     return {"session": "Session", "weekly_all": "Weekly all models"}.get(kind, kind or "window")
 
+CREDENTIAL_LABELS = ("client-key:", "key:sha256:")
+_PREFIXED_KEY = re.compile(r"^(?:sk|pk|rk|ak)[-_]", re.I)
+
 def upstream_label(name):
-    """Emails identify accounts; anything else is a key and is reduced to a stable fingerprint
-    before it reaches condition keys, state files, history or the snapshot."""
+    """Emails identify accounts, and the collector's `client-key:`/`key:sha256:` labels are already
+    safe. A key-shaped name (as in ai-usage-report's key_shaped) is reduced to a fingerprint with no
+    key characters before it reaches condition keys, state files, history or the snapshot. Other
+    names keep their previous short form, so their condition keys do not change."""
     name = str(name)
-    if "@" in name:
+    if "@" in name or name.startswith(CREDENTIAL_LABELS):
         return name
-    return f"{name[:8]}…{hashlib.sha256(name.encode()).hexdigest()[:6]}"
+    digest = hashlib.sha256(name.encode()).hexdigest()
+    text = name.strip()
+    if not any(ch.isspace() for ch in text) and (_PREFIXED_KEY.match(text) or (
+            len(text) >= 32 and "/" not in text and any(ch.isdigit() for ch in text) and any(ch.isalpha() for ch in text))):
+        return f"key:sha256:{hashlib.sha256(text.encode()).hexdigest()[:10]}"
+    return f"{name[:8]}…{digest[:6]}"
 
 def quota_state(remaining, exhausted, rules):
     if exhausted:
