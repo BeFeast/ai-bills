@@ -212,7 +212,19 @@ reviewed external lease controller. Browser quota accounts require `cdp_profile_
 matching an allowed controller profile; manual browser bindings already carry a
 profile ID. Acquisition allows 60 seconds and release 40 seconds. The controller
 owns capacity, memory admission, exclusivity and TTL expiration. A quota scrape
-must not take over a live manual account browser. Without lifecycle configuration,
+must not take over a live manual account browser.
+
+The controller performs one mutation at a time and refuses concurrent requests
+(`409 controller_busy`) and a second lease on a leased profile (`409 profile_in_use`).
+The app therefore sends its own lease requests one at a time, lets one automatic
+read per profile hold a lease while the others wait in order, and retries the
+refusals that clear on their own (`controller_busy`, `profile_in_use`,
+`capacity_busy`, `profile_stop_pending`) with jittered exponential back-off:
+up to 90 seconds for a quota read, 20 seconds for an identity check or manual
+open, 15 seconds for a release or renewal. A manual session this process holds
+makes automatic reads on that profile fail fast. Each acquisition and release is
+logged as `[zecori] browser lease acquire|release` with profile, purpose, queue
+wait, attempts and refusal counts. Without lifecycle configuration,
 legacy behavior remains available; enabling the controller is an explicit rollout
 step, not an automatic consequence of deploying this source.
 
