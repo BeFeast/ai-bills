@@ -78,8 +78,9 @@ The report reconciles matching upstream request IDs between native and proxy
 observations in its read projection, preserving original JSONL files. Attempt IDs
 preserve separate retries. Model price-table billing labels no longer establish an
 account's marginal cost; missing per-account billing evidence leaves marginal cost
-unknown. API-equivalent totals with unpriced observations are likewise unknown.
-Reports group days in `Asia/Jerusalem` (`AI_USAGE_TIMEZONE` can override).
+unknown. API-equivalent totals with unpriced observations are likewise unknown;
+observations without billable tokens (failed probes) cost nothing at any price and
+do not make a total unknown. Reports group days in `Asia/Jerusalem` (`AI_USAGE_TIMEZONE` can override).
 
 Price entries may include `long_context: {input_tokens_above: 272000, in: 8,
 out: 30}` beside the short-context `in`/`out` rates. The reporter sums exact
@@ -87,8 +88,21 @@ uncached, cache-read and cache-write input buckets. Above the configured boundar
 the selected rates apply to the entire request, including output. Output tokens
 do not select the tier. Missing input evidence stays unpriced. Cache multipliers
 inherit from the short-context entry unless the long-context entry overrides them.
-Keep provider source URLs and observation dates in private price metadata; context
-thresholds must be verified per model. Unsupported modality/context pricing stays
+Every price row names its provider source URL (`source`) and retrieval date
+(`verified`); context thresholds must be verified per model.
+
+Each logged model id resolves in order: its exact row; an alias (`:variant`, a
+`-YYYYMMDD` or `-YYYY-MM-DD` snapshot, `-thinking` on `claude-*` ids only, a prefix the
+operator lists in `defaults.route_prefixes`, or an explicit `alias_of:`), which keeps the
+verified price; an estimate from the nearest earlier version of the same family and tier
+(`claude-opus-{v}`, `gpt-{v}-sol`) with a list price, used only when no row exists
+for the id or any alias; otherwise unpriced. Date segments are never part of a version
+(`gpt-5-2025-08-07` is never compared with `gpt-5.2`), and `-thinking` elsewhere can name a
+separately priced model (`kimi-k2-thinking`), so it is not stripped there. A row with `in: null` is never replaced
+by an estimate. Prefixes are not stripped generically: `fw-*` and `vendor/model` ids
+carry route-specific prices. Estimates appear only in `estimated_api_equivalent_usd`,
+`estimated_from` and the period's `estimated` map; `api_equivalent_usd`,
+`priced_api_equivalent_usd` and `unpriced` remain verified-only. Unsupported modality/context pricing stays
 unknown. API-equivalent means the configured public list-price comparison, not an
 invoice or proof of actual service-tier charges. This projection does not modify
 the gateway's separate admission prices or budget policy.

@@ -27,11 +27,29 @@ describe('usageCsv', () => {
     expect(filename).toBe('zecori-usage-month-2026-09-by-project.csv');
     expect(rows).toBe(3);
     const lines = csv.split('\r\n').filter(Boolean);
-    expect(lines[0]).toBe('project,requests,failed,rate_limited,tokens,api_equivalent_usd,priced_api_equivalent_usd,pricing,period,period_start,period_end,evidence');
-    expect(lines[1]).toBe('app,10,1,0,5000,1.500000,1.500000,complete,month,2026-09-01,2026-09-19,partial: unreconciled native observations excluded');
+    // Estimate columns are appended, so every earlier column keeps its position.
+    expect(lines[0]).toBe('project,requests,failed,rate_limited,tokens,api_equivalent_usd,priced_api_equivalent_usd,pricing,period,period_start,period_end,evidence,estimated_api_equivalent_usd,estimated_from');
+    expect(lines[1]).toBe('app,10,1,0,5000,1.500000,1.500000,complete,month,2026-09-01,2026-09-19,partial: unreconciled native observations excluded,,');
     expect(lines[2]).toContain('unassigned,3,0,1,800,,0.200000,partial (unpriced models excluded)');
     expect(lines[3].startsWith("'=cmd(),")).toBe(true);
     expect(lines[4]).toContain('(unreconciled native observations),12,,,3400,,,not priced');
+    expect(lines[4].split(',')).toHaveLength(14);
+  });
+  it('puts estimates from an earlier version in their own columns, never in the verified USD columns', () => {
+    const period = { ...month, reconciliation: {}, by_model: [
+      { name: 'claude-opus-5-5', requests: 4, tokens: 2000, api_equivalent_usd: null, priced_api_equivalent_usd: 0, estimated_api_equivalent_usd: 30, unpriced_requests: 0, estimated_from: { 'claude-opus-5-5': 'claude-opus-5' } },
+      { name: 'verified', requests: 1, tokens: 10, api_equivalent_usd: 1, priced_api_equivalent_usd: 1, estimated_api_equivalent_usd: null, unpriced_requests: 0 },
+      { name: 'mystery', requests: 1, tokens: 10, api_equivalent_usd: null, priced_api_equivalent_usd: 0, estimated_api_equivalent_usd: null, unpriced_requests: 1 },
+    ], by_client: [
+      { name: 'mixed', requests: 6, tokens: 3000, api_equivalent_usd: null, priced_api_equivalent_usd: 1, estimated_api_equivalent_usd: 30.5, unpriced_requests: 1,
+        estimated_from: { 'claude-opus-5-5': 'claude-opus-5', 'gpt-6.1-sol': 'gpt-6-sol', ignored: 7 } },
+    ] };
+    const models = usageCsv(period, 'model').csv.split('\r\n').filter(Boolean);
+    expect(models[1]).toBe('claude-opus-5-5,4,0,0,2000,,0.000000,includes estimates,month,2026-09-01,2026-09-19,confirmed observations,30.000000,claude-opus-5-5 from claude-opus-5');
+    expect(models[2]).toBe('verified,1,0,0,10,1.000000,1.000000,complete,month,2026-09-01,2026-09-19,confirmed observations,,');
+    expect(models[3]).toBe('mystery,1,0,0,10,,0.000000,unpriced,month,2026-09-01,2026-09-19,confirmed observations,,');
+    const clients = usageCsv(period, 'client').csv.split('\r\n').filter(Boolean);
+    expect(clients[1]).toBe('mixed,6,0,0,3000,,1.000000,partial (includes estimates; unpriced models excluded),month,2026-09-01,2026-09-19,confirmed observations,30.500000,claude-opus-5-5 from claude-opus-5; gpt-6.1-sol from gpt-6-sol');
   });
   it('adds the provider column for upstreams and names a rolling window by its end', () => {
     const rolling = { ...month, period: 'rolling_24h', period_start: '2026-09-18T10:00:00+00:00', period_end: '2026-09-19T10:00:00+00:00', reconciliation: {} };

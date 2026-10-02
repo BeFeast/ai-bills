@@ -37,7 +37,7 @@ The token is issued by the instance operator; it only authorises `PUT /api/snaps
 | `ZECORI_INGEST_TOKEN` / `ZECORI_INGEST_TOKEN_FILE` | required | bearer token, or a file holding it |
 | `ZECORI_STATE` | `~/.local/state/zecori` | private state: auth copies, usage ledger, last snapshot |
 | `AI_USAGE_TIMEZONE` | `UTC` | day boundary of the ledger (IANA name) |
-| `AI_USAGE_PRICING` | bundled `pricing.default.yml` (no models) | list prices; unknown models are reported as unpriced |
+| `AI_USAGE_PRICING` | bundled `pricing.default.yml` (official Anthropic and OpenAI list prices, each with its source and retrieval date) | list prices; a model priced only through an earlier version is reported as estimated, and unknown models as unpriced |
 | `ZECORI_SUBSCRIPTIONS_FILE` | none | JSON array of subscriptions to show on the Overview |
 | `OPENROUTER_API_KEY` | none | adds the OpenRouter balance |
 | `ZECORI_ALERTS_CONFIG` | none | enables `ai-bills-alerts` (ntfy publish) on the produced snapshot |

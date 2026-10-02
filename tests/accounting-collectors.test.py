@@ -415,6 +415,254 @@ subscriptions:
             self.assertEqual(result[0]['subscriptions'][0]['account_keys'], ['work'])
             self.assertNotIn('do-not-publish', json.dumps(result, default=str))
 
+class PriceResolutionTests(unittest.TestCase):
+    """resolve_price: exact -> alias -> estimate from an earlier version -> unpriced."""
+
+    def setUp(self):
+        self.report = module('ai-usage-report')
+        price = lambda value_in, value_out, **extra: {'in': value_in, 'out': value_out, **extra}
+        self.models = {
+            'claude-opus-5': price(5, 25), 'claude-opus-4-8': price(5, 25), 'claude-opus-4-6': price(5, 25),
+            'claude-fable-5': price(10, 50), 'claude-sonnet-5': price(2, 10),
+            'gpt-6-sol': price(2, 10), 'gpt-5.6-sol': price(4, 20), 'gpt-6-astra': price(10, 50),
+            'gpt-5.6-luna': price(.2, 1.2), 'gpt-5.5': {'in': None, 'out': None},
+            'glm-5.2': {'billing': 'subscription'}, 'fw-kimi-k2p6': price(.6, 2.5),
+        }
+
+    def resolve(self, model, models=None, prefixes=()):
+        entry, basis, source = self.report.resolve_price(model, self.models if models is None else models, prefixes)
+        return basis, source
+
+    def test_exact_row_wins(self):
+        self.assertEqual(self.resolve('claude-opus-5'), ('exact', 'claude-opus-5'))
+
+    def test_dated_snapshot_and_variant_resolve_to_the_same_verified_row(self):
+        self.assertEqual(self.resolve('claude-opus-4-8-20260601'), ('alias', 'claude-opus-4-8'))
+        self.assertEqual(self.resolve('glm-5.2:cloud'), ('alias', 'glm-5.2'))
+
+    def test_thinking_route_is_the_same_model_but_an_own_row_wins(self):
+        self.assertEqual(self.resolve('claude-opus-4-6-thinking'), ('alias', 'claude-opus-4-6'))
+        self.assertEqual(self.resolve('claude-opus-4-6-thinking-20260101'), ('alias', 'claude-opus-4-6'))
+        models = dict(self.models, **{'claude-opus-4-6-thinking': {'in': 7, 'out': 30}})
+        self.assertEqual(self.resolve('claude-opus-4-6-thinking', models), ('exact', 'claude-opus-4-6-thinking'))
+
+    def test_only_declared_route_prefixes_are_stripped(self):
+        self.assertEqual(self.resolve('scribe/claude-opus-5', prefixes=('scribe/',)), ('alias', 'claude-opus-5'))
+        # Undeclared prefixes carry route-specific prices: never conflated with the vendor row.
+        self.assertEqual(self.resolve('scribe/claude-opus-5'), (None, None))
+        self.assertEqual(self.resolve('fw-claude-opus-5'), (None, None))
+        self.assertEqual(self.resolve('openrouter/claude-opus-5'), (None, None))
+        self.assertEqual(self.resolve('fw-kimi-k2p6', prefixes=('fw-',)), ('exact', 'fw-kimi-k2p6'))
+        self.assertEqual(self.report.route_prefixes({'route_prefixes': ['scribe/', '', 3]}), ('scribe/',))
+        self.assertEqual(self.report.route_prefixes({}), ())
+        self.assertEqual(self.report.route_prefixes(None), ())
+
+    def test_explicit_alias_of_follows_to_a_priced_row_and_a_broken_one_prices_nothing(self):
+        models = dict(self.models, **{'house-opus': {'alias_of': 'claude-opus-5'}, 'chain': {'alias_of': 'house-opus'},
+                                      'broken': {'alias_of': 'absent'}, 'loop-a': {'alias_of': 'loop-b'}, 'loop-b': {'alias_of': 'loop-a'}})
+        self.assertEqual(self.resolve('house-opus', models), ('alias', 'claude-opus-5'))
+        self.assertEqual(self.resolve('chain', models), ('alias', 'claude-opus-5'))
+        self.assertEqual(self.resolve('broken', models), (None, None))
+        self.assertEqual(self.resolve('loop-a', models), (None, None))
+
+    def test_openai_dated_snapshots_alias_to_their_model_and_never_take_a_newer_source(self):
+        # Official snapshot ids: gpt-5-2025-08-07, gpt-5.2-2025-12-11, gpt-5.5-2026-04-23.
+        models = dict(self.models, **{'gpt-5': {'in': 1.25, 'out': 10}, 'gpt-5.2': {'in': 1.75, 'out': 14}})
+        self.assertEqual(self.resolve('gpt-5-2025-08-07', models), ('alias', 'gpt-5'))
+        self.assertEqual(self.resolve('gpt-5.2-2025-12-11', models), ('alias', 'gpt-5.2'))
+        # A deliberate in: null row stays unpriced through its dated snapshot: no estimate goes around it.
+        self.assertEqual(self.resolve('gpt-5.5-2026-04-23', models), ('alias', 'gpt-5.5'))
+        self.assertEqual(self.report.price_row({'model': 'gpt-5.5-2026-04-23', 'in_uncached': 1000}, {}, models)[2:], (False, None, None))
+        # Without its own row a dated id is never priced from a newer version (gpt-5.2 > gpt-5).
+        newer_only = {k: v for k, v in models.items() if k != 'gpt-5'}
+        self.assertEqual(self.resolve('gpt-5-2025-08-07', newer_only), (None, None))
+        self.assertEqual(self.resolve('claude-opus-4-20250514', {'claude-opus-4-1': {'in': 15, 'out': 75}}), (None, None))
+        # A date is never part of a version, so it can never outrank a real version number.
+        self.assertEqual(self.report.version_stem('gpt-5-2025-08-07'), ('gpt-{v}-2025-08-07', (5,)))
+        self.assertEqual(self.report.version_stem('claude-opus-4-20250514'), ('claude-opus-{v}-20250514', (4,)))
+        self.assertEqual(self.report.version_stem('model-2025'), None)
+        # A dated table key still serves its own version as a lineage source.
+        self.assertEqual(self.resolve('gpt-5.1', {'gpt-5-2025-08-07': {'in': 1.25, 'out': 10}}), ('estimated', 'gpt-5-2025-08-07'))
+
+    def test_thinking_suffix_is_stripped_only_for_claude(self):
+        # Elsewhere "-thinking" can be a separately priced model (Moonshot kimi-k2-thinking).
+        models = {'kimi-k2': {'in': .6, 'out': 2.5}, 'gpt-5.2': {'in': 1.75, 'out': 14}}
+        self.assertEqual(self.resolve('kimi-k2-thinking', models), (None, None))
+        self.assertEqual(self.resolve('gpt-5.2-thinking', models), (None, None))
+        self.assertNotIn('kimi-k2', self.report.alias_ids('kimi-k2-thinking'))
+        self.assertEqual(self.report.alias_ids('claude-opus-4-6-20260101-thinking'),
+                         ['claude-opus-4-6-20260101', 'claude-opus-4-6'])
+
+    def test_lineage_takes_the_nearest_earlier_version_of_the_same_family(self):
+        self.assertEqual(self.resolve('claude-opus-5-5'), ('estimated', 'claude-opus-5'))
+        self.assertEqual(self.resolve('claude-fable-5-1'), ('estimated', 'claude-fable-5'))
+        self.assertEqual(self.resolve('claude-sonnet-5-5'), ('estimated', 'claude-sonnet-5'))
+        # Dotted versions compare numerically: 6.1 > 6 > 5.6.
+        self.assertEqual(self.resolve('gpt-6.1-sol'), ('estimated', 'gpt-6-sol'))
+        without = {k: v for k, v in self.models.items() if k not in ('claude-opus-5', 'gpt-6-sol')}
+        self.assertEqual(self.resolve('claude-opus-5-5', without), ('estimated', 'claude-opus-4-8'))
+        self.assertEqual(self.resolve('gpt-6.1-sol', without), ('estimated', 'gpt-5.6-sol'))
+        self.assertEqual(self.resolve('claude-opus-4-10'), ('estimated', 'claude-opus-4-8'))
+        # Aliases normalize before lineage; a later version is never a source.
+        self.assertEqual(self.resolve('claude-opus-5-5-20261001-thinking'), ('estimated', 'claude-opus-5'))
+        self.assertEqual(self.resolve('claude-opus-4-5'), (None, None))
+        # The undated row wins a tie with its own snapshot.
+        dated = dict(self.models, **{'claude-opus-5-20260101': {'in': 9, 'out': 9}})
+        self.assertEqual(self.resolve('claude-opus-5-5', dated), ('estimated', 'claude-opus-5'))
+
+    def test_lineage_never_crosses_tiers_or_families(self):
+        self.assertEqual(self.resolve('gpt-6.2-luna', {'gpt-6-sol': {'in': 2, 'out': 10}, 'gpt-6-astra': {'in': 10, 'out': 50}}), (None, None))
+        self.assertEqual(self.resolve('claude-opus-6', {'claude-fable-5': {'in': 10, 'out': 50}, 'claude-sonnet-5': {'in': 2, 'out': 10}}), (None, None))
+        self.assertEqual(self.resolve('gpt-6.1-luna'), ('estimated', 'gpt-5.6-luna'))
+        # A tierless id is its own stem: no tier is guessed for it.
+        self.assertEqual(self.resolve('gpt-6'), (None, None))
+        self.assertEqual(self.resolve('claude-3-5-haiku', {'claude-haiku-4-5': {'in': 1, 'out': 5}}), (None, None))
+
+    def test_a_row_without_a_list_price_is_never_replaced_or_used_by_an_estimate(self):
+        # gpt-5.5 exists with in: null on purpose; it stays unpriced instead of borrowing gpt-5.4's price.
+        models = dict(self.models, **{'gpt-5.4': {'in': 2.5, 'out': 15}})
+        self.assertEqual(self.resolve('gpt-5.5', models), ('exact', 'gpt-5.5'))
+        self.assertEqual(self.report.price_row({'model': 'gpt-5.5', 'in_uncached': 1000}, {}, models)[2:], (False, None, None))
+        # ...and it is no source for a newer version either: the nearest priced earlier row is.
+        self.assertEqual(self.resolve('gpt-5.6', models), ('estimated', 'gpt-5.4'))
+        self.assertEqual(self.resolve('gpt-5.6'), (None, None))
+        self.assertEqual(self.resolve('glm-5.3'), (None, None))
+
+    def test_unknown_stays_unknown_and_estimates_never_count_as_priced(self):
+        for model in ('kimi-k9', 'gpt-oss-120b', 'mystery', '', None):
+            self.assertEqual(self.resolve(model), (None, None))
+            self.assertEqual(self.report.cost({'model': model, 'in_uncached': 10}, {}, self.models), (0.0, None, False))
+        row = {'model': 'claude-opus-5-5', 'in_uncached': 1_000_000, 'billing_mode': 'included'}
+        self.assertEqual(self.report.cost(row, {}, self.models), (0.0, None, False))
+        self.assertEqual(self.report.price_row(row, {}, self.models), (0.0, None, False, 5.0, 'claude-opus-5'))
+        self.assertIsNone(self.report.lookup('claude-opus-5-5', self.models))
+        self.assertIs(self.report.lookup('claude-opus-4-6-thinking', self.models), self.models['claude-opus-4-6'])
+
+    def test_bundled_table_prices_current_models_from_official_rows(self):
+        import yaml
+        doc = yaml.safe_load((ROOT / 'collector' / 'pricing.default.yml').read_text())
+        defaults, models = doc['defaults'], doc['models']
+        for key, entry in models.items():
+            self.assertTrue(str(entry.get('source', '')).startswith('https://'), key)
+            self.assertRegex(str(entry.get('verified')), r'^\d{4}-\d{2}-\d{2}$', key)
+        expected = {'claude-opus-5-5': ('exact', 'claude-opus-5-5'), 'claude-fable-5-1': ('exact', 'claude-fable-5-1'),
+                    'claude-sonnet-5-5': ('exact', 'claude-sonnet-5-5'), 'gpt-6-luna': ('exact', 'gpt-6-luna'),
+                    'gpt-6.1-sol': ('exact', 'gpt-6.1-sol'), 'claude-opus-4-5-20251101': ('alias', 'claude-opus-4-5'),
+                    'claude-sonnet-4-5-20250929': ('alias', 'claude-sonnet-4-5'), 'claude-opus-4-6-thinking': ('alias', 'claude-opus-4-6'),
+                    'claude-haiku-4-5-20251001': ('alias', 'claude-haiku-4-5')}
+        for model, resolution in expected.items():
+            self.assertEqual(self.resolve(model, models, self.report.route_prefixes(defaults)), resolution, model)
+        # USD per million tokens of one bucket, measured on a 100K-token request (short context).
+        million = lambda model, field, count=100_000: self.report.cost({'model': model, 'in_uncached': 0, 'cache_read': 0, 'cache_write': 0, field: count}, defaults, models)[0] * 1_000_000 / count
+        # Per-model cache-read rates: Opus 5.5 0.05x, Fable 5.1 0.025x, gpt-6.1-sol 0.05x.
+        self.assertAlmostEqual(million('claude-opus-5-5', 'cache_read'), .2)
+        self.assertAlmostEqual(million('claude-opus-5-5', 'cache_write'), 5)
+        self.assertAlmostEqual(million('claude-fable-5-1', 'cache_read'), .25)
+        self.assertAlmostEqual(million('gpt-6.1-sol', 'cache_read'), .1)
+        self.assertAlmostEqual(million('gpt-6-luna', 'out_total'), .5)
+        self.assertAlmostEqual(million('claude-opus-4-5-20251101', 'out_total'), 25)
+        self.assertAlmostEqual(million('claude-sonnet-5', 'in_uncached'), 2)
+        # Above 272K input tokens the whole request moves to the long-context rates.
+        self.assertAlmostEqual(million('gpt-6-luna', 'in_uncached'), .1)
+        self.assertAlmostEqual(million('gpt-6-luna', 'in_uncached', 272_001), .2)
+        self.assertAlmostEqual(million('gpt-6.1-sol', 'cache_read', 272_001), .2)
+
+    def test_bundled_table_matches_the_official_pages_row_by_row(self):
+        """Every bundled list price, pinned: a changed number must be a deliberate, re-verified edit.
+
+        (in, out, cache read multiplier, cache write multiplier, long-context in, long-context out),
+        USD per MTok, as published on the cited pages on 2026-10-02."""
+        import yaml
+        models = yaml.safe_load((ROOT / 'collector' / 'pricing.default.yml').read_text())['models']
+        official = {
+            'claude-fable-5-1': (10, 50, .025, 1.25, None, None), 'claude-fable-5': (10, 50, .1, 1.25, None, None),
+            'claude-opus-5-5': (4, 20, .05, 1.25, None, None), 'claude-opus-5': (5, 25, .1, 1.25, None, None),
+            'claude-opus-4-8': (5, 25, .1, 1.25, None, None), 'claude-opus-4-7': (5, 25, .1, 1.25, None, None),
+            'claude-opus-4-6': (5, 25, .1, 1.25, None, None), 'claude-opus-4-5': (5, 25, .1, 1.25, None, None),
+            'claude-sonnet-5-5': (2, 10, .1, 1.25, None, None), 'claude-sonnet-5': (2, 10, .1, 1.25, None, None),
+            'claude-sonnet-4-6': (3, 15, .1, 1.25, None, None), 'claude-sonnet-4-5': (3, 15, .1, 1.25, None, None),
+            'claude-haiku-4-5': (1, 5, .1, 1.25, None, None),
+            'gpt-6-astra': (10, 50, .1, 1.25, 20, 75), 'gpt-6.1-sol': (2, 10, .05, 1.25, 4, 15),
+            'gpt-6-sol': (2, 10, .1, 1.25, 4, 15), 'gpt-6-luna': (.1, .5, .1, 1.25, .2, .75),
+            'gpt-5.6-sol': (4, 20, .1, 1.25, 8, 30), 'gpt-5.6-terra': (2, 12, .1, 1.25, 4, 18),
+            'gpt-5.6-luna': (.2, 1.2, .1, 1.25, .4, 1.8),
+        }
+        self.assertEqual(set(models), set(official))
+        for key, expected in official.items():
+            entry = models[key]
+            tier = entry.get('long_context') or {}
+            actual = (entry['in'], entry['out'], entry['cache_read_multiplier'], entry['cache_write_multiplier'], tier.get('in'), tier.get('out'))
+            self.assertEqual(actual, expected, key)
+            if tier:
+                self.assertEqual(tier.get('input_tokens_above'), 272000, key)
+
+
+class EstimateRollupTests(unittest.TestCase):
+    def rollup(self, records, models):
+        from unittest.mock import patch
+        report = module('ai-usage-report')
+        with tempfile.TemporaryDirectory() as directory:
+            report.LEDGER_DIR = directory
+            (Path(directory) / 'ledger-fixture.jsonl').write_text('\n'.join(json.dumps(row) for row in records))
+            original = report.local_day
+            with patch.object(report, 'local_day', side_effect=lambda ts=None: '2026-10-02' if ts is None else original(ts)):
+                return report.rollup({}, models, days=1, projects=[])
+
+    def test_estimates_are_reported_beside_verified_amounts_never_inside(self):
+        models = {'claude-opus-5': {'in': 5, 'out': 25}, 'verified': {'in': 1, 'out': 2}}
+        result = self.rollup([
+            dict(ts='2026-10-02T08:00:00Z', model='verified', client='a', in_uncached=1_000_000),
+            dict(ts='2026-10-02T08:01:00Z', model='claude-opus-5-5', client='a', in_uncached=1_000_000),
+            dict(ts='2026-10-02T08:02:00Z', model='claude-opus-5-5', client='b', out_total=1_000_000),
+            dict(ts='2026-10-02T08:03:00Z', model='mystery', client='b', in_uncached=10),
+        ], models)['month']
+        self.assertIsNone(result['api_equivalent_usd'])
+        self.assertEqual(result['priced_api_equivalent_usd'], 1.0)
+        self.assertEqual(result['estimated_api_equivalent_usd'], 30.0)
+        self.assertEqual(result['unpriced_requests'], 1)
+        # `unpriced` keeps "no verified price"; `estimated` is the subset with a source model.
+        self.assertEqual(result['unpriced'], {'claude-opus-5-5': 2_000_000, 'mystery': 10})
+        self.assertEqual(result['estimated'], {'claude-opus-5-5': {'tokens': 2_000_000, 'usd': 30.0, 'from': 'claude-opus-5'}})
+        clients = {row['name']: row for row in result['by_client']}
+        self.assertEqual((clients['a']['priced_api_equivalent_usd'], clients['a']['estimated_api_equivalent_usd'], clients['a']['unpriced_requests']), (1.0, 5.0, 0))
+        self.assertEqual(clients['a']['estimated_from'], {'claude-opus-5-5': 'claude-opus-5'})
+        self.assertEqual((clients['b']['estimated_api_equivalent_usd'], clients['b']['unpriced_requests']), (25.0, 1))
+        by_model = {row['name']: row for row in result['by_model']}
+        self.assertEqual(by_model['verified']['api_equivalent_usd'], 1.0)
+        self.assertIsNone(by_model['verified']['estimated_api_equivalent_usd'])
+        self.assertNotIn('estimated_from', by_model['verified'])
+        self.assertEqual(by_model['claude-opus-5-5']['estimated_from'], {'claude-opus-5-5': 'claude-opus-5'})
+        self.assertIsNone(by_model['mystery']['estimated_api_equivalent_usd'])
+
+    def test_zero_token_rows_cost_nothing_and_do_not_make_a_total_unknown(self):
+        result = self.rollup([
+            dict(ts='2026-10-02T08:00:00Z', model='priced', client='work', in_uncached=1_000_000),
+            dict(ts='2026-10-02T08:01:00Z', model='claude-retired-1', client='probe', status=404, failed=True),
+            dict(ts='2026-10-02T08:02:00Z', model='claude-retired-1', client='probe', status=404, failed=True, in_uncached=0, out_total=0),
+        ], {'priced': {'in': 1, 'out': 2}})['month']
+        self.assertEqual(result['api_equivalent_usd'], 1.0)
+        self.assertEqual(result['unpriced'], {})
+        self.assertEqual(result['estimated'], {})
+        probe = next(row for row in result['by_client'] if row['name'] == 'probe')
+        self.assertEqual((probe['tokens'], probe['requests'], probe['api_equivalent_usd'], probe['unpriced_requests']), (0, 2, 0.0, 0))
+
+    def test_cli_json_reports_estimates_separately(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        report = module('ai-usage-report')
+        report.rows_for = lambda _: iter([{'model': 'gpt-6.1-sol', 'client': 'x', 'in_uncached': 1_000_000},
+                                          {'model': 'retired', 'client': 'y', 'failed': True}])
+        report.load_pricing = lambda: ({}, {'gpt-6-sol': {'in': 2, 'out': 10}})
+        output = io.StringIO()
+        with patch('sys.argv', ['ai-usage-report', '--json']), redirect_stdout(output): report.main()
+        result = json.loads(output.getvalue())
+        self.assertIsNone(result['groups']['x']['api_equivalent_usd'])
+        self.assertEqual(result['groups']['x']['estimated_api_equivalent_usd'], 2.0)
+        self.assertEqual(result['groups']['y']['api_equivalent_usd'], 0.0)
+        self.assertEqual(result['estimated_models'], {'gpt-6.1-sol': {'tokens': 1_000_000, 'usd': 2.0, 'from': 'gpt-6-sol'}})
+        self.assertEqual(result['unpriced_models'], {'gpt-6.1-sol': 1_000_000})
+
+
 class TapBatchTests(unittest.TestCase):
     def test_native_queue_batch_count_and_all_records_are_persisted(self):
         from unittest.mock import patch
