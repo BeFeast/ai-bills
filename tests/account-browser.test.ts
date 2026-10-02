@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runInNewContext } from 'node:vm';
 import type { AppConfig } from '../src/lib/config';
-import { accountBrowser, identityExpression, parseAccountBrowserInput, projectBrowserProxy } from '../src/lib/account-browser';
+import { accountBrowser, browserActionStatus, identityExpression, parseAccountBrowserInput, projectBrowserProxy } from '../src/lib/account-browser';
+import { manualLeaseExpired } from '../src/lib/account-browser-types';
 import type { AccountBrowserConnection, BrowserTarget } from '../src/lib/account-browser-cdp';
 import { GET, POST } from '../src/app/api/account-browser/route';
 
 let sequence = 0;
 /** Target ids are unique across fakes that share one target list. */
 let created = 0;
-afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 function config(): AppConfig {
   return { accounts: [{ key: 'personal', provider: 'claude', label: 'Personal', email: 'intended@example.test' }],
     account_browsers: [{ subscription_id: 'subscription-personal', account_key: 'personal', profile_id: `ai-bills-test-${++sequence}`,
@@ -133,6 +134,51 @@ describe('account-specific website management', () => {
     const state = await accountBrowser(config(), { accountKey: 'personal' }, 'close', deps);
     expect(state.message).toContain('closure cannot be confirmed');
     expect(deps.connect).not.toHaveBeenCalled();
+  });
+
+  it('answers Extend session without a tracked lease (Zecori restarted) with an ended session, not a broken binding', async () => {
+    const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
+    const state = await accountBrowser(config(), { accountKey: 'personal' }, 'renew', deps);
+    expect(state.status).toBe('identity_unknown');
+    expect(state.manualLeaseExpiresAt).toBeNull();
+    expect(state.message).toContain('session already ended');
+    expect(state.message).not.toContain('binding is invalid');
+    expect(deps.connect).not.toHaveBeenCalled();
+    expect(browserActionStatus('renew', state)).toBe(409);
+  });
+
+  it('treats an expired manual lease as ended when Extend session is pressed, without renewing it', async () => {
+    vi.stubEnv('AI_BILLS_BROWSER_LIFECYCLE_URL', 'http://lifecycle.example.test');
+    vi.stubEnv('AI_BILLS_BROWSER_LIFECYCLE_TOKEN', 'fixture-token');
+    const start = Date.parse('2026-10-02T09:19:00Z');
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(start);
+    const fetch = vi.fn(async (_url: string, options: RequestInit) => {
+      if (options.method === 'DELETE') return new Response('{}');
+      return new Response(JSON.stringify({ lease_id: 'fixture-lease', expires_at: (start + 1_800_000) / 1000 }));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const settings = config(); const deps = browser({ state: 'authenticated', email: 'intended@example.test' });
+    const opened = await accountBrowser(settings, { accountKey: 'personal' }, 'manage', deps);
+    expect(opened.manualLeaseExpiresAt).toBe('2026-10-02T09:49:00.000Z');
+    expect(manualLeaseExpired(opened.manualLeaseExpiresAt, start)).toBe(false);
+    vi.setSystemTime(start + 1_860_000);
+    expect(manualLeaseExpired(opened.manualLeaseExpiresAt, Date.now())).toBe(true);
+    const renewed = await accountBrowser(settings, { accountKey: 'personal' }, 'renew', deps);
+    expect(renewed.status).toBe('identity_unknown');
+    expect(renewed.manualLeaseExpiresAt).toBeNull();
+    expect(renewed.message).toContain('session already ended');
+    expect(fetch.mock.calls.filter(([, options]) => options.method === 'PATCH')).toHaveLength(0);
+    expect(browserActionStatus('renew', renewed)).toBe(409);
+  });
+
+  it('keeps the HTTP mapping of the other browser actions', () => {
+    const base = { status: 'ready', manualLeaseExpiresAt: '2099-01-01T00:00:00.000Z' } as const;
+    expect(browserActionStatus('renew', base)).toBe(200);
+    expect(browserActionStatus('manage', { ...base, status: 'login_required' })).toBe(409);
+    expect(browserActionStatus('login', { ...base, status: 'unavailable' })).toBe(503);
+    expect(browserActionStatus('close', { status: 'identity_unknown', manualLeaseExpiresAt: null })).toBe(200);
+    expect(manualLeaseExpired(null, Date.now())).toBe(false);
+    expect(manualLeaseExpired('not-a-date', Date.now())).toBe(false);
   });
 
   it('reuses a manual lease, renews it explicitly, and releases it before another account opens', async () => {

@@ -46,8 +46,9 @@ const links: Record<string, [string, string]> = {
   google: ['https://accounts.google.com/', 'https://one.google.com/settings'],
   ollamacloud: ['https://ollama.com/signin', 'https://ollama.com/settings'],
   kimi: ['https://www.kimi.ai/', 'https://www.kimi.ai/code/console'],
-  xai: ['https://grok.com/', 'https://grok.com/settings'],
-  opencodesst: ['https://opencode.ai/auth', 'https://opencode.ai/workspace'],
+  // grok.com/settings and opencode.ai/workspace answer 404; billing is a grok.com panel, and /auth lands in the signed-in workspace.
+  xai: ['https://grok.com/', 'https://grok.com/?_s=billing'],
+  opencodesst: ['https://opencode.ai/auth', 'https://opencode.ai/auth'],
 };
 function subscription(raw: Row, fallbackId: string): ProductSubscription {
   const provider = text(raw.provider); const defaults = links[key(provider)];

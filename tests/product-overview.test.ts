@@ -17,6 +17,18 @@ describe('product overview', () => {
     expect(result.usage.reconciliation).toEqual({ status: 'partial', confirmedTokens: 130,
       confirmedRequests: 2, nativeObservations: 3 });
   });
+  it('defaults provider links to pages that exist (grok.com/settings and opencode.ai/workspace answer 404)', () => {
+    const result = buildProductOverview(config, { subscriptions: [
+      { id: 'xai', provider: 'xAI', plan: 'SuperGrok' }, { id: 'opencode', provider: 'OpenCode (SST)', plan: 'Zen' },
+    ] }, '2026-10');
+    const byId = Object.fromEntries(result.subscriptions.map(value => [value.id, value]));
+    expect(byId.xai.manageUrl).toBe('https://grok.com/?_s=billing');
+    expect(byId.opencode.manageUrl).toBe('https://opencode.ai/auth');
+    for (const value of result.subscriptions) {
+      expect(value.manageUrl).not.toBe('https://grok.com/settings');
+      expect(value.manageUrl).not.toBe('https://opencode.ai/workspace');
+    }
+  });
   it('uses only explicitly linked account emails for subscription labels', () => {
     const result = buildProductOverview({ ...config,
       accounts: [{ key: 'linked', provider: 'claude', label: 'Personal', email: 'owner@example.com' }, { key: 'unlinked', provider: 'claude', label: 'Work', email: 'other@example.com' }],

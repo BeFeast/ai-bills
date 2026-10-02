@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ProductSubscription } from '@/lib/overview';
 
-import { canOpenAccountBrowser, type AccountBrowserSelector, type AccountBrowserState as BrowserState } from '@/lib/account-browser-types';
+import { canOpenAccountBrowser, manualLeaseExpired, type AccountBrowserSelector, type AccountBrowserState as BrowserState } from '@/lib/account-browser-types';
 import { Button, Pill, type PillTone } from './ui';
 
 const labels: Record<BrowserState['status'], string> = {
@@ -120,10 +120,14 @@ export function AccountBrowserAccess({ subscription, account, children, showEntr
     {subscription?.manageUrl || subscription?.loginUrl ? <a className="access__link" href={subscription.manageUrl || subscription.loginUrl!} target="_blank" rel="noreferrer" title={`Opens the provider website in your current browser. Check which account is signed in: ${label}.`}>Provider website ↗</a> : null}
     {showEntranceLink && hasBrowserAccess ? <a className="access__link" href={`/account-browser?${new URLSearchParams(selector).toString()}`} title="Bookmark this entrance to start the browser when needed">Bookmark browser access</a> : null}
   </div> : null;
+  // An expired lease cannot be extended or closed any more: offer to open the browser again instead.
+  const leaseExpired = manualLeaseExpired(state?.manualLeaseExpiresAt, now);
   const lease = state?.manualLeaseExpiresAt ? <div className="access__lease">
-    <span>{Date.parse(state.manualLeaseExpiresAt) <= now ? 'Browser lease expired at ' : 'Browser access expires at '}{time(state.manualLeaseExpiresAt)}</span>
-    <Button variant="ghost" size="sm" disabled={busy} onClick={() => void updateLease('renew')}>Extend session</Button>
-    <Button variant="ghost" size="sm" disabled={busy} onClick={() => void updateLease('close')}>Close session</Button>
+    <span>{leaseExpired ? 'Browser lease expired at ' : 'Browser access expires at '}{time(state.manualLeaseExpiresAt)}</span>
+    {leaseExpired ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void openAccount()}>Open again</Button> : <>
+      <Button variant="ghost" size="sm" disabled={busy} onClick={() => void updateLease('renew')}>Extend session</Button>
+      <Button variant="ghost" size="sm" disabled={busy} onClick={() => void updateLease('close')}>Close session</Button>
+    </>}
   </div> : null;
   const refreshButton = <button type="button" className="access__refresh" onClick={() => void refresh()} disabled={busy} aria-label={`Refresh ${provider} account browser status`} title="Check account status again">↻</button>;
   const mismatch = state?.status === 'mismatch' && state.verifiedEmail ? <small className="access__mismatch">Signed in as {state.verifiedEmail}</small> : null;
