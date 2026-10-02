@@ -6,9 +6,12 @@ vi.hoisted(() => {
   process.env.AI_BILLS_CONFIG = `${process.cwd()}/tests/fixtures/accounts.toml`;
 });
 
-import { closeAllSessions, fetchUsageThroughCdp, resetCdpHousekeepingForTests } from '../src/lib/cdp';
+import { closeAllSessions, fetchUsageThroughCdp, resetCdpHousekeepingForTests, resetClaudeWebReadsForTests } from '../src/lib/cdp';
+import { resetBrowserLeasesForTests, setBrowserLeaseRetryForTests } from '../src/lib/browser-lease';
 import { setCdpWebSocketConstructorForTests } from '../src/lib/cdp-startup';
 import { loadConfig, type AccountConfig } from '../src/lib/config';
+import { consistencyChecks, resetConsistencyChecksForTests } from '../src/lib/quota-consistency';
+import { FakeLifecycleOwner } from './fixtures/lifecycle-owner';
 
 type WsPlan =
   | { kind: 'open' }
@@ -35,6 +38,8 @@ const state = {
   closedTargets: [] as string[],
   /** Values for the next provider evaluations, in order; the default cursor payload once exhausted. */
   providerValues: [] as unknown[],
+  /** Answer per provider expression when no queued value is left; undefined falls back to the cursor payload. */
+  providerFor: undefined as ((expression: string) => unknown) | undefined,
 };
 
 class FakeWebSocket {
@@ -127,7 +132,7 @@ class FakeWebSocket {
       response = { id: message.id, result: { result: { value: 'https://cursor.com' } } };
     } else if (message.method === 'Runtime.evaluate') {
       state.providerDispatches += 1;
-      const queued = state.providerValues.length ? state.providerValues.shift() : undefined;
+      const queued = state.providerValues.length ? state.providerValues.shift() : state.providerFor?.(String(message.params?.expression));
       response = state.providerError
         ? { id: message.id, error: { message: state.providerError } }
         : queued !== undefined ? { id: message.id, result: { result: { value: queued } } } : {
@@ -222,6 +227,7 @@ beforeEach(() => {
   state.attachedTo = '';
   state.closedTargets = [];
   state.providerValues = [];
+  state.providerFor = undefined;
   resetCdpHousekeepingForTests();
   vi.useRealTimers();
   setCdpWebSocketConstructorForTests(FakeWebSocket as never);
@@ -716,5 +722,88 @@ describe('CDP startup lifetime and ownership', () => {
     expect(state.methods.filter((method) => method === 'Target.createTarget')).toHaveLength(1);
     expect(state.methods.filter((method) => method === 'Target.closeTarget')).toHaveLength(1);
     expect(state.closedSockets).toBe(1);
+  });
+});
+
+describe('simultaneous due reads against the browser lifecycle owner', () => {
+  const orgId = '00000000-0000-4000-8000-000000000000';
+  const claudePayload = { five_hour: { utilization: 12, resets_at: '2099-01-01T05:00:00Z' }, seven_day: { utilization: 40, resets_at: '2099-01-07T00:00:00Z' } };
+  // Production shape: the personal account has its own profile; claude-work, Kimi and Cursor share one.
+  const personal = account({ key: 'claude-personal', provider: 'claude', label: 'Claude personal', email: 'personal@example.test', claude_org_id: orgId, claude_web_quota: true, cdp_profile_id: 'fixture-personal' });
+  const work = account({ key: 'claude-work', provider: 'claude', label: 'Claude work', email: 'work@example.test', claude_org_id: orgId, claude_web_quota: true, cdp_profile_id: 'fixture-work' });
+  const kimi = account({ key: 'kimi-work', provider: 'kimi', label: 'Kimi', email: 'work@example.test', cdp_profile_id: 'fixture-work' });
+  const cursor = account({ key: 'cursor', provider: 'cursor', label: 'Cursor', email: 'work@example.test', cdp_profile_id: 'fixture-work' });
+  const accounts = [personal, work, kimi, cursor];
+  const proxyEntry = () => ({ ok: true, status: 200, source: 'direct', fetched_at: new Date(Date.now() - 60_000).toISOString(), data: claudePayload });
+  const options = () => ({ snapshot: { claude_usage: { 'personal@example.test': proxyEntry(), 'work@example.test': proxyEntry() } }, scope: null, accounts });
+
+  /** One refresh as refreshUsage schedules it: proxy/website sources together, browser-only sources one after another. */
+  const refresh = async () => {
+    const [claudePersonal, claudeWork, browser] = await Promise.all([
+      fetchUsageThroughCdp(personal, options()), fetchUsageThroughCdp(work, options()),
+      (async () => [await fetchUsageThroughCdp(kimi, options()), await fetchUsageThroughCdp(cursor, options())])(),
+    ]);
+    return { claudePersonal, claudeWork, kimi: browser[0], cursor: browser[1] };
+  };
+
+  const install = (owner: FakeLifecycleOwner) => {
+    vi.stubEnv('AI_BILLS_BROWSER_LIFECYCLE_URL', owner.base);
+    vi.stubEnv('AI_BILLS_BROWSER_LIFECYCLE_TOKEN', 'fixture-token');
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => owner.handles(String(url)) ? owner.handle(String(url), init) : Promise.resolve(versionResponse())));
+    state.providerFor = (expression) => expression.includes('https://claude.ai') ? { ok: true, status: 200, data: claudePayload }
+      : expression.includes('access_token') ? { ok: true, status: 200, statusText: 'OK', data: { totalQuota: { limit: '100', remaining: '96' } } }
+      : undefined;
+  };
+
+  beforeEach(() => {
+    setBrowserLeaseRetryForTests({ baseMs: 2, capMs: 10 });
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    resetBrowserLeasesForTests(); setBrowserLeaseRetryForTests(null);
+    resetClaudeWebReadsForTests(); resetConsistencyChecksForTests();
+    vi.unstubAllEnvs();
+  });
+
+  test('the owner refuses all but one of the lease requests that arrive at once (the production failure)', async () => {
+    const owner = new FakeLifecycleOwner(10);
+    const answers = await Promise.all(['fixture-personal', 'fixture-work', 'fixture-work', 'fixture-work'].map((profile) =>
+      owner.handle(`${owner.base}/leases`, { method: 'POST', body: JSON.stringify({ profile_id: profile, purpose: 'quota' }) })));
+    expect(answers.map((answer) => answer.status).sort()).toEqual([201, 409, 409, 409]);
+    expect(owner.refusals).toEqual(['controller_busy', 'controller_busy', 'controller_busy']);
+  });
+
+  test('both Claude accounts get a real check and Kimi/Cursor are not refused when every read is due at once', async () => {
+    const owner = new FakeLifecycleOwner(10);
+    install(owner);
+
+    const result = await refresh();
+
+    expect(consistencyChecks(null)).toMatchObject([
+      { accountKey: 'claude-personal', verdict: 'consistent' },
+      { accountKey: 'claude-work', verdict: 'consistent' },
+    ]);
+    expect([result.kimi.error, result.cursor.error]).toEqual([undefined, undefined]);
+    expect(result.kimi.ok && result.cursor.ok && result.claudePersonal.ok && result.claudeWork.ok).toBe(true);
+    expect(owner.refusals).toEqual([]);
+    expect(owner.maxPerProfile).toBe(1);
+    expect(owner.grants.sort()).toEqual(['fixture-personal', 'fixture-work', 'fixture-work', 'fixture-work']);
+    expect(owner.liveTotal).toBe(0);
+    // Every tab a read opened was closed again.
+    expect(state.methods.filter((method) => method === 'Target.closeTarget')).toHaveLength(state.methods.filter((method) => method === 'Target.createTarget').length);
+  });
+
+  test('contention from outside this process (the owner\'s sweep, a second instance) is retried until both checks are real', async () => {
+    const owner = new FakeLifecycleOwner(10);
+    owner.externalBusy = 3;
+    install(owner);
+
+    const result = await refresh();
+
+    expect(consistencyChecks(null).map((check) => check.verdict)).toEqual(['consistent', 'consistent']);
+    expect([result.kimi.error, result.cursor.error]).toEqual([undefined, undefined]);
+    expect(owner.refusals).toEqual(['controller_busy', 'controller_busy', 'controller_busy']);
+    expect(owner.maxPerProfile).toBe(1);
+    expect(owner.liveTotal).toBe(0);
   });
 });
