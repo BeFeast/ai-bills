@@ -5,7 +5,7 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import { schema, memberships, ingestTokens } from '../src/db/schema';
 import { APP_ROLE, MIGRATIONS_FOLDER, ensureTenant, withTenant, type Db } from '../src/lib/db';
-import { ensureIngestTokens, isDenied, membershipCacheSize, membershipFor, requireTenant, resetTenantCache, resolveTenant, tenantForIngestDigest } from '../src/lib/tenant';
+import { MEMBERSHIP_CACHE_MAX, ensureIngestTokens, isDenied, membershipCacheSize, membershipFor, rememberMembership, requireTenant, resetTenantCache, resolveTenant, tenantForIngestDigest, type TenantDenied } from '../src/lib/tenant';
 import { IDENTITY_HEADERS, membershipMode, stripIdentityHeaders } from '../src/lib/hosted-auth';
 
 let requestHeaders = new Headers();
@@ -79,17 +79,52 @@ describe('membership decides the tenant', () => {
 
 describe('resolveTenant through the forwarded identity', () => {
   const env = { AI_BILLS_AUTH: 'clerk', DATABASE_URL: 'postgres://mocked', AI_BILLS_TENANT: 'oleg', AI_BILLS_ALLOWED_EMAILS: 'owner@example.test' };
-  it('reads the identity the middleware forwarded, caches per user and keeps the cache bounded', async () => {
+  const asUser = (userId: string, email: string) => { requestHeaders = new Headers({ [IDENTITY_HEADERS.userId]: userId, [IDENTITY_HEADERS.email]: email }); };
+  it('reads the identity the middleware forwarded and caches the answer per user', async () => {
     resetTenantCache();
-    requestHeaders = new Headers({ [IDENTITY_HEADERS.userId]: 'user_owner', [IDENTITY_HEADERS.email]: 'owner@example.test' });
-    expect(await resolveTenant(env)).toMatchObject({ slug: 'oleg', userId: 'user_owner' });
-    requestHeaders = new Headers();
-    expect(await resolveTenant(env)).toEqual({ denied: true, reason: 'no-identity', email: null });
-    for (let i = 0; i < 1200; i++) {
-      requestHeaders = new Headers({ [IDENTITY_HEADERS.userId]: `user_bulk_${i}`, [IDENTITY_HEADERS.email]: `bulk${i}@example.test` });
-      await resolveTenant(env);
-    }
-    expect(membershipCacheSize()).toBeLessThanOrEqual(1000);
+    // Every uncached membership lookup starts with one select on memberships; a cache hit makes none.
+    const lookups = vi.spyOn(db, 'select');
+    try {
+      asUser('user_owner', 'owner@example.test');
+      expect(await resolveTenant(env)).toMatchObject({ slug: 'oleg', userId: 'user_owner' });
+      const afterFirst = lookups.mock.calls.length;
+      expect(afterFirst).toBeGreaterThan(0);
+      expect(await resolveTenant(env)).toMatchObject({ slug: 'oleg', userId: 'user_owner' });
+      expect(lookups).toHaveBeenCalledTimes(afterFirst);
+      asUser('user_stranger', 'stranger@example.test');
+      expect(await resolveTenant(env)).toEqual({ denied: true, reason: 'not-a-member', email: 'stranger@example.test' });
+      expect(lookups.mock.calls.length).toBeGreaterThan(afterFirst);
+      requestHeaders = new Headers();
+      expect(await resolveTenant(env)).toEqual({ denied: true, reason: 'no-identity', email: null });
+    } finally { lookups.mockRestore(); }
+  });
+  it('keeps the cache at its cap and lets the oldest user go first', async () => {
+    resetTenantCache();
+    // Reaching the cap through resolveTenant() costs one PGlite query per user, which timed out on a busy CI runner (#106).
+    // The cap belongs to the cache, so fill it directly and cross it through the request path.
+    const seeded: TenantDenied = { denied: true, reason: 'not-a-member', email: 'seeded@example.test' };
+    for (let i = 0; i < MEMBERSHIP_CACHE_MAX; i++) rememberMembership(`user_seed_${i}`, seeded);
+    expect(membershipCacheSize()).toBe(MEMBERSHIP_CACHE_MAX);
+    const lookups = vi.spyOn(db, 'select');
+    try {
+      for (const i of [0, 1]) {
+        asUser(`user_new_${i}`, `new${i}@example.test`);
+        expect(await resolveTenant(env)).toEqual({ denied: true, reason: 'not-a-member', email: `new${i}@example.test` });
+      }
+      expect(lookups).toHaveBeenCalledTimes(2);
+      expect(membershipCacheSize()).toBe(MEMBERSHIP_CACHE_MAX);
+      // The oldest survivor and the newest entry are still answered from the cache, without a lookup.
+      asUser('user_seed_2', 'seed2@example.test');
+      expect(await resolveTenant(env)).toEqual(seeded);
+      asUser('user_new_1', 'new1@example.test');
+      expect(await resolveTenant(env)).toEqual({ denied: true, reason: 'not-a-member', email: 'new1@example.test' });
+      expect(lookups).toHaveBeenCalledTimes(2);
+      // The first seeded user was the oldest entry and is gone, so asking again goes to the database.
+      asUser('user_seed_0', 'seed0@example.test');
+      expect(await resolveTenant(env)).toEqual({ denied: true, reason: 'not-a-member', email: 'seed0@example.test' });
+      expect(lookups).toHaveBeenCalledTimes(3);
+      expect(membershipCacheSize()).toBe(MEMBERSHIP_CACHE_MAX);
+    } finally { lookups.mockRestore(); }
   });
   it("lets a machine client in with the tenant's live ingest token and answers 401 to anything else", async () => {
     resetTenantCache();
