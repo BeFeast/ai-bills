@@ -26,6 +26,16 @@ describe('alerts report', () => {
     const report = parseAlerts({ generated: '2026-09-19T00:05:38Z' });
     expect(report).toMatchObject({ available: false, conditions: [], active: [], events: [] });
   });
+  it('replaces prefixed key tokens in condition and event text with a fingerprint', () => {
+    const key = 'sk-client-fixture-0123456789abcdefghijklmnop';
+    const leaked = { generated: '2026-09-19T00:05:38Z', alerts: { generated: '2026-09-19T00:05:00+00:00',
+      conditions: [{ key: `ratelimit:cursor:${key}`, severity: 'P4', state: 'warn', title: `cursor · ${key}: 3 rate-limited in 24h`, message: `key ${key} answered 429`, value: 3, since: null }],
+      events: [{ at: '2026-09-19T00:05:00+00:00', kind: 'raised', key: `ratelimit:cursor:${key}`, severity: 'P4', state: 'warn', title: `cursor · ${key}`, message: key }] } };
+    const report = parseAlerts(leaked);
+    expect(JSON.stringify(report)).not.toContain(key.slice(-12));
+    expect(report.conditions[0].key).toMatch(/^ratelimit:cursor:key:sha256:[0-9a-f]{10}$/);
+    expect(report.events[0].title).toMatch(/^cursor · key:sha256:[0-9a-f]{10}$/);
+  });
   it('renders conditions, events and the stale warning', () => {
     const html = renderToStaticMarkup(<AlertsSection report={parseAlerts(snapshot)} now={now} tz="UTC" />);
     expect(html).toContain('2 active');

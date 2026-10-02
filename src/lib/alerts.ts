@@ -1,5 +1,6 @@
 import { readSnapshot, type Scope } from './storage';
 import { loadConfig, type AppConfig } from './config';
+import { redactKeyTokens } from './redact';
 
 /** One rule evaluation as the collector-side alerts process reported it. `state` is the condition now; `severity` is what a page would carry. */
 export type AlertCondition = { key: string; severity: 'P3' | 'P4' | 'P5'; state: 'ok' | 'warn' | 'bad'; title: string; message: string; value: number | null; since: string | null };
@@ -20,10 +21,10 @@ const number = (value: unknown) => typeof value === 'number' && Number.isFinite(
 export function parseAlerts(snapshot: unknown): AlertsReport {
   const root = row(snapshot); const block = row(root.alerts);
   const generatedAt = iso(block.generated);
-  const conditions = rows(block.conditions).filter(c => text(c.key) && text(c.title)).map<AlertCondition>(c => ({ key: text(c.key), severity: severity(c.severity), state: state(c.state), title: text(c.title), message: text(c.message), value: number(c.value), since: iso(c.since) }));
+  const conditions = rows(block.conditions).filter(c => text(c.key) && text(c.title)).map<AlertCondition>(c => ({ key: redactKeyTokens(text(c.key)), severity: severity(c.severity), state: state(c.state), title: redactKeyTokens(text(c.title)), message: redactKeyTokens(text(c.message)), value: number(c.value), since: iso(c.since) }));
   const order: Record<AlertCondition['state'], number> = { bad: 0, warn: 1, ok: 2 };
   conditions.sort((a, b) => order[a.state] - order[b.state] || a.severity.localeCompare(b.severity) * -1 || a.title.localeCompare(b.title));
-  const events = rows(block.events).filter(e => text(e.key) && iso(e.at)).map<AlertEvent>(e => ({ at: text(e.at), kind: kind(e.kind), key: text(e.key), severity: severity(e.severity), state: state(e.state), title: text(e.title), message: text(e.message) })).sort((a, b) => b.at.localeCompare(a.at));
+  const events = rows(block.events).filter(e => text(e.key) && iso(e.at)).map<AlertEvent>(e => ({ at: text(e.at), kind: kind(e.kind), key: redactKeyTokens(text(e.key)), severity: severity(e.severity), state: state(e.state), title: redactKeyTokens(text(e.title)), message: redactKeyTokens(text(e.message)) })).sort((a, b) => b.at.localeCompare(a.at));
   return { generatedAt, snapshotAt: iso(root.generated), conditions, active: conditions.filter(c => c.state !== 'ok'), events, available: generatedAt !== null };
 }
 

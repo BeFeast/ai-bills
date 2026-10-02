@@ -96,6 +96,10 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(c['ratelimit:claude:work@example.invalid']['state'], 'ok')
         keyed = [k for k in c if k.startswith('ratelimit:openai-compatible-openrouter:')]
         self.assertEqual(len(keyed), 1); self.assertNotIn('0123456789', keyed[0]); self.assertTrue(keyed[0].endswith(alerts.upstream_label('sk-or-v1-0123456789')))
+        # No key characters at all, not even the provider prefix: the label is a fingerprint.
+        self.assertRegex(keyed[0], r'^ratelimit:openai-compatible-openrouter:key:sha256:[0-9a-f]{10}$')
+        self.assertEqual(alerts.upstream_label('client-key:fixture-client'), 'client-key:fixture-client')
+        self.assertEqual(alerts.upstream_label('terminal'), 'terminal…' + __import__('hashlib').sha256(b'terminal').hexdigest()[:6])
         self.assertNotIn('0123456789', json.dumps(list(c.values())))
         self.assertEqual((c['renewal:sub-soon:renews_at']['state'], c['renewal:sub-soon:renews_at']['value']), ('warn', 2))
         self.assertEqual(c['renewal:sub-far:ends_at']['state'], 'ok')

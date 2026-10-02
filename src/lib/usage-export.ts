@@ -3,7 +3,9 @@
  * period's reconciliation state on every row so a consumer never mistakes a partial month for a whole one.
  * The two USD columns are verified prices only. Estimates from an earlier version's list price are appended
  * as their own columns (`estimated_api_equivalent_usd`, `estimated_from`), so existing columns keep their position.
+ * Account and upstream names that look like keys are exported as a sha256 fingerprint, never as the credential.
  */
+import { credentialSafeName } from './redact';
 export const EXPORT_DIMENSIONS = ['project', 'client', 'model', 'account', 'upstream'] as const;
 export const EXPORT_PERIODS = ['today', 'month', 'last_24h'] as const;
 export type ExportDimension = typeof EXPORT_DIMENSIONS[number];
@@ -38,7 +40,7 @@ export function usageCsv(ledgerPeriod: unknown, by: ExportDimension): { filename
   for (const g of groups) {
     const api = num(g.api_equivalent_usd); const priced = num(g.priced_api_equivalent_usd); const estimated = num(g.estimated_api_equivalent_usd);
     lines.push([
-      text(g.name), ...(by === 'upstream' ? [text(g.provider)] : []), num(g.requests) ?? 0, num(g.failed) ?? 0, num(g.rate_limited) ?? 0, num(g.tokens) ?? 0,
+      by === 'account' || by === 'upstream' ? credentialSafeName(text(g.name)) : text(g.name), ...(by === 'upstream' ? [text(g.provider)] : []), num(g.requests) ?? 0, num(g.failed) ?? 0, num(g.rate_limited) ?? 0, num(g.tokens) ?? 0,
       api === null ? '' : api.toFixed(6), priced === null ? '' : priced.toFixed(6), pricing(api, priced, estimated, num(g.unpriced_requests)),
       text(period.period), text(period.period_start), text(period.period_end), evidence,
       estimated === null ? '' : estimated.toFixed(6), sources(g.estimated_from),

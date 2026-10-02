@@ -8,9 +8,10 @@ Anything not drained within `redis-usage-queue-retention-seconds` is lost.
 
 The ledger stores tokens only, never money: prices change, facts don't.
 Cost is computed at read time from AI/Areas/Providers/pricing.yml.
-API keys are never written out — they are mapped to a client label via keymap.json.
+API keys are never written out — they are mapped to a client label via keymap.json,
+also when the proxy reports one as the request's `source`.
 """
-import json, os, sys, time, urllib.request, urllib.error, urllib.parse
+import hashlib, json, os, re, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone
 
 MGMT_URL = os.environ.get("AI_USAGE_MGMT_URL", "http://127.0.0.1:23020/v0/management/usage-queue")
@@ -51,6 +52,24 @@ def drain(token):
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.load(resp)
 
+_PREFIXED_KEY = re.compile(r"^(?:sk|pk|rk|ak)[-_]", re.I)
+
+def account_label(value, keymap):
+    """The proxy reports the requesting client key as `source` when no credential identity applies,
+    and upstream-key providers log their upstream key there. Neither may reach the ledger: a known
+    client key becomes `client-key:<label>`, any other key-shaped value `key:sha256:<10 hex>`.
+    Kept in step with credential_label() in ai-usage-report, which also covers older ledger rows."""
+    if isinstance(value, str) and value in keymap and isinstance(keymap[value], str) and keymap[value].strip():
+        return "client-key:" + keymap[value].strip()
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or "@" in text or any(ch.isspace() for ch in text) or text.startswith(("client-key:", "key:sha256:")):
+        return value
+    if _PREFIXED_KEY.match(text) or (len(text) >= 32 and "/" not in text and any(ch.isdigit() for ch in text) and any(ch.isalpha() for ch in text)):
+        return "key:sha256:" + hashlib.sha256(text.encode()).hexdigest()[:10]
+    return value
+
 def project(rec, keymap):
     """Slim, stable projection. Raw api_key and response headers are dropped."""
     tb = rec.get("token_breakdown") or {}
@@ -74,7 +93,7 @@ def project(rec, keymap):
         "model": rec.get("model"),
         "alias": rec.get("alias"),
         "endpoint": rec.get("endpoint"),
-        "account": rec.get("source"),
+        "account": account_label(rec.get("source"), keymap),
         "auth_type": rec.get("auth_type"),
         "auth_index": rec.get("auth_index"),
         "failed": bool(rec.get("failed")),

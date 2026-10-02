@@ -9,7 +9,7 @@ A model absent from pricing.yml is reported as UNPRICED, never as $0. When only 
 earlier version of the same family and tier has a price, its cost is reported separately
 as ESTIMATED with the source model, and never mixed into the verified figures.
 """
-import argparse, glob, json, os, re, sys, collections, sqlite3
+import argparse, glob, hashlib, json, os, re, sys, collections, sqlite3
 from pathlib import Path
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
@@ -30,6 +30,45 @@ PRICING = os.environ.get("AI_USAGE_PRICING", os.path.expanduser("~/.config/ai-us
 ROUTING_DB = os.environ.get("AI_USAGE_ROUTING_DB")
 PROJECTS = os.environ.get("AI_USAGE_PROJECTS", os.path.expanduser("~/.config/ai-usage/projects.json"))
 UNASSIGNED = "unassigned"
+KEYMAP = os.environ.get("AI_USAGE_KEYMAP", os.path.expanduser("~/.config/ai-usage/keymap.json"))
+
+def load_keymap(path=None):
+    """Client API key -> operator label (the tap's keymap). Missing or invalid means no labels;
+    keys are then still fingerprinted, never published."""
+    try:
+        with open(path or KEYMAP) as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    return {key: label.strip() for key, label in doc.items() if isinstance(key, str) and key and isinstance(label, str) and label.strip()}
+
+_PREFIXED_KEY = re.compile(r"^(?:sk|pk|rk|ak)[-_]", re.I)
+CREDENTIAL_LABELS = ("client-key:", "key:sha256:")
+
+def key_shaped(value):
+    """A credential rather than an identity. Emails, file ids and short names are identities;
+    a prefixed key (sk-/pk-/rk-/ak-) or a long opaque token without '@', whitespace or '/' is a key."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text or "@" in text or any(ch.isspace() for ch in text) or text.startswith(CREDENTIAL_LABELS):
+        return False
+    if _PREFIXED_KEY.match(text):
+        return True
+    return len(text) >= 32 and "/" not in text and any(ch.isdigit() for ch in text) and any(ch.isalpha() for ch in text)
+
+def credential_label(value, keymap):
+    """What may be published for an account value. The proxy reports the requesting client key
+    as a request's `source` when no credential identity applies, and upstream-key providers log
+    their upstream key there. A known client key becomes `client-key:<label>`; any other key
+    becomes `key:sha256:<10 hex>`. No key characters survive. Everything else is unchanged."""
+    if isinstance(value, str) and value in keymap:
+        return "client-key:" + keymap[value]
+    if key_shaped(value):
+        return "key:sha256:" + hashlib.sha256(value.strip().encode()).hexdigest()[:10]
+    return value
 
 def load_projects(path=None):
     """Operator rules mapping observations to projects: a JSON list (or {"rules": [...]}) of
@@ -342,8 +381,10 @@ def matches_proxy(row, proxy_prints):
     del candidates[nearest]
     return True
 
-def rows_for(day):
+def rows_for(day, keymap=None):
     # Preserve raw ledger; reconcile observations in the read projection only.
+    # Account values are reduced to publishable labels on the way out (credential_label).
+    keymap = load_keymap() if keymap is None else keymap
     if not os.path.isdir(LEDGER_DIR):
         raise FileNotFoundError('Token ledger source is unavailable')
     records = []
@@ -397,7 +438,8 @@ def rows_for(day):
             key = (row.get("provider"), row.get("account"), row.get("via"), row.get("session") if row.get("native_message_id") else None, identity)
             if key in seen: continue
             seen.add(key)
-        yield row
+        label = credential_label(row.get("account"), keymap)
+        yield row if label == row.get("account") else dict(row, account=label)
 
 ROLLING_WINDOW_HOURS = 24
 _TS_FRACTION = re.compile(r"(\.\d{6})\d+")

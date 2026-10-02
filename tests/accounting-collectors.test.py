@@ -135,6 +135,69 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(row['request_id'], 'provider-request')
         self.assertNotIn('secret-value', json.dumps(row))
 
+    def test_tap_never_writes_a_key_reported_as_source(self):
+        import hashlib
+        tap = module('ai-usage-tap')
+        client = 'sk-client-fixture-0123456789abcdefghijklmnop'
+        upstream = 'sk-or-v1-fixture0123456789abcdef0123456789abcdef'
+        keymap = {client: 'fixture-client'}
+        own = tap.project({'api_key': client, 'source': client, 'provider': 'cursor'}, keymap)
+        self.assertEqual((own['client'], own['account']), ('fixture-client', 'client-key:fixture-client'))
+        unknown = tap.project({'api_key': client, 'source': upstream, 'provider': 'openai-compatible-example'}, keymap)
+        self.assertEqual(unknown['account'], 'key:sha256:' + hashlib.sha256(upstream.encode()).hexdigest()[:10])
+        identity = tap.project({'api_key': client, 'source': 'work@example.invalid', 'provider': 'claude'}, keymap)
+        self.assertEqual(identity['account'], 'work@example.invalid')
+        self.assertEqual(tap.project({'api_key': client, 'source': 'terminal'}, keymap)['account'], 'terminal')
+        for row in (own, unknown, identity):
+            self.assertNotIn(client, json.dumps(row)); self.assertNotIn(upstream, json.dumps(row))
+
+    def test_report_publishes_labels_or_fingerprints_never_keys(self):
+        import hashlib
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        report = module('ai-usage-report')
+        client = 'sk-client-fixture-0123456789abcdefghijklmnop'
+        unlabelled = 'sk-unlabelled-fixture-0123456789abcdefghij'
+        upstream = 'Zx9fixtureOpaqueToken0123456789abcdefXYZ'
+        with tempfile.TemporaryDirectory() as directory:
+            report.LEDGER_DIR = directory
+            keymap = Path(directory) / 'keymap.json'
+            keymap.write_text(json.dumps({client: 'fixture-client', unlabelled: ''}))
+            report.KEYMAP = str(keymap)
+            # Rows already in the ledger carry the raw key as `account` (the tap copied the proxy's `source`).
+            records = [
+                dict(ts='2026-09-07T01:00:00Z', via='proxy', provider='cursor', account=client, client='fixture-client', model='m', in_uncached=10),
+                dict(ts='2026-09-07T01:01:00Z', via='proxy', provider='kimi', account=unlabelled, client='unattributed', model='m', in_uncached=10, failed=True, status=429),
+                dict(ts='2026-09-07T01:02:00Z', via='proxy', provider='openai-compatible-example', account=upstream, client='fixture-client', model='m', in_uncached=10),
+                dict(ts='2026-09-07T01:03:00Z', via='proxy', provider='claude', account='work@example.invalid', client='fixture-client', model='m', in_uncached=10),
+                dict(ts='2026-09-07T01:04:00Z', via='proxy', provider='claude', account='terminal', client='fixture-client', model='m', in_uncached=10),
+            ]
+            (Path(directory) / 'ledger-fixture.jsonl').write_text('\n'.join(json.dumps(row) for row in records))
+            original = report.local_day
+            with patch.object(report, 'local_day', side_effect=lambda ts=None: '2026-09-07' if ts is None else original(ts)), \
+                    patch.object(report, 'utc_now', return_value=datetime(2026, 9, 7, 5, 0, tzinfo=timezone.utc)):
+                result = report.rollup({}, {'m': {'in': 1, 'out': 2}}, days=1, projects=[])
+        published = json.dumps(result)
+        for key in (client, unlabelled, upstream):
+            self.assertNotIn(key, published)
+            self.assertNotIn(key[-12:], published)
+        fingerprint = lambda key: 'key:sha256:' + hashlib.sha256(key.encode()).hexdigest()[:10]
+        for period in ('today', 'month', 'last_24h'):
+            names = {row['name'] for row in result[period]['by_account']}
+            self.assertEqual(names, {'client-key:fixture-client', fingerprint(unlabelled), fingerprint(upstream), 'work@example.invalid', 'terminal'})
+            upstreams = {(row['provider'], row['name']) for row in result[period]['by_upstream']}
+            self.assertIn(('cursor', 'client-key:fixture-client'), upstreams)
+
+    def test_key_shape_spares_identities_and_model_ids(self):
+        report = module('ai-usage-report')
+        for value in ('work@example.invalid', 'claude-9dba74d1-work@example.invalid.json', 'terminal', 'unattributed', '0123456789abcdef01234567',
+                      'accounts/fireworks/models/deepseek-v3p1-terminus-0123456789', 'meta-llama/llama-3.1-405b-instruct', 'client-key:fixture', 'key:sha256:0123456789', None, ''):
+            self.assertFalse(report.key_shaped(value), value)
+            self.assertEqual(report.credential_label(value, {}), value)
+        for value in ('sk-key', 'sk-ant-api03-fixture', 'rk_live_fixture', 'Zx9fixtureOpaqueToken0123456789abcdefXYZ'):
+            self.assertTrue(report.key_shaped(value), value)
+            self.assertTrue(report.credential_label(value, {}).startswith('key:sha256:'))
+
     def test_report_reconciles_native_proxy_and_never_inferrs_account_cost_from_model(self):
         report = module('ai-usage-report')
         with tempfile.TemporaryDirectory() as directory:
@@ -292,7 +355,11 @@ class MonthOverviewTests(unittest.TestCase):
             self.assertEqual(result['month']['requests'], 6)
             self.assertEqual(result['today']['requests'], 3)
             by_upstream = {(row['provider'], row['name']): row for row in rolling['by_upstream']}
-            self.assertEqual(set(by_upstream), {('claude', 'a@example.invalid'), ('codex', 'a@example.invalid'), ('openai-compatible-example', 'sk-key')})
+            # An upstream-key provider is logged under its key; the rollup publishes a fingerprint instead.
+            keyed = report.credential_label('sk-key', {})
+            self.assertTrue(keyed.startswith('key:sha256:'))
+            self.assertEqual(set(by_upstream), {('claude', 'a@example.invalid'), ('codex', 'a@example.invalid'), ('openai-compatible-example', keyed)})
+            self.assertNotIn('sk-key', json.dumps(result))
             self.assertEqual(by_upstream[('claude', 'a@example.invalid')]['rate_limited'], 1)
             self.assertEqual(by_upstream[('claude', 'a@example.invalid')]['last_request_at'], '2026-09-06T20:00:00+00:00')
             self.assertEqual(by_upstream[('codex', 'a@example.invalid')]['failed'], 2)

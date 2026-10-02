@@ -2,6 +2,7 @@ import { loadConfig, type AppConfig } from './config';
 import { currentMonth } from './accounting';
 import { readSubscriptionOverrides, type SubscriptionOverride } from './subscription-overrides';
 import { overridesStoreFor, readSnapshot, type Scope } from './storage';
+import { credentialSafeName } from './redact';
 
 export type SubscriptionConfig = {
   id: string; provider: string; label?: string; plan: string; status?: string;
@@ -78,11 +79,10 @@ function legacyProvider(raw: Row, index: number): ProductSubscription {
     cost_evidence: raw.cost_evidence ?? (original.startsWith('~') ? 'estimated' : parsed === null ? 'unknown' : 'declared'),
     source_note: raw.source_note ?? (text(raw.provider).includes('+') ? 'Grouped provider inventory: separate subscriptions and renewal dates still need to be recorded.' : 'Provider subscription inventory. Amount is declared, not a verified charge; record renewal date from billing settings.') }, `provider-${index}`);
 }
-/** Upstream-key providers are logged under the raw key; show a fingerprint, never the credential. */
+/** Upstream-key providers and keyless proxy requests are logged under a raw key; show a sha256 fingerprint
+ * with no key characters (`key:sha256:<10 hex>`), never any part of the credential. */
 export function maskAccountName(name: string): string {
-  const trimmed = name.trim();
-  if (/^sk-/i.test(trimmed) || (trimmed.length >= 32 && !/[@\s]/.test(trimmed))) return `${trimmed.slice(0, 8)}…${trimmed.slice(-4)}`;
-  return trimmed;
+  return credentialSafeName(name);
 }
 /** Model → source model pairs; anything that is not a pair of non-empty strings is dropped. */
 const sources = (value: unknown): Record<string, string> => Object.fromEntries(Object.entries(row(value)).filter((entry): entry is [string, string] => Boolean(entry[0]) && typeof entry[1] === 'string' && entry[1].length > 0));
