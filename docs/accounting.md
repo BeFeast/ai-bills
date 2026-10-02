@@ -92,11 +92,13 @@ Every price row names its provider source URL (`source`) and retrieval date
 (`verified`); context thresholds must be verified per model.
 
 Each logged model id resolves in order: its exact row; an alias (`:variant`, a
-`-YYYYMMDD` snapshot, `-thinking`, a prefix the operator lists in
-`defaults.route_prefixes`, or an explicit `alias_of:`), which keeps the verified
-price; an estimate from the nearest earlier version of the same family and tier
+`-YYYYMMDD` or `-YYYY-MM-DD` snapshot, `-thinking` on `claude-*` ids only, a prefix the
+operator lists in `defaults.route_prefixes`, or an explicit `alias_of:`), which keeps the
+verified price; an estimate from the nearest earlier version of the same family and tier
 (`claude-opus-{v}`, `gpt-{v}-sol`) with a list price, used only when no row exists
-for the id or any alias; otherwise unpriced. A row with `in: null` is never replaced
+for the id or any alias; otherwise unpriced. Date segments are never part of a version
+(`gpt-5-2025-08-07` is never compared with `gpt-5.2`), and `-thinking` elsewhere can name a
+separately priced model (`kimi-k2-thinking`), so it is not stripped there. A row with `in: null` is never replaced
 by an estimate. Prefixes are not stripped generically: `fw-*` and `vendor/model` ids
 carry route-specific prices. Estimates appear only in `estimated_api_equivalent_usd`,
 `estimated_from` and the period's `estimated` map; `api_equivalent_usd`,

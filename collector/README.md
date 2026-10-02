@@ -22,9 +22,11 @@ configure local proxy access. Tokens remain local to their owner.
 `AI_USAGE_PRICING` selects pricing YAML; the default is
 `~/.config/ai-usage/pricing.yml`. Existing hosts/key mappings remain private operator files.
 `ai-usage-report` resolves each logged model id in this order: its exact row; an alias
-(`:variant`, a `-YYYYMMDD` snapshot suffix, `-thinking`, a prefix listed in
-`defaults.route_prefixes`, or an explicit `alias_of:`); an estimate from the nearest earlier
-version of the same family and tier, used only when no row exists at all; otherwise unpriced.
+(`:variant`, a `-YYYYMMDD` or `-YYYY-MM-DD` snapshot suffix, `-thinking` on `claude-*` ids, a
+prefix listed in `defaults.route_prefixes`, or an explicit `alias_of:`); an estimate from the
+nearest earlier version of the same family and tier, used only when no row exists at all;
+otherwise unpriced. A date is never read as a version, so a dated id is never estimated from a
+newer model.
 Estimates are reported in their own fields (`estimated_api_equivalent_usd`, `estimated`,
 `estimated_from`) and never enter `api_equivalent_usd`. Rows without billable tokens cost
 nothing at any price. `pricing.default.yml` documents the format and carries official list

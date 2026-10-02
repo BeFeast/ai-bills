@@ -39,14 +39,28 @@ function estimateSource(name: string, from: Record<string, string> | undefined):
 function EstimateBadge({ amount, title }: { amount: number; title: string }) {
   return <Pill tone="warn" title={title}>~{fmtMoney(amount)} estimated</Pill>;
 }
+/** The verified part of an amount that sits beside an estimate. Always labelled "verified", a lower
+ *  bound ("≥") while some requests have no price at all, and never a bare $0.00 for usage that only has an estimate. */
+function verifiedAmount(verified: number | null | undefined, lowerBound: boolean, none = 'no verified price'): string {
+  return verified ? `${lowerBound ? '≥ ' : ''}${fmtMoney(verified)} verified` : none;
+}
 /** One group's API-equivalent: verified amount first, any estimate beside it, never summed. */
 function groupPrice(r: OverviewUsageGroup): ReactNode {
   if (r.tokens === 0) return 'no billable tokens';
   if (r.apiEquivalentUsd !== null) return `${fmtMoney(r.apiEquivalentUsd)} at API prices`;
   const estimated = r.estimatedApiEquivalentUsd ?? null;
-  if (estimated !== null) return <>{fmtMoney(r.pricedApiEquivalentUsd ?? 0)} verified · <EstimateBadge amount={estimated} title={estimateSource(r.name, r.estimatedFrom)} />{r.unpricedRequests ? ` · ${r.unpricedRequests.toLocaleString()} requests unpriced` : ''}</>;
+  if (estimated !== null) return <>{verifiedAmount(r.pricedApiEquivalentUsd, Boolean(r.unpricedRequests))} · <EstimateBadge amount={estimated} title={estimateSource(r.name, r.estimatedFrom)} />{r.unpricedRequests ? ` · ${r.unpricedRequests.toLocaleString()} requests unpriced` : ''}</>;
   // Nothing verified to bound: "≥ $0.00" would read like a price.
   return !r.pricedApiEquivalentUsd ? 'API price unknown' : `≥ ${fmtMoney(r.pricedApiEquivalentUsd)} at known API prices`;
+}
+
+/** A client's spend figure. With an estimate it is the labelled verified part (the estimate follows on its own
+ *  line); otherwise the old reading, except that a lower bound of $0.00 says "API price unknown" instead. */
+function spendAmount(c: OverviewUsageGroup, amount: number | null): string {
+  if (amount === null) return 'Unpriced';
+  if (c.estimatedApiEquivalentUsd != null) return verifiedAmount(amount, Boolean(c.unpricedRequests), 'No verified price');
+  if (c.apiEquivalentUsd !== null) return fmtMoney(amount);
+  return amount ? `≥ ${fmtMoney(amount)}` : 'API price unknown';
 }
 
 const subscriptionColumns: Column<'sub' | 'plan' | 'cost' | 'renew' | 'access'>[] = [
@@ -84,7 +98,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
   const noPriceModels = Object.entries(data.usage.unpriced).filter(([name]) => !estimatedNames.has(name));
   const estimateTitle = estimatedModels.map(([name, value]) => `${name}: estimated from ${value.from} price`).join('\n') || 'Estimated from earlier version prices';
   // Verified and estimated amounts are shown side by side; a combined figure would pass a guess off as a bound.
-  const apiValue = estimatedApi !== null && api !== null ? `${fmtMoney(api)} + ~${fmtMoney(estimatedApi)}` : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`;
+  const apiValue = estimatedApi !== null && api !== null ? `${noPriceModels.length ? '≥ ' : ''}${fmtMoney(api)} + ~${fmtMoney(estimatedApi)}` : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`;
   // Partial reconciliation withholds a combined total; the confirmed subset is still a real lower bound, not "unavailable".
   const confirmedTokens = data.usage.reconciliation?.confirmedTokens ?? null;
   const confirmedSubset = data.usage.tokens === null && confirmedTokens !== null;
@@ -145,7 +159,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
       const priced = clients.reduce((total, c) => total + (c.apiEquivalentUsd ?? c.pricedApiEquivalentUsd ?? 0), 0);
       const unpricedTokens = noPriceModels.reduce((total, [, tokens]) => total + tokens, 0);
       const estimatedTokens = estimatedModels.reduce((total, [, value]) => total + value.tokens, 0);
-      const total = data.usage.tokens === null ? (confirmedSubset && api !== null ? `≥ ${fmtMoney(api)}` : 'Usage unavailable') : api === null ? 'Pricing incomplete' : estimatedApi !== null ? `${fmtMoney(api)} verified` : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`;
+      const total = data.usage.tokens === null ? (confirmedSubset && api !== null ? `≥ ${fmtMoney(api)}` : 'Usage unavailable') : api === null ? 'Pricing incomplete' : estimatedApi !== null ? verifiedAmount(api, noPriceModels.length > 0, 'No verified price') : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`;
       return <Card title="Spending" subtitle={`${month} · API-equivalent at list prices · derived from by-client usage`} actions={<Pill tone="info">new layout</Pill>}>
         <div className="spend">
           <div className="stack stack--tight" style={{ gap: 4 }}>
@@ -162,7 +176,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
                 <ProviderIcon provider={identity.provider} size={20} />
                 <span className="spend-row__name">{identity.display}</span>
                 <span className="mono-faint">{c.requests.toLocaleString()} requests</span>
-                <strong className="spend-row__amount">{amount === null ? 'Unpriced' : `${c.apiEquivalentUsd === null && c.estimatedApiEquivalentUsd == null ? '≥ ' : ''}${fmtMoney(amount)}`}</strong>
+                <strong className="spend-row__amount">{spendAmount(c, amount)}</strong>
               </div>
               <span className="t-small">{amount === null ? 'excluded from subtotal' : `${priced > 0 ? (amount / priced * 100).toFixed(1) : '0.0'}% of verified cost`} · {fmtTokens(c.tokens)} tokens · {c.name}</span>
               {c.estimatedApiEquivalentUsd != null ? <span className="t-small"><EstimateBadge amount={c.estimatedApiEquivalentUsd} title={estimateSource(c.name, c.estimatedFrom)} /> not in the verified amount{c.unpricedRequests ? ` · ${c.unpricedRequests.toLocaleString()} requests unpriced` : ''}</span> : null}

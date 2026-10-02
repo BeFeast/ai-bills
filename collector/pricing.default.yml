@@ -7,8 +7,9 @@
 #
 # Resolution per logged model id (collector/ai-usage-report, resolve_price):
 #   1. exact row;
-#   2. alias: `:variant`, a `-YYYYMMDD` snapshot suffix, a `-thinking` route suffix,
-#      a prefix listed in defaults.route_prefixes, or an explicit `alias_of: <key>`;
+#   2. alias: `:variant`, a `-YYYYMMDD` or `-YYYY-MM-DD` snapshot suffix, a `-thinking`
+#      route suffix on claude-* ids, a prefix listed in defaults.route_prefixes, or an
+#      explicit `alias_of: <key>`;
 #   3. estimate: only when no row exists for the id or any alias, the nearest earlier
 #      version of the same family and tier with a list price (claude-opus-5-5 ->
 #      claude-opus-5 -> claude-opus-4-8 ...; gpt-6.1-sol -> gpt-6-sol -> gpt-5.6-sol),
@@ -69,6 +70,10 @@ models:
       verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
   claude-sonnet-4-5:
     { in: 3, out: 15, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-haiku-4-5:
+    # Claude Code's background model; logged as claude-haiku-4-5-20251001 (alias).
+    { in: 1, out: 5, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
       verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
 
   # --- OpenAI ------------------------------------------------------------------------

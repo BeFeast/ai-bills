@@ -72,8 +72,10 @@ def load_pricing():
         doc = yaml.safe_load(fh)
     return doc.get("defaults", {}), doc.get("models", {})
 
-_SNAPSHOT_DATE = re.compile(r"-\d{8}$")
+# Dated snapshot suffixes: Anthropic -YYYYMMDD (claude-opus-4-5-20251101), OpenAI -YYYY-MM-DD (gpt-5-2025-08-07).
+_SNAPSHOT_DATE = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 _VERSION_SEGMENT = re.compile(r"^\d+(?:\.\d+)*$")
+_THINKING = re.compile(r"-thinking$")
 
 def route_prefixes(defaults):
     """Prefixes the operator declared as pure routing labels (`defaults.route_prefixes`).
@@ -86,9 +88,10 @@ def route_prefixes(defaults):
 def alias_ids(model, prefixes=()):
     """Normalized forms of a logged id that denote the same priced model, most specific first.
 
-    Ollama-style variant suffixes (glm-5.2:cloud), declared route-label prefixes, Anthropic
-    dated snapshots (claude-opus-4-5-20251101) and proxy "-thinking" routes
-    (claude-opus-4-6-thinking: thinking is billed as output tokens of the same model)."""
+    Ollama-style variant suffixes (glm-5.2:cloud), declared route-label prefixes, dated
+    snapshots (claude-opus-4-5-20251101, gpt-5-2025-08-07) and, for Claude only, proxy
+    "-thinking" routes (claude-opus-4-6-thinking: Anthropic bills thinking as output tokens of
+    the same model). Elsewhere "-thinking" can name a separately priced model (kimi-k2-thinking)."""
     name = model.split(":", 1)[0]
     forms = [name]
     for prefix in prefixes:
@@ -96,9 +99,12 @@ def alias_ids(model, prefixes=()):
             name = name[len(prefix):]
             forms.append(name)
             break
-    for pattern in (_SNAPSHOT_DATE, re.compile(r"-thinking$"), _SNAPSHOT_DATE):
-        name = pattern.sub("", name)
-        forms.append(name)
+    name = _SNAPSHOT_DATE.sub("", name)
+    forms.append(name)
+    if name.startswith("claude-"):
+        for pattern in (_THINKING, _SNAPSHOT_DATE):  # -thinking may sit before or after the date
+            name = pattern.sub("", name)
+            forms.append(name)
     unique = []
     for form in forms:
         if form and form != model and form not in unique:
@@ -112,17 +118,23 @@ def _entry(models, key):
 def has_list_price(entry):
     return all(isinstance(entry.get(field), (int, float)) and not isinstance(entry.get(field), bool) for field in ("in", "out"))
 
+def _version_segment(part):
+    """A version number segment (5, 4, 6.1); a date part (2025, 20251101) is not one."""
+    return bool(_VERSION_SEGMENT.match(part)) and all(int(number) < 1000 for number in part.split("."))
+
 def version_stem(model):
     """Family-and-tier stem and version of an id: the first run of numeric segments is the version.
 
     claude-opus-4-5 -> ("claude-opus-{v}", (4, 5)); gpt-6.1-sol -> ("gpt-{v}-sol", (6, 1)).
-    Tiers stay in the stem (opus/fable/sonnet, sol/luna/astra), so they never mix. None
-    when the id has no version run (kimi-k3, gpt-oss-120b)."""
+    Tiers stay in the stem (opus/fable/sonnet, sol/luna/astra), so they never mix. A date-like
+    segment (a year, any number >= 1000) is never part of a version: gpt-5-2025-08-07 keeps
+    its date in the stem, so it is never compared with gpt-5.2. None when the id has no
+    version run (kimi-k3, gpt-oss-120b)."""
     parts = model.split("-")
     for start, part in enumerate(parts):
-        if _VERSION_SEGMENT.match(part):
+        if _version_segment(part):
             end = start
-            while end < len(parts) and _VERSION_SEGMENT.match(parts[end]):
+            while end < len(parts) and _version_segment(parts[end]):
                 end += 1
             version = tuple(int(number) for segment in parts[start:end] for number in segment.split("."))
             return "-".join(parts[:start] + ["{v}"] + parts[end:]), version
