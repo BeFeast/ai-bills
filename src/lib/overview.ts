@@ -18,7 +18,15 @@ export type ProductSubscription = {
   sourceNote: string; observedAt: string | null;
   costEvidence: 'verified' | 'declared' | 'estimated' | 'unknown';
 };
-export type OverviewUsageGroup = { name: string; tokens: number; requests: number; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; failed?: number; rateLimited?: number; lastRequestAt?: string | null };
+/**
+ * `apiEquivalentUsd` and `pricedApiEquivalentUsd` are verified prices only. A model priced only through an
+ * earlier version of its family is an estimate: `estimatedApiEquivalentUsd`, with `estimatedFrom` naming the
+ * source model per estimated model. `unpricedRequests` counts billable requests with no price at all.
+ * The three optional fields are absent when the collector predates them.
+ */
+export type OverviewUsageGroup = { name: string; tokens: number; requests: number; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; estimatedApiEquivalentUsd?: number | null; unpricedRequests?: number; estimatedFrom?: Record<string, string>; failed?: number; rateLimited?: number; lastRequestAt?: string | null };
+/** A model without a verified price, costed at the list price of `from` (an earlier version of the same family and tier). */
+export type OverviewEstimate = { tokens: number; usd: number | null; from: string };
 /** One proxy upstream (provider + account) in the rolling 24-hour window. Names are masked when they look like keys. */
 export type OverviewUpstreamActivity = OverviewUsageGroup & { provider: string };
 export type OverviewRecentUsage = { windowHours: number; observedAt: string | null; periodStart: string | null; periodEnd: string | null; requests: number | null; failed: number; rateLimited: number; byUpstream: OverviewUpstreamActivity[]; byAccount: OverviewUsageGroup[] };
@@ -27,7 +35,7 @@ export type ProductOverview = {
   links?: { proxyManagementUrl: string | null };
   subscriptions: ProductSubscription[];
   summary: { activeSubscriptionCount: number; subscriptionCountComplete: boolean; knownMonthlyCosts: { currency: string; amount: number }[]; unknownPriceCount: number; monthlyCostEvidence: 'verified' | 'declared' | 'estimated' | 'unknown' };
-  usage: { period: 'month'; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; tokens: number | null; requests: number | null; byClient: OverviewUsageGroup[]; byProject: OverviewUsageGroup[]; byModel: OverviewUsageGroup[]; byAccount?: OverviewUsageGroup[]; reconciliation?: { status: string; confirmedTokens: number | null; confirmedRequests: number | null; nativeObservations: number | null }; unpriced: Record<string, number>; observedAt: string | null; last24h?: OverviewRecentUsage };
+  usage: { period: 'month'; apiEquivalentUsd: number | null; pricedApiEquivalentUsd: number | null; estimatedApiEquivalentUsd: number | null; estimated: Record<string, OverviewEstimate>; tokens: number | null; requests: number | null; byClient: OverviewUsageGroup[]; byProject: OverviewUsageGroup[]; byModel: OverviewUsageGroup[]; byAccount?: OverviewUsageGroup[]; reconciliation?: { status: string; confirmedTokens: number | null; confirmedRequests: number | null; nativeObservations: number | null }; unpriced: Record<string, number>; observedAt: string | null; last24h?: OverviewRecentUsage };
   features: { routing: boolean };
 };
 type Row = Record<string, unknown>;
@@ -76,11 +84,17 @@ export function maskAccountName(name: string): string {
   if (/^sk-/i.test(trimmed) || (trimmed.length >= 32 && !/[@\s]/.test(trimmed))) return `${trimmed.slice(0, 8)}…${trimmed.slice(-4)}`;
   return trimmed;
 }
+/** Model → source model pairs; anything that is not a pair of non-empty strings is dropped. */
+const sources = (value: unknown): Record<string, string> => Object.fromEntries(Object.entries(row(value)).filter((entry): entry is [string, string] => Boolean(entry[0]) && typeof entry[1] === 'string' && entry[1].length > 0));
 /** `mask` only for account-shaped names: model and client ids are never credentials and must stay intact. */
 function group(value: Row, mask = false): OverviewUsageGroup {
   const lastRequestAt = date(value.last_request_at);
+  const estimatedFrom = sources(value.estimated_from);
   return { name: mask ? maskAccountName(text(value.name)) : text(value.name), tokens: number(value.tokens) ?? 0, requests: number(value.requests) ?? 0,
     apiEquivalentUsd: number(value.api_equivalent_usd), pricedApiEquivalentUsd: number(value.priced_api_equivalent_usd) ?? number(value.api_equivalent_usd),
+    ...(number(value.estimated_api_equivalent_usd) !== null ? { estimatedApiEquivalentUsd: number(value.estimated_api_equivalent_usd) } : {}),
+    ...(number(value.unpriced_requests) !== null ? { unpricedRequests: number(value.unpriced_requests)! } : {}),
+    ...(Object.keys(estimatedFrom).length ? { estimatedFrom } : {}),
     ...(number(value.failed) !== null ? { failed: number(value.failed)! } : {}), ...(number(value.rate_limited) !== null ? { rateLimited: number(value.rate_limited)! } : {}),
     ...(lastRequestAt ? { lastRequestAt } : {}) };
 }
@@ -123,11 +137,16 @@ export function buildProductOverview(config: AppConfig, input: unknown, month = 
   // Today's totals/trend cannot supply month rankings; never relabel them.
   const current = text(candidate.date) === month && text(candidate.period_start || `${month}-01`).startsWith(month) ? candidate : {};
   const unpriced = Object.fromEntries(Object.entries(row(current.unpriced)).filter((entry): entry is [string, number] => number(entry[1]) !== null));
+  const estimated = Object.fromEntries(Object.entries(row(current.estimated)).flatMap(([model, value]): [string, OverviewEstimate][] => {
+    const item = row(value); const from = text(item.from); const tokens = number(item.tokens);
+    return model && from && tokens !== null ? [[model, { tokens, usd: number(item.usd), from }]] : [];
+  }));
   const reconciliation = row(current.reconciliation);
   return { month, links: { proxyManagementUrl: url(config.server.codex_proxy_management_url) }, subscriptions: unique, summary: { activeSubscriptionCount: active.reduce((count, value) => count + (value.quantity ?? 0), 0),
     subscriptionCountComplete: (rows(snapshot.providers).length > 0 || snapshot.subscription_inventory_complete === true) && unique.filter(value => !['cancelled', 'expired'].includes(value.status)).every(value => value.status === 'active' && value.quantity !== null), knownMonthlyCosts: [...costs].map(([currency, amount]) => ({ currency, amount })),
     unknownPriceCount: active.filter(value => value.amount === null || value.period === 'unknown').length, monthlyCostEvidence: active.some(value => value.costEvidence === 'estimated') ? 'estimated' : active.some(value => value.costEvidence === 'declared') ? 'declared' : active.length > 0 && active.every(value => value.costEvidence === 'verified') ? 'verified' : 'unknown' },
     usage: { period: 'month', apiEquivalentUsd: number(current.api_equivalent_usd), pricedApiEquivalentUsd: number(current.priced_api_equivalent_usd) ?? number(current.api_equivalent_usd),
+      estimatedApiEquivalentUsd: number(current.estimated_api_equivalent_usd), estimated,
       tokens: number(current.tokens_total), requests: number(current.requests), byClient: groups(current.by_client), byProject: groups(current.by_project), byModel: groups(current.by_model), byAccount: groups(current.by_account, true), unpriced,
       reconciliation: { status: text(reconciliation.status) || 'unknown', confirmedTokens: number(reconciliation.confirmed_tokens), confirmedRequests: number(reconciliation.confirmed_requests), nativeObservations: number(reconciliation.unreconciled_native_observations) },
       observedAt: Object.keys(current).length ? date(ledger.generated) || date(snapshot.generated) : null, last24h: recentUsage(ledger, snapshot) }, features };

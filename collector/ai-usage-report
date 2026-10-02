@@ -5,7 +5,9 @@ Ledger rows are facts (tokens); prices live in the vault and are applied here, s
 fixing a price re-prices history. Two figures per row:
   api_equivalent — cost at list price (what a subscription earns back)
   marginal       — estimated additional usage (unknown without account billing evidence)
-A model absent from pricing.yml is reported as UNPRICED, never as $0.
+A model absent from pricing.yml is reported as UNPRICED, never as $0. When only an
+earlier version of the same family and tier has a price, its cost is reported separately
+as ESTIMATED with the source model, and never mixed into the verified figures.
 """
 import argparse, glob, json, os, re, sys, collections, sqlite3
 from pathlib import Path
@@ -70,27 +72,122 @@ def load_pricing():
         doc = yaml.safe_load(fh)
     return doc.get("defaults", {}), doc.get("models", {})
 
-def lookup(model, models):
-    """Match a logged model id against the price table.
+_SNAPSHOT_DATE = re.compile(r"-\d{8}$")
+_VERSION_SEGMENT = re.compile(r"^\d+(?:\.\d+)*$")
 
-    Clients log ids the price table does not carry verbatim: Anthropic dated
-    snapshots (claude-haiku-4-5-20251001) and Ollama-style variant suffixes
-    (glm-5.2:cloud). Both denote the same priced model, so fall back to the
-    stripped form rather than reporting a priced model as UNPRICED.
-    """
-    if not model:
+def route_prefixes(defaults):
+    """Prefixes the operator declared as pure routing labels (`defaults.route_prefixes`).
+
+    Nothing is stripped by default: `fw-*` and `vendor/model` ids name route-specific
+    prices, so a prefix is only dropped when the price table says it carries no price."""
+    values = (defaults or {}).get("route_prefixes") if isinstance(defaults, dict) else None
+    return tuple(value for value in values if isinstance(value, str) and value) if isinstance(values, list) else ()
+
+def alias_ids(model, prefixes=()):
+    """Normalized forms of a logged id that denote the same priced model, most specific first.
+
+    Ollama-style variant suffixes (glm-5.2:cloud), declared route-label prefixes, Anthropic
+    dated snapshots (claude-opus-4-5-20251101) and proxy "-thinking" routes
+    (claude-opus-4-6-thinking: thinking is billed as output tokens of the same model)."""
+    name = model.split(":", 1)[0]
+    forms = [name]
+    for prefix in prefixes:
+        if name.startswith(prefix) and len(name) > len(prefix):
+            name = name[len(prefix):]
+            forms.append(name)
+            break
+    for pattern in (_SNAPSHOT_DATE, re.compile(r"-thinking$"), _SNAPSHOT_DATE):
+        name = pattern.sub("", name)
+        forms.append(name)
+    unique = []
+    for form in forms:
+        if form and form != model and form not in unique:
+            unique.append(form)
+    return unique
+
+def _entry(models, key):
+    value = models.get(key)
+    return value if isinstance(value, dict) and value else None
+
+def has_list_price(entry):
+    return all(isinstance(entry.get(field), (int, float)) and not isinstance(entry.get(field), bool) for field in ("in", "out"))
+
+def version_stem(model):
+    """Family-and-tier stem and version of an id: the first run of numeric segments is the version.
+
+    claude-opus-4-5 -> ("claude-opus-{v}", (4, 5)); gpt-6.1-sol -> ("gpt-{v}-sol", (6, 1)).
+    Tiers stay in the stem (opus/fable/sonnet, sol/luna/astra), so they never mix. None
+    when the id has no version run (kimi-k3, gpt-oss-120b)."""
+    parts = model.split("-")
+    for start, part in enumerate(parts):
+        if _VERSION_SEGMENT.match(part):
+            end = start
+            while end < len(parts) and _VERSION_SEGMENT.match(parts[end]):
+                end += 1
+            version = tuple(int(number) for segment in parts[start:end] for number in segment.split("."))
+            return "-".join(parts[:start] + ["{v}"] + parts[end:]), version
+    return None
+
+def previous_version(model, models):
+    """Key of the nearest lower version with the same stem and a list price, or None.
+
+    Only rows with a numeric price qualify, and never a newer version: an estimate
+    from the predecessor is a guess, not a bound (successors are often cheaper)."""
+    parsed = version_stem(model)
+    if not parsed:
         return None
-    p = models.get(model)
-    if p:
-        return p
-    base = re.sub(r"-\d{8}$", "", model.split(":", 1)[0])
-    return models.get(base) if base != model else None
+    stem, version = parsed
+    best = None
+    for key, entry in models.items():
+        if not isinstance(key, str) or not isinstance(entry, dict) or "alias_of" in entry or not has_list_price(entry):
+            continue
+        candidate = version_stem(_SNAPSHOT_DATE.sub("", key.split(":", 1)[0]))
+        if not candidate or candidate[0] != stem or candidate[1] >= version:
+            continue
+        rank = (candidate[1], -len(key), key)  # the undated row wins a tie with its snapshot
+        if best is None or rank > best[0]:
+            best = (rank, key)
+    return best[1] if best else None
 
-def cost(row, defaults, models):
-    """-> (api_equivalent_usd, marginal_usd, priced?)"""
-    p = lookup(row.get("model"), models)
+def resolve_price(model, models, prefixes=()):
+    """Price-table row for a logged model id -> (entry, basis, source key).
+
+    basis "exact"      the id's own row
+          "alias"      the row of a normalized id (alias_ids) or of an explicit `alias_of:` target
+          "estimated"  no row exists for the id or any alias: the nearest previous version of the
+                       same family and tier that has a list price (previous_version)
+          None         unknown; never $0
+    An existing row always wins, including one without a list price (in: null, flat rate):
+    a deliberate "no price" is never replaced by an estimate."""
+    if not model or not isinstance(model, str) or not isinstance(models, dict):
+        return None, None, None
+    candidates = [model] + alias_ids(model, prefixes)
+    for key in candidates:
+        entry = _entry(models, key)
+        if entry is None:
+            continue
+        basis, seen = "exact" if key == model else "alias", {key}
+        while isinstance(entry.get("alias_of"), str):
+            key = entry["alias_of"]
+            entry = _entry(models, key)
+            if entry is None or key in seen:
+                return None, None, None  # a broken or circular alias prices nothing
+            seen.add(key)
+            basis = "alias"
+        return entry, basis, key
+    source = previous_version(candidates[-1], models)
+    return (models[source], "estimated", source) if source else (None, None, None)
+
+def lookup(model, models, prefixes=()):
+    """The row that prices `model` verbatim or through an alias; None when only an estimate exists."""
+    entry, basis, _ = resolve_price(model, models, prefixes)
+    return entry if basis in ("exact", "alias") else None
+
+def list_cost(p, row, defaults):
+    """API-equivalent USD of one row at entry `p`'s list price, or None when `p` has no list
+    price or the row lacks the evidence its context tier needs."""
     if not p or p.get("in") is None:
-        return 0.0, None, False  # caller separates "no entry" from "flat rate, no list price"
+        return None
     tier = p.get("long_context")
     if tier is not None:
         # Context is the complete prompt, including cached input, never output.
@@ -99,27 +196,51 @@ def cost(row, defaults, models):
         threshold = tier.get("input_tokens_above") if isinstance(tier, dict) else None
         if (not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0
                 or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in inputs)):
-            return 0.0, None, False
+            return None
         if sum(inputs) > threshold:
             # Long-context rates apply to all buckets and output, not just overflow.
             p = {**p, **tier}
             if tier.get("in") is None or tier.get("out") is None:
-                return 0.0, None, False
+                return None
     # Per-model overrides matter across providers: Anthropic charges 1.25x for a
-    # cache write, OpenAI and Moonshot do not charge for one at all.
+    # cache write, OpenAI and Moonshot do not charge for one at all, and cache-read
+    # rates differ per model (Opus 5.5 0.05x, Fable 5.1 0.025x).
     cw = p.get("cache_write_multiplier", defaults.get("cache_write_multiplier", 1.25))
     cr = p.get("cache_read_multiplier", defaults.get("cache_read_multiplier", 0.1))
     pin, pout = float(p["in"]), float(p["out"])
-    api = (
+    return (
         (row.get("in_uncached") or 0) / 1e6 * pin
         + (row.get("cache_read") or 0) / 1e6 * pin * cr
         + (row.get("cache_write") or 0) / 1e6 * pin * cw
         + (row.get("out_total") or 0) / 1e6 * pout
     )
+
+def price_row(row, defaults, models, resolved=None):
+    """-> (api_equivalent_usd, marginal_usd, priced?, estimated_usd, estimated_from)
+
+    `priced` means a verified price (exact or alias). A lineage estimate is reported beside
+    it as (estimated_usd, source model) and never enters api_equivalent_usd. `resolved`
+    is an optional per-call cache of model -> resolve_price()."""
+    model = row.get("model")
+    if resolved is None or model not in resolved:
+        found = resolve_price(model, models, route_prefixes(defaults))
+        if resolved is None:
+            resolved = {}
+        resolved[model] = found
+    entry, basis, source = resolved[model]
+    api = list_cost(entry, row, defaults)
+    if api is None:
+        return 0.0, None, False, None, None  # caller separates "no entry" from "flat rate, no list price"
+    if basis == "estimated":
+        return 0.0, None, False, api, source
     mode = row.get("billing_mode")
     # A model can exist on subscription and paid accounts: never classify by model.
     marginal = 0.0 if mode == "included" else api if mode == "metered" else None
-    return api, marginal, True
+    return api, marginal, True, None, None
+
+def cost(row, defaults, models):
+    """-> (api_equivalent_usd, marginal_usd, priced?) at a verified price; an estimate is never priced."""
+    return price_row(row, defaults, models)[:3]
 
 def attribute_routing(records):
     """Enrich the read projection only, using exact managed attempt/request IDs."""
@@ -313,14 +434,25 @@ def rollup(defaults, models, days=30, projects=None):
     rules = load_projects() if projects is None else projects
     periods = {key: {"total": collections.Counter(), "unreconciled": collections.Counter(),
                      "dims": {dim: collections.defaultdict(collections.Counter) for dim in dims},
-                     "latest": {dim: {} for dim in ("account", "upstream")}, "unpriced": collections.Counter()}
+                     "latest": {dim: {} for dim in ("account", "upstream")}, "unpriced": collections.Counter(),
+                     "estimated": collections.defaultdict(collections.Counter), "estimated_from": {},
+                     "group_estimates": {dim: collections.defaultdict(dict) for dim in dims}}
                for key in ("today", "month", "last_24h")}
+    resolved = {}
 
-    def add(counter, row, api, marginal, priced, tokens):
+    def add(counter, row, api, marginal, priced, tokens, estimated=None):
         counter["api_micro"] += round(api * 1e6)
         counter["marg_micro"] += round((marginal or 0) * 1e6)
         counter["marg_unknown"] += marginal is None
-        counter["api_unknown"] += not priced
+        # A row without billable tokens costs nothing at any price (failed probes, 404s):
+        # only billable tokens without a verified price leave the API-equivalent unknown.
+        unverified = not priced and tokens > 0
+        counter["api_unknown"] += unverified
+        if unverified and estimated is not None:
+            counter["est_micro"] += round(estimated * 1e6)
+            counter["est_requests"] += 1
+        elif unverified:
+            counter["unpriced_requests"] += 1
         counter["tokens"] += tokens
         counter["requests"] += 1
         counter["failed"] += bool(row.get("failed"))
@@ -342,33 +474,46 @@ def rollup(defaults, models, days=30, projects=None):
         instant = parse_ts(row.get("ts"))
         selected = (("today", day == today), ("month", day.startswith(month + "-")),
                     ("last_24h", instant is not None and instant >= window_start))
-        api, marginal, priced = cost(row, defaults, models)
+        api, marginal, priced, estimated, source = price_row(row, defaults, models, resolved)
         tokens = sum((row.get(field) or 0) for field in ("in_uncached", "cache_read", "cache_write", "out_total"))
         if row.get("accounting_status") == "unreconciled_native":
             for name, chosen in selected:
                 if chosen:
-                    add(periods[name]["unreconciled"], row, api, marginal, priced, tokens)
+                    add(periods[name]["unreconciled"], row, api, marginal, priced, tokens, estimated)
             # The retained observations remain readable via rows_for; neither
             # trends nor ranked unique-usage totals combine them with proxy data.
             continue
-        add(per_day[day], row, api, marginal, priced, tokens)
+        add(per_day[day], row, api, marginal, priced, tokens, estimated)
+        model = row.get("model") or "?"
         for name, chosen in selected:
             if not chosen:
                 continue
             period = periods[name]
-            add(period["total"], row, api, marginal, priced, tokens)
+            add(period["total"], row, api, marginal, priced, tokens, estimated)
+            # `unpriced` keeps its meaning (no verified price); `estimated` is the subset
+            # an earlier version could cost, with the model that supplied the price.
             if not priced and tokens:
-                period["unpriced"][row.get("model") or "?"] += tokens
+                period["unpriced"][model] += tokens
+                if estimated is not None:
+                    period["estimated"][model]["tokens"] += tokens
+                    period["estimated"][model]["micro"] += round(estimated * 1e6)
+                    period["estimated_from"][model] = source
             for dim, groups in period["dims"].items():
                 key = group_key(row, dim)
-                add(groups[key], row, api, marginal, priced, tokens)
+                add(groups[key], row, api, marginal, priced, tokens, estimated)
+                if estimated is not None and not priced and tokens:
+                    period["group_estimates"][dim][key][model] = source
                 latest = period["latest"].get(dim)
                 if latest is not None and instant is not None and (key not in latest or instant > latest[key]):
                     latest[key] = instant
 
     def amounts(counter):
+        # api_equivalent_usd / priced_api_equivalent_usd stay verified-only; an estimate is
+        # its own figure, and unpriced_requests counts billable rows with no price at all.
         return {"api_equivalent_usd": None if counter["api_unknown"] else counter["api_micro"] / 1e6,
                 "priced_api_equivalent_usd": counter["api_micro"] / 1e6,
+                "estimated_api_equivalent_usd": counter["est_micro"] / 1e6 if counter["est_requests"] else None,
+                "unpriced_requests": counter["unpriced_requests"],
                 "marginal_usd": None if counter["marg_unknown"] else counter["marg_micro"] / 1e6}
 
     def stamp(value):
@@ -384,6 +529,8 @@ def rollup(defaults, models, days=30, projects=None):
                   "rate_limited": total["rate_limited"],
                   "counts": {field: total[field] for field in ("in_uncached", "cache_read", "cache_write", "out_total")},
                   "tokens_total": None if unresolved["requests"] else total["tokens"], **amounts(total), "unpriced": dict(period["unpriced"]),
+                  "estimated": {model: {"tokens": value["tokens"], "usd": value["micro"] / 1e6, "from": period["estimated_from"][model]}
+                                for model, value in sorted(period["estimated"].items())},
                   "reconciliation": {"status": "partial" if unresolved["requests"] else "observations_only",
                       "confirmed_tokens": total["tokens"], "confirmed_requests": total["requests"],
                       "unreconciled_native_observations": unresolved["requests"],
@@ -407,6 +554,9 @@ def rollup(defaults, models, days=30, projects=None):
                     entry["provider"] = key[0]
                 if dim in ("account", "upstream"):
                     entry["last_request_at"] = stamp(latest[key]) if key in latest else None
+                sources = period["group_estimates"][dim].get(key)
+                if sources:
+                    entry["estimated_from"] = dict(sorted(sources.items()))
                 entries.append(entry)
             result["by_" + dim] = entries
         return result
@@ -433,10 +583,19 @@ def main():
     day = None if args.day == "all" else args.day
 
     defaults, models = load_pricing()
+    prefixes = route_prefixes(defaults)
     rules = load_projects()
     agg = collections.defaultdict(lambda: collections.Counter())
     unpriced = collections.Counter()
     flat = collections.Counter()
+    estimated = collections.defaultdict(collections.Counter)
+    estimated_from = {}
+    resolved = {}
+
+    def resolution(model):
+        if model not in resolved:
+            resolved[model] = resolve_price(model, models, prefixes)
+        return resolved[model]
     totals = collections.Counter()
     unreconciled = 0
 
@@ -447,7 +606,8 @@ def main():
         # Direct rows carry no provider (the log a row came from does not identify
         # the upstream), so resolve it from the price table by model name.
         if args.by == "provider" and not r.get("provider"):
-            r["provider"] = (lookup(r.get("model"), models) or {}).get("provider")
+            # An estimate's source is the same family, hence the same vendor.
+            r["provider"] = (resolution(r.get("model"))[0] or {}).get("provider")
         # cliproxy calls the Anthropic upstream "claude"; keep one name per vendor.
         if args.by == "provider" and r.get("provider") == "claude":
             r["provider"] = "anthropic"
@@ -457,22 +617,28 @@ def main():
         a["ok"] += 0 if r.get("failed") else 1
         for f in ("in_uncached", "cache_read", "cache_write", "out_total"):
             a[f] += r.get(f) or 0
-        api, marg, priced = cost(r, defaults, models)
-        a["api_cents"] += round(api * 100_000)   # micro-dollars, integer-safe
+        api, marg, priced, est, source = price_row(r, defaults, models, resolved)
+        tok = sum((r.get(f) or 0) for f in ("in_uncached", "cache_read", "cache_write", "out_total"))
+        a["api_cents"] += round(api * 100_000)   # integer-safe hundred-thousandths of a dollar
         a["marg_cents"] += round((marg or 0) * 100_000)
         a["marg_unknown"] += 1 if marg is None else 0
-        a["api_unknown"] += 1 if not priced else 0
-        if not priced:
-            tok = sum((r.get(f) or 0) for f in ("in_uncached", "cache_read", "cache_write", "out_total"))
-            if tok:
-                # A flat-rate model (Ollama Cloud et al.) has an entry but no list
-                # price on purpose — that is not an action item, so keep it out of
-                # the "go add a price" list.
-                if lookup(r.get("model"), models):
-                    flat[r.get("model") or "?"] += tok
-                else:
-                    unpriced[r.get("model") or "?"] += tok
-                a["unpriced_tokens"] += tok
+        # Zero-token rows (failed probes) cost nothing at any price.
+        a["api_unknown"] += 1 if not priced and tok else 0
+        if not priced and tok:
+            # A flat-rate model (Ollama Cloud et al.) has an entry but no list
+            # price on purpose — that is not an action item, so keep it out of
+            # the "go add a price" list.
+            if resolution(r.get("model"))[1] in ("exact", "alias"):
+                flat[r.get("model") or "?"] += tok
+            else:
+                unpriced[r.get("model") or "?"] += tok
+                if est is not None:
+                    a["est_cents"] += round(est * 100_000)
+                    a["est_rows"] += 1
+                    estimated[r.get("model") or "?"]["tokens"] += tok
+                    estimated[r.get("model") or "?"]["cents"] += round(est * 100_000)
+                    estimated_from[r.get("model") or "?"] = source
+            a["unpriced_tokens"] += tok
         totals["attempts"] += 1
 
     if args.json:
@@ -480,8 +646,12 @@ def main():
             "day": args.day, "by": args.by,
             "groups": {k: {**dict(v),
                            "api_equivalent_usd": None if v["api_unknown"] else v["api_cents"] / 100_000,
+                           "estimated_api_equivalent_usd": v["est_cents"] / 100_000 if v["est_rows"] else None,
                            "marginal_usd": None if v["marg_unknown"] else v["marg_cents"] / 100_000} for k, v in agg.items()},
             "unpriced_models": dict(unpriced),
+            # Subset of unpriced_models costed at an earlier version's list price; not verified.
+            "estimated_models": {m: {"tokens": v["tokens"], "usd": v["cents"] / 100_000, "from": estimated_from[m]}
+                                 for m, v in sorted(estimated.items())},
             "reconciliation": {"status": "partial" if unreconciled else "observations_only",
                                "unreconciled_native_observations": unreconciled,
                                "groups_scope": "confirmed_observations"},
@@ -510,10 +680,15 @@ def main():
           f"{t['cache_write']:>12,}{t['out_total']:>10,}{t['api_cents']/100_000:>10.2f}{t['marg_cents']/100_000:>9.2f}")
     if any(v["marg_unknown"] for v in agg.values()):
         print("* Estimated additional cost is incomplete: account billing mode unknown; displayed amount is a known subtotal, not actual payments.")
-    if unpriced:
+    if estimated:
+        print("\nESTIMATED — no verified price; costed at an earlier version's list price, not in API $ (add a verified row):")
+        for m, v in sorted(estimated.items(), key=lambda item: -item[1]["tokens"]):
+            print(f"  {m:<28} {v['tokens']:>12,} tokens  ~${v['cents']/100_000:,.2f} from {estimated_from[m]}")
+    if set(unpriced) - set(estimated):
         print("\nUNPRICED — no entry in pricing.yml, cost unknown (add a verified row):")
         for m, tok in unpriced.most_common():
-            print(f"  {m:<28} {tok:>12,} tokens")
+            if m not in estimated:
+                print(f"  {m:<28} {tok:>12,} tokens")
     if flat:
         print("\nFlat-rate — priced by subscription, no per-token list price (expected):")
         for m, tok in flat.most_common():

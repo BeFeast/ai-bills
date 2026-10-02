@@ -28,6 +28,27 @@ function clientIdentity(name: string): { display: string; provider: string; colo
   return { display: name, provider: name, color: 'var(--text-faint)' };
 }
 
+/** Tooltip for an estimate: which earlier version supplied the price, per estimated model. */
+function estimateSource(name: string, from: Record<string, string> | undefined): string {
+  const pairs = Object.entries(from ?? {});
+  if (!pairs.length) return 'Estimated from an earlier version price; not a verified price';
+  if (pairs.length === 1 && pairs[0][0] === name) return `estimated from ${pairs[0][1]} price`;
+  return pairs.map(([model, source]) => `${model}: estimated from ${source} price`).join('\n');
+}
+/** An estimate is never a verified amount: its own "~$" figure, a badge, and the source model on hover. */
+function EstimateBadge({ amount, title }: { amount: number; title: string }) {
+  return <Pill tone="warn" title={title}>~{fmtMoney(amount)} estimated</Pill>;
+}
+/** One group's API-equivalent: verified amount first, any estimate beside it, never summed. */
+function groupPrice(r: OverviewUsageGroup): ReactNode {
+  if (r.tokens === 0) return 'no billable tokens';
+  if (r.apiEquivalentUsd !== null) return `${fmtMoney(r.apiEquivalentUsd)} at API prices`;
+  const estimated = r.estimatedApiEquivalentUsd ?? null;
+  if (estimated !== null) return <>{fmtMoney(r.pricedApiEquivalentUsd ?? 0)} verified · <EstimateBadge amount={estimated} title={estimateSource(r.name, r.estimatedFrom)} />{r.unpricedRequests ? ` · ${r.unpricedRequests.toLocaleString()} requests unpriced` : ''}</>;
+  // Nothing verified to bound: "≥ $0.00" would read like a price.
+  return !r.pricedApiEquivalentUsd ? 'API price unknown' : `≥ ${fmtMoney(r.pricedApiEquivalentUsd)} at known API prices`;
+}
+
 const subscriptionColumns: Column<'sub' | 'plan' | 'cost' | 'renew' | 'access'>[] = [
   { key: 'sub', label: 'Subscription / account' }, { key: 'plan', label: 'Plan' }, { key: 'cost', label: 'Cost' }, { key: 'renew', label: 'Renewal or expiry' }, { key: 'access', label: 'Access' },
 ];
@@ -56,6 +77,14 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
   const costs = data.summary.knownMonthlyCosts.map(c => money(c.amount,c.currency)).join(' + ') || 'Not recorded';
   const api = data.usage.apiEquivalentUsd ?? data.usage.pricedApiEquivalentUsd;
   const partialApi = data.usage.apiEquivalentUsd === null && api !== null;
+  // Models without a verified price split into those an earlier version could cost (estimated) and the rest.
+  const estimatedApi = data.usage.estimatedApiEquivalentUsd;
+  const estimatedModels = Object.entries(data.usage.estimated);
+  const estimatedNames = new Set(estimatedModels.map(([name]) => name));
+  const noPriceModels = Object.entries(data.usage.unpriced).filter(([name]) => !estimatedNames.has(name));
+  const estimateTitle = estimatedModels.map(([name, value]) => `${name}: estimated from ${value.from} price`).join('\n') || 'Estimated from earlier version prices';
+  // Verified and estimated amounts are shown side by side; a combined figure would pass a guess off as a bound.
+  const apiValue = estimatedApi !== null && api !== null ? `${fmtMoney(api)} + ~${fmtMoney(estimatedApi)}` : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`;
   // Partial reconciliation withholds a combined total; the confirmed subset is still a real lower bound, not "unavailable".
   const confirmedTokens = data.usage.reconciliation?.confirmedTokens ?? null;
   const confirmedSubset = data.usage.tokens === null && confirmedTokens !== null;
@@ -89,7 +118,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
       {rows.map((r,i) => <div className="rank-row" key={r.name}>
         <div className="rank-row__top"><span className="rank-row__name"><span className="rank-row__pos">{String(i+1).padStart(2,'0')}</span>{r.name}</span><strong className="rank-row__tokens">{fmtTokens(r.tokens)}</strong></div>
         <Progress value={r.tokens/max*100} label={`${r.name} share of the largest ${label.toLowerCase()} entry`} />
-        <span className="t-small">{r.requests.toLocaleString()} requests · {r.apiEquivalentUsd === null ? r.pricedApiEquivalentUsd === null ? 'API price unknown' : `≥ ${fmtMoney(r.pricedApiEquivalentUsd)} at known API prices` : `${fmtMoney(r.apiEquivalentUsd)} at API prices`}</span>
+        <span className="t-small">{r.requests.toLocaleString()} requests · {groupPrice(r)}</span>
       </div>)}
       {!ranked.length ? <p className="t-small">No monthly usage data available yet.</p> : null}
     </div>;
@@ -102,7 +131,7 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
     {view === 'details' ? <TileGrid>
       <StatTile label="Active subscriptions" value={<>{data.summary.activeSubscriptionCount}{data.summary.subscriptionCountComplete === false ? '+' : ''}</>} note={data.summary.subscriptionCountComplete ? 'Plans and accounts' : 'Some plan statuses need checking'} onClick={() => onView('subscriptions')} />
       <StatTile label="Subscription cost / month" value={`${data.summary.unknownPriceCount && data.summary.knownMonthlyCosts.length ? '≥ ' : ''}${costs}${data.summary.monthlyCostEvidence === 'estimated' ? ' est.' : ''}`} note={data.summary.unknownPriceCount ? `${data.summary.unknownPriceCount} prices still need checking` : data.summary.monthlyCostEvidence === 'estimated' ? 'Includes estimated plan prices' : 'Recurring plan prices'} onClick={() => onView('subscriptions')} />
-      <StatTile label={`If paid by API · ${month}`} value={data.usage.tokens === null ? (confirmedSubset && api !== null ? `≥ ${fmtMoney(api)}` : 'Usage unavailable') : api === null ? 'Pricing incomplete' : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`} note={confirmedSubset ? `Confirmed subset · ≥ ${fmtTokens(confirmedTokens ?? 0)} tokens; native observations may overlap` : data.usage.reconciliation?.status === 'partial' ? 'Native observations may overlap; see confirmed subtotal' : data.usage.tokens === null ? 'Monthly usage has not been imported' : partialApi ? 'Known prices; some models unpriced' : `${fmtTokens(data.usage.tokens)} tokens measured`} onClick={() => onView('usage')} />
+      <StatTile label={`If paid by API · ${month}`} value={data.usage.tokens === null ? (confirmedSubset && api !== null ? `≥ ${fmtMoney(api)}` : 'Usage unavailable') : api === null ? 'Pricing incomplete' : apiValue} note={confirmedSubset ? `Confirmed subset · ≥ ${fmtTokens(confirmedTokens ?? 0)} tokens; native observations may overlap` : data.usage.reconciliation?.status === 'partial' ? 'Native observations may overlap; see confirmed subtotal' : data.usage.tokens === null ? 'Monthly usage has not been imported' : estimatedApi !== null ? `Verified prices + ~estimated from earlier versions${noPriceModels.length ? `; ${noPriceModels.length} models unpriced` : ''}` : partialApi ? 'Known prices; some models unpriced' : `${fmtTokens(data.usage.tokens)} tokens measured`} onClick={() => onView('usage')} />
       <StatTile label="Next renewal / expiry" value={upcoming[0] ? date(upcoming[0].renewsAt || upcoming[0].endsAt) : 'Dates need checking'} note={upcoming[0] ? `${upcoming[0].provider} · ${upcoming[0].label}` : 'Open billing beside each plan'} onClick={() => onView('subscriptions')} />
     </TileGrid> : null}
 
@@ -114,12 +143,14 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
     {view === 'usage' ? (() => {
       const clients = [...data.usage.byClient].sort((a, b) => (b.pricedApiEquivalentUsd ?? b.apiEquivalentUsd ?? 0) - (a.pricedApiEquivalentUsd ?? a.apiEquivalentUsd ?? 0));
       const priced = clients.reduce((total, c) => total + (c.apiEquivalentUsd ?? c.pricedApiEquivalentUsd ?? 0), 0);
-      const unpricedTokens = Object.values(data.usage.unpriced).reduce((total, tokens) => total + tokens, 0);
-      const total = data.usage.tokens === null ? (confirmedSubset && api !== null ? `≥ ${fmtMoney(api)}` : 'Usage unavailable') : api === null ? 'Pricing incomplete' : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`;
+      const unpricedTokens = noPriceModels.reduce((total, [, tokens]) => total + tokens, 0);
+      const estimatedTokens = estimatedModels.reduce((total, [, value]) => total + value.tokens, 0);
+      const total = data.usage.tokens === null ? (confirmedSubset && api !== null ? `≥ ${fmtMoney(api)}` : 'Usage unavailable') : api === null ? 'Pricing incomplete' : estimatedApi !== null ? `${fmtMoney(api)} verified` : `${partialApi ? '≥ ' : ''}${fmtMoney(api)}`;
       return <Card title="Spending" subtitle={`${month} · API-equivalent at list prices · derived from by-client usage`} actions={<Pill tone="info">new layout</Pill>}>
         <div className="spend">
           <div className="stack stack--tight" style={{ gap: 4 }}>
             <span className="spend__total tabular">{total}</span>
+            {estimatedApi !== null ? <span className="t-small"><EstimateBadge amount={estimatedApi} title={estimateTitle} /> for {fmtTokens(estimatedTokens)} tokens at earlier-version prices · not in the verified total</span> : null}
             <span className="t-small">{usageSubtitle}{unpricedTokens ? ` · excludes ${fmtTokens(unpricedTokens)} unpriced tokens` : ''}</span>
           </div>
           {priced > 0 ? <div className="spend__bar" role="img" aria-label="Share of API-equivalent cost by client">{clients.map(c => { const amount = c.apiEquivalentUsd ?? c.pricedApiEquivalentUsd; if (amount === null || amount <= 0) return null; return <div key={c.name} className="spend__seg" style={{ width: `${amount / priced * 100}%`, background: clientIdentity(c.name).color, minWidth: 2 }} />; })}</div> : null}
@@ -131,9 +162,10 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
                 <ProviderIcon provider={identity.provider} size={20} />
                 <span className="spend-row__name">{identity.display}</span>
                 <span className="mono-faint">{c.requests.toLocaleString()} requests</span>
-                <strong className="spend-row__amount">{amount === null ? 'Unpriced' : `${c.apiEquivalentUsd === null ? '≥ ' : ''}${fmtMoney(amount)}`}</strong>
+                <strong className="spend-row__amount">{amount === null ? 'Unpriced' : `${c.apiEquivalentUsd === null && c.estimatedApiEquivalentUsd == null ? '≥ ' : ''}${fmtMoney(amount)}`}</strong>
               </div>
-              <span className="t-small">{amount === null ? 'excluded from subtotal' : `${priced > 0 ? (amount / priced * 100).toFixed(1) : '0.0'}% of cost`} · {fmtTokens(c.tokens)} tokens · {c.name}</span>
+              <span className="t-small">{amount === null ? 'excluded from subtotal' : `${priced > 0 ? (amount / priced * 100).toFixed(1) : '0.0'}% of verified cost`} · {fmtTokens(c.tokens)} tokens · {c.name}</span>
+              {c.estimatedApiEquivalentUsd != null ? <span className="t-small"><EstimateBadge amount={c.estimatedApiEquivalentUsd} title={estimateSource(c.name, c.estimatedFrom)} /> not in the verified amount{c.unpricedRequests ? ` · ${c.unpricedRequests.toLocaleString()} requests unpriced` : ''}</span> : null}
             </Panel>;
           })}</div>
           {!clients.length ? <p className="t-small">No monthly usage data available yet.</p> : null}
@@ -150,11 +182,14 @@ export function ProductOverviewPanel({ data, accounts, registry = [], view, onVi
           {rankColumn('By model', data.usage.byModel)}
           {data.usage.byAccount?.length ? rankColumn('By account', data.usage.byAccount) : null}
         </div>
-        {view === 'usage' ? <p className="t-small">Export this month as CSV: {(['project', 'client', 'model', 'account'] as const).map((by, index) => <span key={by}>{index ? ' · ' : ''}<a className="text-link" href={`/api/usage/export?period=month&by=${by}`} download>by {by}</a></span>)} · <a className="text-link" href="/api/usage/export?period=last_24h&by=upstream" download>last 24h by upstream</a>. Rows carry the period and its reconciliation state; unpriced models leave the USD column empty.</p> : null}
-        {view === 'usage' && Object.keys(data.usage.unpriced).length ? <details className="details-panel">
-          <summary><span>{Object.keys(data.usage.unpriced).length} models have no verified API price</span><span className="details-hint">expand</span></summary>
-          <p className="t-small">Tokens are included in usage. Their cost is excluded from the known API subtotal.</p>
-          <div className="unpriced-list">{Object.entries(data.usage.unpriced).map(([name,tokens]) => <div key={name}>{name}: {fmtTokens(tokens)} tokens</div>)}</div>
+        {view === 'usage' ? <p className="t-small">Export this month as CSV: {(['project', 'client', 'model', 'account'] as const).map((by, index) => <span key={by}>{index ? ' · ' : ''}<a className="text-link" href={`/api/usage/export?period=month&by=${by}`} download>by {by}</a></span>)} · <a className="text-link" href="/api/usage/export?period=last_24h&by=upstream" download>last 24h by upstream</a>. Rows carry the period and its reconciliation state; models without a verified price leave the API-equivalent column empty, and estimates from earlier-version prices sit in their own estimated_api_equivalent_usd and estimated_from columns.</p> : null}
+        {view === 'usage' && (estimatedModels.length || noPriceModels.length) ? <details className="details-panel">
+          <summary><span>{estimatedModels.length + noPriceModels.length} models have no verified API price</span>{estimatedModels.length ? <Pill tone="warn">{estimatedModels.length} estimated</Pill> : null}<span className="details-hint">expand</span></summary>
+          <p className="t-small">Tokens are included in usage. Their cost is excluded from the {estimatedModels.length ? 'verified' : 'known'} API subtotal.{estimatedModels.length ? ' An estimate uses the list price of an earlier version of the same model family and tier; it is shown separately and is never added to the verified figure.' : ''}</p>
+          {estimatedModels.length ? <div className="stack stack--tight"><h3 className="t-small"><strong>Estimated from a previous version · {estimatedModels.length}</strong></h3>
+            <div className="unpriced-list">{estimatedModels.map(([name, value]) => <div key={name} title={`estimated from ${value.from} price`}>{name}: {fmtTokens(value.tokens)} tokens · ~{fmtMoney(value.usd)} · estimated from {value.from} price</div>)}</div></div> : null}
+          {noPriceModels.length ? <div className="stack stack--tight"><h3 className="t-small"><strong>No API price · {noPriceModels.length}</strong></h3>
+            <div className="unpriced-list">{noPriceModels.map(([name, tokens]) => <div key={name}>{name}: {fmtTokens(tokens)} tokens</div>)}</div></div> : null}
         </details> : null}
         {data.usage.observedAt ? <p className="t-small">Usage updated {fmtDate(data.usage.observedAt,'Asia/Jerusalem')}</p> : null}
       </div>

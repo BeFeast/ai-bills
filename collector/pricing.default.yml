@@ -1,6 +1,109 @@
 # Default list prices for the portable collector (USD per 1M tokens). Override with AI_USAGE_PRICING.
 # Missing models are reported as UNPRICED, never as $0; token counts stay exact either way.
+#
+# Every row is an official vendor list price (Standard tier, not Batch/Flex/Fast) and
+# names its source page and retrieval date (`verified`). Prices are applied at read
+# time, so correcting a row re-prices history.
+#
+# Resolution per logged model id (collector/ai-usage-report, resolve_price):
+#   1. exact row;
+#   2. alias: `:variant`, a `-YYYYMMDD` snapshot suffix, a `-thinking` route suffix,
+#      a prefix listed in defaults.route_prefixes, or an explicit `alias_of: <key>`;
+#   3. estimate: only when no row exists for the id or any alias, the nearest earlier
+#      version of the same family and tier with a list price (claude-opus-5-5 ->
+#      claude-opus-5 -> claude-opus-4-8 ...; gpt-6.1-sol -> gpt-6-sol -> gpt-5.6-sol),
+#      reported as ESTIMATED with that model and never mixed into verified totals;
+#   4. otherwise UNPRICED.
+# A row with `in: null` is a deliberate "no list price" and is never replaced by an estimate.
 defaults:
+  # Anthropic 5-minute cache write (1.25x input; the 1-hour write is 2x) and the
+  # standard 0.1x cache read. Rows override either where the vendor differs.
   cache_write_multiplier: 1.25
   cache_read_multiplier: 0.1
-models: {}
+  # Prefixes that are pure routing labels and carry no price of their own, e.g. "scribe/".
+  # Never list `fw-` or `vendor/`: those ids name route-specific prices.
+  route_prefixes: []
+models:
+  # --- Anthropic ---------------------------------------------------------------------
+  # https://platform.claude.com/docs/en/about-claude/pricing (model table and footnotes),
+  # retrieved 2026-10-02. 1M context is standard pricing on Claude 4.6 and later.
+  # Dated snapshot ids (claude-opus-4-5-20251101, claude-sonnet-4-5-20250929) resolve to
+  # these rows by alias; so does claude-opus-4-6-thinking (thinking is billed as output).
+  claude-fable-5-1:
+    # Cache hits 0.025x input ($0.25/MTok), footnote 1.
+    { in: 10, out: 50, cache_read_multiplier: 0.025, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-fable-5:
+    { in: 10, out: 50, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-opus-5-5:
+    # Cache hits 0.05x input ($0.20/MTok), footnote 2.
+    { in: 4, out: 20, cache_read_multiplier: 0.05, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-opus-5:
+    { in: 5, out: 25, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-opus-4-8:
+    { in: 5, out: 25, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-opus-4-7:
+    { in: 5, out: 25, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-opus-4-6:
+    { in: 5, out: 25, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-opus-4-5:
+    # Opus 4.1 and earlier are $15/$75, a different price era: deliberately absent, so no
+    # estimate ever reaches back across that break.
+    { in: 5, out: 25, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-sonnet-5-5:
+    { in: 2, out: 10, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-sonnet-5:
+    # Footnote 3: the launch price $2/$10 is now standard; the planned $3/$15 will not occur.
+    { in: 2, out: 10, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-sonnet-4-6:
+    { in: 3, out: 15, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+  claude-sonnet-4-5:
+    { in: 3, out: 15, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: anthropic,
+      verified: 2026-10-02, source: 'https://platform.claude.com/docs/en/about-claude/pricing', price_basis: standard-list }
+
+  # --- OpenAI ------------------------------------------------------------------------
+  # https://developers.openai.com/api/docs/pricing, Standard table, retrieved 2026-10-02.
+  # Short context is <=272K input tokens; above that the whole request is billed at the
+  # long-context rates (cached input and cache writes keep the same multipliers).
+  # Plain gpt-6 / gpt-6.1 / gpt-5.6 have no published price and are not invented here.
+  gpt-6-astra:
+    { in: 10, out: 50, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: openai,
+      long_context: { input_tokens_above: 272000, in: 20, out: 75 },
+      verified: 2026-10-02, source: 'https://developers.openai.com/api/docs/pricing', price_basis: standard-list }
+  gpt-6.1-sol:
+    # Cached input $0.10 = 0.05x input.
+    { in: 2, out: 10, cache_read_multiplier: 0.05, cache_write_multiplier: 1.25, provider: openai,
+      long_context: { input_tokens_above: 272000, in: 4, out: 15 },
+      verified: 2026-10-02, source: 'https://developers.openai.com/api/docs/pricing', price_basis: standard-list }
+  gpt-6-sol:
+    { in: 2, out: 10, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: openai,
+      long_context: { input_tokens_above: 272000, in: 4, out: 15 },
+      verified: 2026-10-02, source: 'https://developers.openai.com/api/docs/pricing', price_basis: standard-list }
+  gpt-6-luna:
+    { in: 0.1, out: 0.5, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: openai,
+      long_context: { input_tokens_above: 272000, in: 0.2, out: 0.75 },
+      verified: 2026-10-02, source: 'https://developers.openai.com/api/docs/pricing', price_basis: standard-list }
+  gpt-5.6-sol:
+    # Promotional price "available at least through November 21, 2026" (page footnote).
+    { in: 4, out: 20, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: openai,
+      long_context: { input_tokens_above: 272000, in: 8, out: 30 },
+      verified: 2026-10-02, source: 'https://developers.openai.com/api/docs/pricing', price_basis: standard-list,
+      promotional_until_at_least: 2026-11-21 }
+  gpt-5.6-terra:
+    { in: 2, out: 12, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: openai,
+      long_context: { input_tokens_above: 272000, in: 4, out: 18 },
+      verified: 2026-10-02, source: 'https://developers.openai.com/api/docs/pricing', price_basis: standard-list }
+  gpt-5.6-luna:
+    { in: 0.2, out: 1.2, cache_read_multiplier: 0.1, cache_write_multiplier: 1.25, provider: openai,
+      long_context: { input_tokens_above: 272000, in: 0.4, out: 1.8 },
+      verified: 2026-10-02, source: 'https://developers.openai.com/api/docs/pricing', price_basis: standard-list }

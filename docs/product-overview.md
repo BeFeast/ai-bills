@@ -40,5 +40,8 @@ collector host (`projects.json`) attribute each observation to a project; unmatc
 returns the rollup as CSV, one row per group with requests, failures, rate limits, tokens,
 API-equivalent (empty when any model in the group is unpriced; `priced_api_equivalent_usd`
 keeps the priced part), a `pricing` state, the period bounds and the period's reconciliation
-state. When the period holds unreconciled native observations they are appended as one
+state. Two columns follow: `estimated_api_equivalent_usd` (cost of models priced only through
+an earlier version of their family) and `estimated_from` (`model from source`); a group with
+estimates reads `includes estimates`, or `partial (includes estimates; unpriced models excluded)`
+when some requests have no price at all. Estimates are never added to the verified columns. When the period holds unreconciled native observations they are appended as one
 explicitly labelled row that may overlap with the rows above. Nothing is recomputed on export.
