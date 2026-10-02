@@ -54,6 +54,8 @@ if [ -n "${AI_BILLS_OPENROUTER_SECRET_NAME:-}" ]; then
 fi
 
 # --- proxy: auth-file (subscription) health + upstream request counters ---
+# today_success/today_failed sum the proxy's recent_requests: 20 buckets of 10 minutes, i.e. the last 200 minutes,
+# not the calendar day (sdk/cliproxy/auth/types.go recentRequestBucketSeconds/Count). Field names kept for consumers.
 curl -sf -m 10 "$CLIPROXY_MGMT_URL/auth-files" -H "Authorization: Bearer $MGMT" > "$AUTH_FILES" || echo '{"files":[]}' > "$AUTH_FILES"
 AUTHS=$(jq '[.files[] | {provider, email, status,
         status_message: ((.status_message // "") | tostring | .[0:300]), unavailable,
@@ -62,7 +64,8 @@ AUTHS=$(jq '[.files[] | {provider, email, status,
 # Quota the proxy read from response headers of each credential's own traffic: the quota
 # collectors fall back to it when the provider rejects the direct request, with no extra call.
 # The status fields carry the proxy's verdict on the OAuth credential (e.g. a dead refresh token).
-jq '[.files[] | {type, email, quota, status, status_message: ((.status_message // "") | tostring | .[0:300]), unavailable}]' \
+# model_quotas holds per-model watermarks; the Claude Fable weekly (7d_oi) appears only there.
+jq '[.files[] | {type, email, quota, model_quotas: (.model_quotas // {}), status, status_message: ((.status_message // "") | tostring | .[0:300]), unavailable}]' \
   "$AUTH_FILES" > "$PROXY_QUOTA" 2>/dev/null || echo '[]' > "$PROXY_QUOTA"
 export AI_BILLS_PROXY_QUOTA_FILE="$PROXY_QUOTA"
 # The previous snapshot lets a failed request keep the last successful observation instead of forgetting it.

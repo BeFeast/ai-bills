@@ -150,6 +150,57 @@ class QuotaFallbackTests(unittest.TestCase):
         self.assertNotIn(stable, result); self.assertNotIn('a@example.invalid', result); self.assertNotIn('A@example.invalid', result)
         self.assertTrue(all(entry['source'] == 'direct' for entry in result.values()))
 
+    def test_a_relogin_reads_directly_instead_of_waiting_out_the_dead_tokens_back_off(self):
+        # 2026-10-02: the old kossoy token drew a 429 at 10:57; the proxy re-login at 11:20 wrote a new file with a new
+        # token, which then waited until 11:57 behind the inherited deadline while the provider answered it.
+        module = load('ai-claude-quotas')
+        stable = module.credential_id('claude', 'a@example.invalid')
+        deadline = (self.NOW + timedelta(minutes=30)).isoformat()
+        old = {'ok': True, 'fetched_at': '2026-09-21T08:30:04+00:00', 'source': 'proxy_headers', 'data': {'five_hour': {'utilization': 12, 'resets_at': None}},
+               'direct': {'status': 429, 'error': 'x', 'attempted_at': '2026-09-21T08:20:00+00:00', 'retry_after_until': deadline}}
+        for previous_direct in ({}, {'token_fp': module.token_fingerprint('dead-token')}):
+            with tempfile.TemporaryDirectory() as directory:
+                (Path(directory) / 'claude-c0ffee42-a@example.invalid.json').write_text(json.dumps({'type': 'claude', 'email': 'a@example.invalid', 'access_token': 'fresh-token'}))
+                request, calls = self.rejecting([200])
+                prior = dict(old, direct=dict(old['direct'], **previous_direct))
+                result = module.collect(directory, request, sleep=lambda _: None, now=self.NOW, previous={stable: prior, 'a@example.invalid': prior})
+            self.assertEqual(len(calls), 1)
+            self.assertEqual((result[stable]['source'], result[stable]['data']['five_hour']['utilization']), ('direct', 10))
+        # The same token keeps its deadline across a pure rename.
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'claude-c0ffee42-a@example.invalid.json').write_text(json.dumps({'type': 'claude', 'email': 'a@example.invalid', 'access_token': 'dead-token'}))
+            request, calls = self.rejecting([200])
+            prior = dict(old, direct=dict(old['direct'], token_fp=module.token_fingerprint('dead-token')))
+            module.collect(directory, request, sleep=lambda _: None, now=self.NOW, previous={stable: prior})
+        self.assertEqual(len(calls), 0)
+
+    def test_header_fallback_takes_the_fable_weekly_from_the_proxys_per_model_watermarks(self):
+        module = load('ai-claude-quotas')
+        request, _ = self.rejecting([429])
+        reset = int((self.NOW + timedelta(days=3)).timestamp())
+        fable = {'Anthropic-Ratelimit-Unified-7d_oi-Utilization': '1.0', 'Anthropic-Ratelimit-Unified-7d_oi-Reset': str(reset),
+                 'Anthropic-Ratelimit-Unified-7d_oi-Status': 'rejected', 'Anthropic-Ratelimit-Unified-5h-Utilization': '0.97'}
+        proxy = {'a@example.invalid': {'observed_at': '2026-09-21T08:34:00Z', 'signals': {
+            'Anthropic-Ratelimit-Unified-5h-Utilization': '0.1', 'Anthropic-Ratelimit-Unified-5h-Reset': '1789997400',
+            'Anthropic-Ratelimit-Unified-7d-Utilization': '0.78', 'Anthropic-Ratelimit-Unified-7d-Reset': '1790582400'},
+            # An exhausted allowance seen a day ago is still exhausted until its reset; a non-Fable model never supplies one.
+            'model_quotas': {'claude-fable-5': {'observed_at': '2026-09-20T07:00:00Z', 'signals': fable},
+                             'claude-opus-5-5': {'observed_at': '2026-09-21T08:34:00Z', 'signals': dict(fable, **{'Anthropic-Ratelimit-Unified-7d_oi-Utilization': '0.1'})}}}}
+        entry, _ = self.collect(module, request, proxy_quota=proxy)
+        self.assertEqual(entry['source'], 'proxy_headers')
+        self.assertEqual(entry['data']['five_hour']['utilization'], 10.0)
+        [limit] = entry['data']['limits']
+        self.assertEqual((limit['kind'], limit['percent'], limit['scope']['model']['display_name'], limit['is_active'], limit['observed_at']),
+                         ('weekly_scoped', 100.0, 'Fable', True, '2026-09-20T07:00:00+00:00'))
+        self.assertNotIn('scoped_limits_observed', entry['data'])
+        # A partly used allowance older than five hours is no longer evidence; past its reset it no longer exists.
+        partial = dict(fable, **{'Anthropic-Ratelimit-Unified-7d_oi-Utilization': '0.4'})
+        proxy['a@example.invalid']['model_quotas'] = {'claude-fable-5': {'observed_at': '2026-09-20T07:00:00Z', 'signals': partial}}
+        self.assertIs(self.collect(module, request, proxy_quota=proxy)[0]['data']['scoped_limits_observed'], False)
+        expired = dict(fable, **{'Anthropic-Ratelimit-Unified-7d_oi-Reset': str(int((self.NOW - timedelta(minutes=1)).timestamp()))})
+        proxy['a@example.invalid']['model_quotas'] = {'claude-fable-5': {'observed_at': '2026-09-21T08:30:00Z', 'signals': expired}}
+        self.assertNotIn('limits', self.collect(module, request, proxy_quota=proxy)[0]['data'])
+
     def test_server_error_is_retried_with_jitter_then_succeeds(self):
         module = load('ai-claude-quotas')
         request, calls = self.rejecting([503, 502, 200])
@@ -175,7 +226,8 @@ class QuotaFallbackTests(unittest.TestCase):
         self.assertEqual(len(calls), 0)
         self.assertEqual((entry2['ok'], entry2['source'], entry2['data']['five_hour']['utilization']), (True, 'retained', 12))
         self.assertEqual(entry2['direct'], {'status': 429, 'error': 'Rate limited by the provider; next attempt after 08:37 UTC',
-                                            'attempted_at': self.NOW.isoformat(), 'retry_after_until': entry['direct']['retry_after_until']})
+                                            'attempted_at': self.NOW.isoformat(), 'retry_after_until': entry['direct']['retry_after_until'],
+                                            'token_fp': module.token_fingerprint('synthetic')})
         # Without any fallback the entry stays failed with the same deadline, and a third run still waits.
         entry3, _ = self.collect(module, request, now=later, previous={identity: {'ok': False, 'fetched_at': self.NOW.isoformat(), 'status': 429, 'direct': entry['direct']}})
         self.assertEqual((len(calls), entry3['ok'], entry3['status'], entry3['direct']['retry_after_until']), (0, False, 429, entry['direct']['retry_after_until']))
@@ -251,7 +303,9 @@ class QuotaFallbackTests(unittest.TestCase):
         self.assertEqual(entry['data']['five_hour'], {'utilization': 1.0, 'resets_at': datetime.fromtimestamp(1789997400, timezone.utc).isoformat()})
         self.assertEqual(entry['data']['seven_day']['utilization'], 43.0)
         self.assertEqual(entry['direct'], {'status': 429, 'error': 'Proxy quota request rejected (HTTP 429)', 'attempted_at': self.NOW.isoformat(),
-                                           'retry_after_until': '2026-09-21T08:50:00+00:00'})
+                                           'retry_after_until': '2026-09-21T08:50:00+00:00', 'token_fp': module.token_fingerprint('synthetic')})
+        # The account-wide headers say nothing about per-model allowances; the entry says so instead of implying none.
+        self.assertIs(entry['data']['scoped_limits_observed'], False)
         self.assertNotIn('error', entry)
 
     def test_without_proxy_quota_the_last_successful_observation_is_retained_for_five_hours(self):

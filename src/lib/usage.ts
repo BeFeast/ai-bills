@@ -41,6 +41,9 @@ export type ClaudeUsagePayload = {
   spend?: ClaudeSpend | null;
   extra_usage?: unknown;
   member_dashboard_available?: boolean | null;
+  /** Set to false by the collector when the numbers come from the proxy's headers and no scoped (Fable) allowance
+   * could be read from them or carried over: "no scoped limit" then means "not observed", not "none". */
+  scoped_limits_observed?: boolean | null;
   [key: string]: unknown;
 };
 
@@ -63,10 +66,25 @@ export type KimiUsageEntry = {
   limits: KimiQuotaWindow[];
 };
 
+/** The kimi.ai membership the quota belongs to (MembershipService/GetSubscription). A free plan (Adagio) answers
+ * GetUsages with its plan-wide total allowance only; that total is not a Kimi Code coding quota. */
+export type KimiPlan = { title: string | null; level: string | null; endsAt: string | null; active: boolean | null };
+
 export type KimiUsagePayload = {
   usages: KimiUsageEntry[];
   totalQuota: Pick<KimiQuotaDetail, 'limit' | 'remaining'>;
+  plan?: KimiPlan | null;
 };
+
+export function parseKimiPlan(input: unknown): KimiPlan | null {
+  const subscription = input && typeof input === 'object' ? (input as { subscription?: unknown }).subscription : null;
+  if (!subscription || typeof subscription !== 'object') return null;
+  const record = subscription as { goods?: { title?: unknown; membershipLevel?: unknown } | null; currentEndTime?: unknown; active?: unknown };
+  const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null);
+  return { title: text(record.goods?.title), level: text(record.goods?.membershipLevel), endsAt: text(record.currentEndTime), active: typeof record.active === 'boolean' ? record.active : null };
+}
+
+export const isKimiFreePlan = (data?: KimiUsagePayload | null) => data?.plan?.level === 'LEVEL_FREE';
 
 export type CursorStripeInfo = {
   membershipType?: string | null;
@@ -383,6 +401,15 @@ export function deriveModelAvailability(data?: ClaudeUsagePayload): ModelAvailab
       exhaustedLimits: exhausted,
     };
   }
+  if (data?.scoped_limits_observed === false && !scopedModelLimits(data).length) {
+    return {
+      state: 'all',
+      tone: 'warn',
+      label: 'Fable status unknown · other models available',
+      detail: 'These numbers come from the proxy\'s response headers, which carry only the session and weekly all-model windows. Scoped limits such as Fable return with the next direct read.',
+      exhaustedLimits: exhausted,
+    };
+  }
   return {
     state: 'all',
     tone: 'ok',
@@ -547,6 +574,14 @@ function capitalize(s: string | null | undefined): string {
 }
 
 export function deriveKimiAvailability(data?: KimiUsagePayload | null): CodingAvailability {
+  if (isKimiFreePlan(data)) {
+    return {
+      available: false,
+      tone: 'warn',
+      label: 'Free plan · no Kimi Code subscription',
+      detail: `kimi.ai reports the ${data?.plan?.title ?? 'free'} plan${data?.plan?.endsAt ? ` (period ends ${data.plan.endsAt.slice(0, 10)})` : ''}. Its total allowance is not a Kimi Code coding quota.`,
+    };
+  }
   const coding = kimiCodingUsage(data);
   if (!coding) {
     return {

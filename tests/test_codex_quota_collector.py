@@ -1,3 +1,4 @@
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -56,3 +57,13 @@ class CodexQuotaTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CodexStableKeyTests(unittest.TestCase):
+    def test_an_unambiguous_account_is_also_published_under_its_rename_proof_key(self):
+        # module-level loader above
+        stable = hashlib.sha256(b'oauth-account:codex:a@example.invalid').hexdigest()[:24]
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'codex-c0ffee42-a@example.invalid-pro.json').write_text(json.dumps({'type': 'codex', 'email': 'a@example.invalid', 'access_token': 't', 'account_id': 'acct'}))
+            result = module.collect(directory, lambda req, timeout: io.BytesIO(b'{"rate_limit":{"allowed":true}}'), sleep=lambda _: None)
+        self.assertIs(result[stable], result['a@example.invalid'])

@@ -26,6 +26,7 @@ import {
   kimiWindow,
   parseCursorUsagePayload,
   parseKimiUsagePayload,
+  parseKimiPlan,
   kimiCodingUsage,
   scopedModelLimits,
   claudeWindows,
@@ -46,6 +47,16 @@ resetConfigCache();
 const account = (key: string): AccountConfig => loadConfig().accounts.find((item) => item.key === key)!;
 
 describe('usage helpers', () => {
+  test('a free kimi.ai plan is not a Kimi Code subscription, whatever its total allowance', () => {
+    // 2026-10-02: GetUsages(FEATURE_CODING) answered {totalQuota:{limit:100,remaining:100}} while the account was on Adagio (LEVEL_FREE).
+    const plan = parseKimiPlan({ subscription: { goods: { title: 'Adagio', membershipLevel: 'LEVEL_FREE' }, currentEndTime: '2026-10-18T00:00:00Z', active: true } });
+    expect(plan).toEqual({ title: 'Adagio', level: 'LEVEL_FREE', endsAt: '2026-10-18T00:00:00Z', active: true });
+    const payload = { ...parseKimiUsagePayload({ totalQuota: { limit: '100', remaining: '100' } }), plan };
+    expect(deriveKimiAvailability(payload)).toMatchObject({ available: false, label: 'Free plan · no Kimi Code subscription' });
+    expect(parseKimiPlan(null)).toBeNull();
+    expect(deriveKimiAvailability({ ...payload, plan: { ...plan!, level: 'LEVEL_MODERATO' } }).label).toBe('Coding available');
+  });
+
   test('reads the kimi.ai total-only answer as the coding quota and still rejects an empty payload', () => {
     const payload = parseKimiUsagePayload({ totalQuota: { limit: '100', remaining: '96' } });
     expect(payload.usages).toEqual([{ scope: 'FEATURE_CODING', detail: { limit: 100, used: 4, remaining: 96, resetTime: null }, limits: [] }]);
