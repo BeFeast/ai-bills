@@ -11,7 +11,13 @@ how the direct request ended so nothing pretends the check succeeded.
 A 429 is not retried: the provider asked us to back off, and retrying within the same run only
 extends the block. Its `Retry-After` becomes `direct.retry_after_until`, and later runs skip the
 direct request until then. The proxy's own view of the OAuth credential (from its management
-API, passed alongside the header quota) marks entries whose credential needs a re-login."""
+API, passed alongside the header quota) marks entries whose credential needs a re-login.
+
+A back-off belongs to the token that was refused, not to the address: it is stamped with a one-way
+fingerprint of that token, and a credential the proxy re-issued after a re-login (new file, new token)
+reads directly at once instead of waiting out the dead token's deadline. The Fable weekly allowance is
+not in the account-wide headers; the proxy records it per model (`7d_oi` on claude-fable* responses), so a
+header fallback takes it from there, and says so when neither source holds it."""
 import hashlib
 import json
 import os
@@ -41,6 +47,14 @@ def credential_id(provider, email):
     """The credential's identity across proxy renames: provider and account e-mail. The proxy renames an auth file
     on re-login (adding an org hash), which changes the file-name identity every consumer keyed on."""
     return hashlib.sha256(('oauth-account:%s:%s' % (provider, email.strip().lower())).encode()).hexdigest()[:24]
+
+
+def token_fingerprint(token):
+    """A one-way, truncated fingerprint that ties a back-off to the token it was issued for."""
+    return hashlib.sha256(('quota-backoff:%s' % token).encode()).hexdigest()[:16] if token else None
+
+
+FABLE_MODEL = re.compile(r'^claude-fable', re.IGNORECASE)
 
 
 def parse_time(value):
@@ -116,6 +130,35 @@ def proxy_quota_payload(signals):
     return windows or None
 
 
+def proxy_scoped_limits(model_quotas, now):
+    """The Fable weekly allowance as the proxy last saw it on a claude-fable* response (`7d_oi` headers), in the usage
+    endpoint's `weekly_scoped` shape and stamped with its observation time. An exhausted allowance stays true until its
+    reset whatever its age (usage only grows inside a window); a lower value is used for STALE_SECONDS like any header."""
+    best = None
+    for model, observation in (model_quotas or {}).items() if isinstance(model_quotas, dict) else ():
+        if not FABLE_MODEL.match(str(model)) or not isinstance(observation, dict):
+            continue
+        lower = {str(k).lower(): v for k, v in (observation.get('signals') or {}).items()}
+        observed = parse_time(observation.get('observed_at'))
+        try:
+            used = float(lower['anthropic-ratelimit-unified-7d_oi-utilization']) * 100
+            reset = datetime.fromtimestamp(int(lower['anthropic-ratelimit-unified-7d_oi-reset']), timezone.utc)
+        except (KeyError, ValueError, TypeError, OverflowError, OSError):
+            continue
+        if not observed or reset <= now or not 0 <= used <= 100 or observed > now:
+            continue
+        if used < 100 and (now - observed).total_seconds() > STALE_SECONDS:
+            continue
+        status = str(lower.get('anthropic-ratelimit-unified-7d_oi-status') or '').lower()
+        limit = {'kind': 'weekly_scoped', 'group': 'weekly', 'percent': round(used, 2),
+                 'severity': 'critical' if used >= 100 or status == 'rejected' else 'warning' if used >= 75 else 'normal',
+                 'resets_at': reset.isoformat(), 'scope': {'model': {'id': None, 'display_name': 'Fable'}, 'surface': None},
+                 'is_active': status == 'rejected', 'observed_at': observed.isoformat()}
+        if best is None or observed > parse_time(best['observed_at']):
+            best = limit
+    return [best] if best else []
+
+
 def load_proxy_rows(path, kind):
     """{email: row} of the wrapper's auth-file rows for one provider type; ambiguous emails are dropped."""
     if not path:
@@ -133,7 +176,8 @@ def load_proxy_rows(path, kind):
 
 def load_proxy_quota(path, kind):
     """{email: {observed_at, signals}} for credentials of one provider type; ambiguous emails are dropped."""
-    return {email: row['quota'] for email, row in load_proxy_rows(path, kind).items() if isinstance(row.get('quota'), dict)}
+    return {email: dict(row['quota'], **({'model_quotas': row['model_quotas']} if isinstance(row.get('model_quotas'), dict) and row['model_quotas'] else {}))
+            for email, row in load_proxy_rows(path, kind).items() if isinstance(row.get('quota'), dict)}
 
 
 def load_proxy_auth(path, kind):
@@ -210,10 +254,12 @@ def fallback(entry, identity, email, previous, proxy_quota, now, to_payload, car
     if not candidates:
         return
     observed, source, data = max(candidates, key=lambda item: item[0])
-    if source == 'proxy_headers' and carry:
-        limits = carry(prior, now)
-        if limits:
-            data = dict(data, limits=limits)
+    if source == 'proxy_headers':
+        limits = carry(prior, now) if carry else []
+        if not limits and isinstance(row, dict):
+            limits = proxy_scoped_limits(row.get('model_quotas'), now)
+        # Without either, the card must not read "no scoped limit" as "nothing is limited".
+        data = dict(data, limits=limits) if limits else dict(data, scoped_limits_observed=False)
     entry.pop('error', None)
     entry.update(ok=True, status=None, fetched_at=observed.isoformat(), data=data, source=source, direct=direct)
 
@@ -275,10 +321,18 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
         # The previous observation of this credential: by its own file id, or, after the proxy renamed the file, by the
         # stable or e-mail key when exactly one current credential holds the address.
         prior = previous.get(identity) if isinstance(previous.get(identity), dict) else None
+        same_file = prior is not None
         if prior is None and unique:
             prior = next((previous[key] for key in (stable, email) if isinstance(previous.get(key), dict)), None)
         previous_view = {identity: prior} if prior else {}
+        fingerprint = token_fingerprint(token)
         deadline, backoff = pending_backoff(prior, attempted)
+        if deadline:
+            # The deadline was issued to one token. A re-login gives the credential a new token (and file); keep the
+            # deadline only for the token it was issued to, or for the same file when the entry predates fingerprints.
+            issued_to = backoff.get('token_fp')
+            if (issued_to and issued_to != fingerprint) or (not issued_to and not same_file):
+                deadline, backoff = None, None
         if auth.get('disabled'):
             entry['error'] = 'Proxy account is disabled; quota was not queried'
         elif not token:
@@ -287,7 +341,7 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
             # Still inside the provider's back-off: no request, the number comes from the fallback.
             error = 'Rate limited by the provider; next attempt after %s' % deadline.astimezone(timezone.utc).strftime('%H:%M UTC')
             entry.update(status=429, error=error, direct={'status': 429, 'error': error, 'attempted_at': backoff.get('attempted_at') or entry['fetched_at'],
-                                                            'retry_after_until': deadline.isoformat()})
+                                                            'retry_after_until': deadline.isoformat(), 'token_fp': fingerprint})
             fallback(entry, identity, email, previous_view, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
         else:
             request = Request('https://api.anthropic.com/api/oauth/usage', headers={
@@ -299,7 +353,7 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
                 entry.update(status=status, error=payload)
                 if status == 429:
                     entry['direct'] = {'status': 429, 'error': payload, 'attempted_at': entry['fetched_at'],
-                                       'retry_after_until': retry_after_until(retry_after, attempted).isoformat()}
+                                       'retry_after_until': retry_after_until(retry_after, attempted).isoformat(), 'token_fp': fingerprint}
                 fallback(entry, identity, email, previous_view, proxy_quota, attempted, proxy_quota_payload, carried_scoped_limits)
         if not auth.get('disabled'):
             mark_proxy_auth(entry, proxy_auth.get(email) if email else None, attempted)

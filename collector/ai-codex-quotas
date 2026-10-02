@@ -23,6 +23,11 @@ RETRYABLE = {429, 500, 502, 503, 504}
 RETAIN_SECONDS = 6 * 3600
 
 
+def credential_id(provider, email):
+    """Provider and account e-mail: the credential's identity across proxy renames (see ai-claude-quotas)."""
+    return hashlib.sha256(('oauth-account:%s:%s' % (provider, email.strip().lower())).encode()).hexdigest()[:24]
+
+
 def parse_time(value):
     try:
         parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
@@ -169,10 +174,12 @@ def collect(auth_dir, open_url=urlopen, previous=None, proxy_quota=None, sleep=t
         result[identity] = entry
         if email:
             emails.setdefault(email, []).append(entry)
-    # Email lookup is a convenience only when its identity is unambiguous.
+    # Email lookup is a convenience only when its identity is unambiguous. The stable key is the same rename-proof
+    # credential id the Claude collector publishes, so a configured account survives the proxy renaming the file.
     for email, entries in emails.items():
         if len(entries) == 1:
             result[email] = entries[0]
+            result[credential_id('codex', email)] = entries[0]
     return result
 
 

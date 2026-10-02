@@ -19,6 +19,7 @@ import {
   deriveModelAvailability,
   detectCursorBillingModel,
   detectCursorTier,
+  isKimiFreePlan,
   kimiCodingUsage,
   kimiUsagePercent,
   kimiWindow,
@@ -164,7 +165,9 @@ function LastKnownNotice({ result, tz }: { result: ProviderUsage; tz: string }) 
 
 function Meta({ result, tz, prefix }: { result: ProviderUsage; tz: string; prefix?: string }) {
   const fallback = result.source === 'proxy_headers' || result.source === 'retained' || result.source === 'web' ? result.source : null;
-  return <>{prefix}HTTP {result.status ?? 'n/a'} · {fallback ? 'observed' : 'fetched'} {fmtDate(result.fetchedAt, tz)}{fallback ? ` · ${result.direct?.error ?? 'The direct quota request failed'}; showing ${fallbackSource[fallback]}` : ''}</>;
+  // A fallback has no HTTP answer of its own: show how the direct request ended instead of "n/a".
+  const status = fallback ? `${result.direct?.status ?? 'n/a'} (direct request)` : `${result.status ?? 'n/a'}`;
+  return <>{prefix}HTTP {status} · {fallback ? 'observed' : 'fetched'} {fmtDate(result.fetchedAt, tz)}{fallback ? ` · ${result.direct?.error ?? 'The direct quota request failed'}; showing ${fallbackSource[fallback]}` : ''}</>;
 }
 
 /** The last known limiting window of a stale observation, so the card keeps a number with its age instead of only "Unknown". */
@@ -241,7 +244,7 @@ function ClaudeCard({ result, now, tz, evidence }: ProviderCardProps) {
         {scoped.length ? scoped.map((limit, i) => {
           const pct = normalizePct(limit.percent);
           return <LimitCard key={i} label={scopeLabel(limit)} provider={name} pct={pct} reset={limit.resets_at} badge={claudeBadge(limit)} tone={limitTone(pct, limit.severity)} rows={claudeRows(limit, null, pct, limit.resets_at, now, tz)} now={now} tz={tz} />;
-        }) : <p className="acct__empty">No scoped model limit returned.</p>}
+        }) : <p className="acct__empty">{d.scoped_limits_observed === false ? 'Scoped model limits (Fable) are not in the proxy\'s headers; they return with the next direct read.' : 'No scoped model limit returned.'}</p>}
         <Accordion title="Spend / credits" rows={spend} empty="No spend object returned." />
       </>}
     </AccountGroup>
@@ -271,9 +274,9 @@ function KimiCard({ result, now, tz, evidence }: ProviderCardProps) {
   const name = providerName(result.account.provider);
   const nearLimit = (pct: number | null) => (pct !== null && pct >= 90 ? { tone: 'warn' as const, label: 'Near limit', note: 'Kimi reports this quota near its cap.' } : undefined);
   return (
-    <AccountGroup result={result} title={`Kimi Code · ${result.account.email}`} availability={fresh ? deriveKimiAvailability(data) : undefined} footer={<Meta result={result} tz={tz} />}>
+    <AccountGroup result={result} title={`Kimi Code · ${result.account.email}`} availability={fresh ? deriveKimiAvailability(data) : undefined} footer={<Meta result={result} tz={tz} prefix={data?.plan?.title ? `Plan: ${data.plan.title}${isKimiFreePlan(data) ? ' (free)' : ''} · ` : undefined} />}>
       {!fresh ? <UnknownCard result={result} tz={tz} evidence={evidence} /> : <>
-        <LimitCard label="Overall coding quota" provider={name} pct={overallPct} reset={overall?.resetTime} badge={nearLimit(overallPct)} tone={limitTone(overallPct)} rows={kimiRows(overall, overallPct, overall?.resetTime, `Scope: ${coding?.scope || 'n/a'}`, now, tz)} now={now} tz={tz} />
+        <LimitCard label={isKimiFreePlan(data) ? 'Free plan total allowance' : 'Overall coding quota'} provider={name} pct={overallPct} reset={overall?.resetTime} badge={nearLimit(overallPct)} tone={limitTone(overallPct)} rows={kimiRows(overall, overallPct, overall?.resetTime, `Scope: ${coding?.scope || 'n/a'}`, now, tz)} now={now} tz={tz} />
         <LimitCard label="300-minute window" provider={name} pct={windowPct} reset={window300?.detail.resetTime} badge={nearLimit(windowPct)} tone={limitTone(windowPct)} rows={kimiRows(window300?.detail ?? null, windowPct, window300?.detail.resetTime, 'Rolling TIME_UNIT_MINUTE window', now, tz)} now={now} tz={tz} />
         <KvCard title="Quota summary" rows={[['Global remaining', `${fmtNumber(overall?.remaining)} / ${fmtNumber(overall?.limit)}`], ['Window remaining', `${fmtNumber(window300?.detail.remaining)} / ${fmtNumber(window300?.detail.limit)}`]]} />
       </>}

@@ -11,7 +11,7 @@ import {
   validateCdpEndpoint,
   waitForCdpStartup,
 } from './cdp-startup';
-import { parseCursorUsagePayload, parseKimiUsagePayload, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload, type ProviderConfig, type ProviderUsage, type ProxyAuthEvidence, usageUrl } from './usage';
+import { parseCursorUsagePayload, parseKimiPlan, parseKimiUsagePayload, type ClaudeUsagePayload, type CodexUsagePayload, type CursorUsagePayload, type KimiUsagePayload, type ProviderConfig, type ProviderUsage, type ProxyAuthEvidence, usageUrl } from './usage';
 import { checkDue, compareReadings, proxyClaudeReading, recordCheck, webClaudeReading } from './quota-consistency';
 import { CLAUDE_LAST_KNOWN_MS, FRESH_MS } from './usage-evidence';
 import { quotaEntry } from './snapshot-keys';
@@ -118,7 +118,7 @@ export async function fetchUsageThroughCdp(account: ProviderConfig, options: Cdp
       status: result.status,
       statusText: result.statusText,
       // A provider error body is kept as it came, so the message reaches the card instead of a parse failure.
-      data: result.ok ? normalizePayload(account, result.data) : result.data,
+      data: result.ok ? normalizePayload(account, result.data, result.subscription) : result.data,
       error: result.ok ? undefined : extractError(result.data) ?? `HTTP ${result.status}`,
       fetchedAt,
       sourceUrl,
@@ -152,8 +152,14 @@ async function unhold(key: string): Promise<void> {
   await closeSession(key).catch(() => undefined);
 }
 
-function normalizePayload(account: ProviderConfig, data: unknown): ClaudeUsagePayload | KimiUsagePayload | CodexUsagePayload | CursorUsagePayload | undefined {
-  if (account.provider === 'kimi') return parseKimiUsagePayload(data);
+function normalizePayload(account: ProviderConfig, data: unknown, subscription?: unknown): ClaudeUsagePayload | KimiUsagePayload | CodexUsagePayload | CursorUsagePayload | undefined {
+  if (account.provider === 'kimi') {
+    const usage = parseKimiUsagePayload(data);
+    const plan = parseKimiPlan(subscription);
+    if (!plan) return usage;
+    // A total-only answer has no reset of its own; the plan period is when that allowance renews.
+    return { ...usage, plan, usages: usage.usages.map((entry) => entry.detail.resetTime || !plan.endsAt ? entry : { ...entry, detail: { ...entry.detail, resetTime: plan.endsAt } }) };
+  }
   if (account.provider === 'codex') return data as CodexUsagePayload;
   if (account.provider === 'cursor') {
     if (data && typeof data === 'object') return parseCursorUsagePayload(data as { stripe: unknown; usage: unknown; currentPeriod?: unknown; usageSummary?: unknown });
@@ -404,7 +410,17 @@ async function evaluateKimiFetch(session: CdpSession, url: string) {
       const text = await response.text();
       let data = text;
       try { data = text ? JSON.parse(text) : null; } catch (_) {}
-      return { ok: response.ok, status: response.status, statusText: response.statusText, data };
+      // The plan the quota belongs to: a free plan answers GetUsages with its plan-wide total only. Best effort, read-only.
+      let subscription = null;
+      try {
+        const planResponse = await fetch(new URL('/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription', ${JSON.stringify(url)}).href, {
+          method: 'POST', credentials: 'include', cache: 'no-store',
+          headers: { accept: 'application/json', authorization: 'Bearer ' + authValue, 'content-type': 'application/json', 'connect-protocol-version': '1' },
+          body: '{}',
+        });
+        if (planResponse.ok) subscription = await planResponse.json();
+      } catch (_) {}
+      return { ok: response.ok, status: response.status, statusText: response.statusText, data, subscription };
     })()
   `);
 }

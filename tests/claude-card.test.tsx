@@ -54,6 +54,19 @@ describe('Claude card rendering', () => {
     expect(html).toContain('All models available');
   });
 
+  test('a header fallback without a scoped allowance says Fable is unknown, not that every model is available', () => {
+    const item = workResult(77);
+    item.status = undefined; item.source = 'proxy_headers';
+    item.direct = { status: 429, error: 'Rate limited by the provider; next attempt after 11:57 UTC', attemptedAt: '2026-07-27T11:57:00.000Z' };
+    item.data = { ...(item.data as object), limits: [], scoped_limits_observed: false } as never;
+    const html = render(item);
+    expect(html).toContain('Fable status unknown');
+    expect(html).not.toContain('All models available');
+    expect(html).not.toContain('No scoped model limit returned');
+    expect(html).toContain('HTTP 429 (direct request)');
+    expect(html).not.toContain('HTTP n/a');
+  });
+
   test('a genuinely exhausted weekly limit still blocks', () => {
     const html = render(workResult(100));
     expect(html).toContain('100.0%');
