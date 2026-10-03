@@ -4,7 +4,7 @@ import type { Guard, GuardsReport } from '@/lib/guards';
 import { fmtDate } from './format';
 import { Card, Cell, Pill, Table, type Column } from './ui';
 
-const guardNames: Record<keyof GuardsReport['guards'], string> = { stale: 'Quota freshness (5 h)', consistency: 'Proxy vs website cross-check', probe: 'Model probe (hourly)', mapping: 'Configured quota links' };
+const guardNames: Record<keyof GuardsReport['guards'], string> = { stale: 'Quota freshness (5 h)', consistency: 'Proxy vs website cross-check', probe: 'Model probe (hourly)', mapping: 'Configured quota links', credits: 'Codex credits spent while quota is free' };
 const checkColumns: Column<'account' | 'verdict' | 'proxy' | 'website' | 'at'>[] = [
   { key: 'account', label: 'Account' }, { key: 'verdict', label: 'Verdict' }, { key: 'proxy', label: 'Proxy' }, { key: 'website', label: 'Website' }, { key: 'at', label: 'Checked', mono: true }];
 const probeColumns: Column<'model' | 'outcome'>[] = [{ key: 'model', label: 'Model', mono: true }, { key: 'outcome', label: 'Outcome' }];

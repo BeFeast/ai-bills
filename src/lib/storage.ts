@@ -1,7 +1,8 @@
 import { latestSnapshot } from './snapshot-store';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
-import { historyPoints, journalRecords, subscriptionOverrides } from '@/db/schema';
+import { historyPoints, journalRecords, quotaObservations, subscriptionOverrides } from '@/db/schema';
 import type { AppConfig } from './config';
+import type { CreditSample } from './codex-credits';
 import { getDb, withTenant, type Db } from './db';
 
 /**
@@ -88,6 +89,28 @@ export function dbHistoryStore(db: Db, tenantId: string): HistoryStore {
   };
 }
 export const historyStoreFor = (scope?: Scope): HistoryStore | null => { const target = dbFor(scope); return target ? dbHistoryStore(target.db, target.tenantId) : null; };
+
+// ---------------------------------------------------------------- Codex credit balances
+
+/** Codex credit observations stored since `cutoff`, oldest first: every one with a credits block. Header fallbacks have none and are left out. */
+export type CreditHistoryStore = { since(cutoff: Date): Promise<CreditSample[]> };
+export function dbCreditHistoryStore(db: Db, tenantId: string): CreditHistoryStore {
+  return {
+    async since(cutoff) {
+      // A text field of the stored payload; the keys are constants of this function, never input.
+      const field = (...keys: string[]) => sql<string | null>`${quotaObservations.windows}${sql.raw(keys.map((key, index) => `${index === keys.length - 1 ? '->>' : '->'}'${key}'`).join(''))}`;
+      const balance = field('credits', 'balance');
+      const rows = await withTenant(db, tenantId, tx => tx.select({ accountKey: quotaObservations.accountKey, accountId: field('account_id'), userId: field('user_id'), observedAt: quotaObservations.observedAt, balance,
+        hasCredits: field('credits', 'has_credits'), overage: field('credits', 'overage_limit_reached'), capped: field('spend_control', 'reached') })
+        .from(quotaObservations)
+        .where(and(eq(quotaObservations.tenantId, tenantId), eq(quotaObservations.provider, 'codex'), eq(quotaObservations.ok, true), gte(quotaObservations.observedAt, cutoff), sql`jsonb_typeof(${quotaObservations.windows}->'credits') = 'object'`))
+        .orderBy(quotaObservations.observedAt));
+      // Booleans compared as text in code: a cast in SQL would fail the whole read on one odd payload.
+      return rows.map(({ hasCredits, overage, capped, ...row }) => ({ ...row, observedAt: row.observedAt.toISOString(), canPay: hasCredits === 'true' && overage !== 'true' && capped !== 'true' }));
+    },
+  };
+}
+export const creditHistoryStoreFor = (scope?: Scope): CreditHistoryStore | null => { const target = dbFor(scope); return target ? dbCreditHistoryStore(target.db, target.tenantId) : null; };
 
 // ---------------------------------------------------------------- operator
 

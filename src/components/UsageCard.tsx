@@ -43,6 +43,7 @@ import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
 import { ProxyReconnect } from './ProxyReconnect';
 import { Button, ButtonLink, Notice, Pill, type PillTone } from './ui';
+import { codexPaysFromCredits, creditDrainSentence, spendingCredits } from '@/lib/codex-credits';
 
 type CardProps = { result: ProviderUsage; now: number; tz: string; onAuthorized: () => void };
 
@@ -349,12 +350,20 @@ function CodexCardBody({ result, now, tz, evidence, tools, belowHeader }: Provid
   const pct = primary?.used_percent ?? null;
   const resetIso = codexWindowResetIso(primary);
   const blocked = codexBlocked(data?.rate_limit);
+  // Used up but still answering: the window is spent and every request is charged to the credits instead.
+  const drain = result.creditDrain ?? null;
+  // A header fallback carries no credits block; a balance seen falling in the stored history says it all the same.
+  const paying = codexPaysFromCredits(data) || drain !== null;
+  const payingTone: PillTone = spendingCredits(drain) ? 'bad' : 'warn';
   const fresh = evidence.state === 'fresh';
   const name = providerName(result.account.provider);
+  const badge = paying ? { tone: payingTone, label: 'Paying from credits', note: creditDrainSentence(drain) }
+    : blocked ? { tone: 'bad' as const, label: 'Limit reached', note: 'Rate limit has been reached for this window.' } : undefined;
   return (
-    <AccountGroup result={result} title={`${result.account.label} · ${data?.email || result.account.email || 'Email not recorded'}`} availability={fresh ? deriveCodexAvailability(data, result.status) : undefined} tools={tools} belowHeader={belowHeader} footer={<Meta result={result} tz={tz} prefix={`Plan: ${data?.plan_type || 'n/a'} · `} />}>
+    <AccountGroup result={result} title={`${result.account.label} · ${data?.email || result.account.email || 'Email not recorded'}`} availability={fresh ? deriveCodexAvailability(data, result.status, drain) : undefined} tools={tools} belowHeader={belowHeader} footer={<Meta result={result} tz={tz} prefix={`Plan: ${data?.plan_type || 'n/a'} · `} />}>
       {!fresh ? <UnknownCard result={result} tz={tz} evidence={evidence} /> : <>
-        <LimitCard label={codexWindowDurationLabel(primary)} provider={name} pct={pct} reset={resetIso} tone={limitTone(pct, null, blocked)} badge={blocked ? { tone: 'bad', label: 'Limit reached', note: 'Rate limit has been reached for this window.' } : undefined} rows={[['Reset', resetLabel(resetIso, now, tz)], ['Status', blocked ? 'Blocked' : data?.rate_limit?.allowed === true ? 'Allowed' : 'Unknown'], ['Used', fmtPct(pct)]]} now={now} tz={tz} />
+        {paying ? <Notice tone={payingTone === 'bad' ? 'bad' : 'warn'} role="status">{creditDrainSentence(drain)}</Notice> : null}
+        <LimitCard label={codexWindowDurationLabel(primary)} provider={name} pct={pct} reset={resetIso} tone={limitTone(pct, null, blocked)} badge={badge} rows={[['Reset', resetLabel(resetIso, now, tz)], ['Status', paying ? 'Paying from credits' : blocked ? 'Blocked' : data?.rate_limit?.allowed === true ? 'Allowed' : 'Unknown'], ['Used', fmtPct(pct)]]} now={now} tz={tz} />
         {(data?.additional_rate_limits ?? []).map((limit, i) => <CodexAdditionalLimit key={i} limit={limit} provider={name} now={now} tz={tz} />)}
         <Accordion title="Credits & spend control" rows={codexCreditRows(data)} empty="No credit data returned." />
       </>}

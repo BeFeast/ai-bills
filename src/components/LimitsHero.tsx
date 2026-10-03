@@ -8,6 +8,7 @@ import { countdown, fmtDate, fmtMoney, refillLabel } from './format';
 import { ProviderIcon } from './ProviderIcon';
 import { AccountBrowserAccess } from './AccountBrowserAccess';
 import { Button, ButtonLink, Card, Pill, Progress } from './ui';
+import { creditDrainSentence, creditDrainSummary, spendingCredits } from '@/lib/codex-credits';
 
 const TZ = 'Asia/Jerusalem';
 const pct = (value: number | null) => value === null ? 'n/a' : `${Number(value.toFixed(1))}%`;
@@ -73,7 +74,9 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
     </article>;
   }
   const others = card.windows.filter((window) => window !== card.limiting);
-  const badge = card.limiting.exhausted ? <Pill tone="bad">Limit reached</Pill> : card.tone === 'warn' ? <Pill tone="warn">Running low</Pill> : null;
+  const drain = card.creditDrain;
+  const badge = drain ? <Pill tone={spendingCredits(drain) ? 'bad' : 'warn'} title={creditDrainSentence(drain)}>Paying from credits</Pill>
+    : card.limiting.exhausted ? <Pill tone="bad">Limit reached</Pill> : card.tone === 'warn' ? <Pill tone="warn">Running low</Pill> : null;
   return <article className={`bf-card hero-card${card.tone ? ` hero-card--${card.tone}` : ''}`} aria-label={`${card.account.label} · ${remainingText(card.limiting)} left · ${card.limiting.label}`}>
     {head(<>{badge}{card.proxyAuth ? <ProxyAuthPill proxyAuth={card.proxyAuth} /> : null}{card.lastKnown ? <Pill tone="warn" title={`Observed ${fmtDate(card.observedAt, TZ)}; no newer observation from any source.`}>Last known</Pill> : null}{card.fallback ? <FallbackPill fallback={card.fallback} /> : null}</>)}
     <div className="hero-card__body">
@@ -81,6 +84,7 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
         <span className="hero-card__window" title="The window currently constraining this account">{card.limiting.label}{asOf(card.limiting)}</span>
         <div className="hero-card__value"><span className="hero-card__num tabular">{remainingText(card.limiting)}</span>{card.limiting.exhausted ? null : <span className="t-small">left</span>}</div>
         <ResetChip reset={card.limiting.resetsAt} now={now} />
+        {drain ? <span className="t-small">{creditDrainSummary(drain)}</span> : null}
       </div>
       {others.length ? <ul className="hero-windows" aria-label="Other limit windows">{others.map((window) => <li className={`hero-window${window.tone ? ` hero-window--${window.tone}` : ''}`} key={window.label}>
         <span className="hero-window__label">{window.label}</span>

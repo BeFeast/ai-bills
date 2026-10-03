@@ -23,12 +23,14 @@ ENV = {'AI_BILLS_GUARDS_URL': GUARDS_URL, 'AI_BILLS_GUARDS_TOKEN': 'synthetic-gu
        'AI_BILLS_KUMA_PUSH_STALE': 'https://kuma.example.com/api/push/stale-token',
        'AI_BILLS_KUMA_PUSH_CONSISTENCY': 'https://kuma.example.com/api/push/consistency-token?status=up&msg=OK&ping=',
        'AI_BILLS_KUMA_PUSH_PROBE': 'https://kuma.example.com/api/push/probe-token',
-       'AI_BILLS_KUMA_PUSH_MAPPING': 'https://kuma.example.com/api/push/mapping-token'}
+       'AI_BILLS_KUMA_PUSH_MAPPING': 'https://kuma.example.com/api/push/mapping-token',
+       'AI_BILLS_KUMA_PUSH_CREDITS': 'https://kuma.example.com/api/push/credits-token'}
 BODY = {'generatedAt': '2026-09-30T12:00:00Z', 'guards': {
     'stale': {'status': 'up', 'message': 'snapshot 3 min old'},
     'consistency': {'status': 'down', 'message': 'claude_usage and proxy_auths disagree for 1 account'},
     'probe': {'status': 'up', 'message': '2 Claude models callable'},
-    'mapping': {'status': 'down', 'message': 'claude-personal: quota_snapshot_key is not in the snapshot'}}}
+    'mapping': {'status': 'down', 'message': 'claude-personal: quota_snapshot_key is not in the snapshot'},
+    'credits': {'status': 'down', 'message': 'codex-personal pays from credits (-8.8k credits/h) while codex-work has 98 % left'}}}
 
 
 class FakeHttp:
@@ -61,12 +63,13 @@ class GuardsPushTests(unittest.TestCase):
     def test_guard_status_maps_to_each_push_monitor(self):
         http = FakeHttp()
         pushed, logs = self.run_guards(http)
-        self.assertEqual(pushed, {'stale': 'up', 'consistency': 'down', 'probe': 'up', 'mapping': 'down'})
+        self.assertEqual(pushed, {'stale': 'up', 'consistency': 'down', 'probe': 'up', 'mapping': 'down', 'credits': 'down'})
         self.assertEqual(http.calls[0].headers['Authorization'], 'Bearer synthetic-guards-token')
         pushes = http.pushes()
         self.assertEqual(pushes['stale-token'], {'status': ['up'], 'msg': ['snapshot 3 min old']})
         # A copied Kuma URL already has status/msg/ping: they are replaced, not duplicated.
         self.assertEqual(pushes['consistency-token'], {'status': ['down'], 'msg': ['claude_usage and proxy_auths disagree for 1 account']})
+        self.assertEqual(pushes['credits-token'], {'status': ['down'], 'msg': ['codex-personal pays from credits (-8.8k credits/h) while codex-work has 98 % left']})
         self.assertEqual(logs, [])
 
     def test_unreadable_guards_endpoint_pushes_down_everywhere(self):
@@ -75,27 +78,27 @@ class GuardsPushTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 http = FakeHttp(guards=failure)
                 pushed, _ = self.run_guards(http)
-                self.assertEqual(pushed, {'stale': 'down', 'consistency': 'down', 'probe': 'down', 'mapping': 'down'})
+                self.assertEqual(pushed, {'stale': 'down', 'consistency': 'down', 'probe': 'down', 'mapping': 'down', 'credits': 'down'})
                 for push in http.pushes().values():
                     self.assertEqual(push, {'status': ['down'], 'msg': ['guards endpoint unavailable: ' + reason]})
         http = FakeHttp()
         pushed, _ = self.run_guards(http, dict(ENV, AI_BILLS_GUARDS_URL=''))
-        self.assertEqual(pushed, {'stale': 'down', 'consistency': 'down', 'probe': 'down', 'mapping': 'down'})
-        self.assertEqual(len(http.calls), 4)
+        self.assertEqual(pushed, {'stale': 'down', 'consistency': 'down', 'probe': 'down', 'mapping': 'down', 'credits': 'down'})
+        self.assertEqual(len(http.calls), 5)
 
     def test_missing_guard_is_down_and_missing_push_url_is_skipped(self):
         body = {'guards': {'stale': {'status': 'up', 'message': 'ok'}, 'probe': {'status': 'unknown'}}}
         env = dict(ENV, AI_BILLS_KUMA_PUSH_STALE='')
         http = FakeHttp(guards=body)
         pushed, _ = self.run_guards(http, env)
-        self.assertEqual(pushed, {'consistency': 'down', 'probe': 'down', 'mapping': 'down'})
+        self.assertEqual(pushed, {'consistency': 'down', 'probe': 'down', 'mapping': 'down', 'credits': 'down'})
         self.assertEqual(http.pushes()['consistency-token']['msg'], ['guard missing'])
         self.assertEqual(http.pushes()['probe-token']['msg'], ['guard status invalid'])
         self.assertNotIn('stale-token', http.pushes())
 
     def test_message_is_trimmed_and_encoded(self):
         message = 'a & b = c?\n' + 'x' * 400
-        http = FakeHttp(guards={'guards': {name: {'status': 'down', 'message': message} for name in ('stale', 'consistency', 'probe', 'mapping')}})
+        http = FakeHttp(guards={'guards': {name: {'status': 'down', 'message': message} for name in ('stale', 'consistency', 'probe', 'mapping', 'credits')}})
         self.run_guards(http)
         msg = http.pushes()['stale-token']['msg'][0]
         self.assertEqual(len(msg), 200)
@@ -106,7 +109,7 @@ class GuardsPushTests(unittest.TestCase):
         http = FakeHttp(push_error=URLError('refused'))
         pushed, logs = self.run_guards(http)
         self.assertEqual(set(pushed.values()), {'push_failed'})
-        self.assertEqual(len(logs), 4)
+        self.assertEqual(len(logs), 5)
         for line in logs:
             self.assertNotIn('token', line)
             self.assertNotIn('kuma.example.com', line)

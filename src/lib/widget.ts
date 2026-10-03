@@ -6,6 +6,7 @@ import { readSnapshot, type Scope } from './storage';
 import { isPendingObservation, type ProviderUsage } from './usage';
 import { usageEvidence, type UsageEvidence } from './usage-evidence';
 import { getUsageResponse, type UsageResponseBody } from './usage-service';
+import { creditDrain, PAYING_FROM_CREDITS, type CreditDrain } from './codex-credits';
 
 /**
  * The compact answer a desktop widget polls: every account of the tenant with its limit windows (the
@@ -28,6 +29,12 @@ export type WidgetAccount = {
   headline: WidgetWindow | null;
   /** Account-wide windows first (tightest first), then the model-scoped ones. */
   windows: WidgetWindow[];
+  /**
+   * Codex: the window is used up but the account still answers, charging its credits. The used-up window's label
+   * also says "(paying from credits)", so a client that predates this field shows it under the meter anyway; the
+   * parentheses keep the clients' own "0% left" reading as the window's figure, not the credits'.
+   */
+  creditDrain: CreditDrain | null;
 };
 /**
  * One account's share of a model-scoped allowance. `remainingPercent` is null when the account reports no such
@@ -123,17 +130,21 @@ function widgetModels(results: ProviderUsage[], accounts: WidgetAccount[]): Widg
 
 function widgetAccount(result: ProviderUsage, now: number): WidgetAccount {
   const base = { key: result.account.key, provider: result.account.provider, label: result.account.label, email: result.account.email };
-  if (isPendingObservation(result)) return { ...base, state: 'pending', message: 'Waiting for the first quota observation', observedAt: null, limiting: null, headline: null, windows: [] };
+  if (isPendingObservation(result)) return { ...base, state: 'pending', message: 'Waiting for the first quota observation', observedAt: null, limiting: null, headline: null, windows: [], creditDrain: null };
   const evidence = usageEvidence(result, now);
   const { windows: heroWindows, limiting: heroLimiting } = accountWindows(result);
   const scoped = scopedModels(result);
-  const windows = heroWindows.map(window => ({ ...window, scoped: scoped.has(window.label) }));
+  const drain = result.creditDrain ?? creditDrain(result, []);
+  // The spent window carries the note (the limiting one when the provider reports the limit without a 100 % window).
+  const spent = drain ? heroWindows.filter(window => window.remainingPercent === 0) : [];
+  const marked = new Set(spent.length ? spent : drain && heroLimiting ? [heroLimiting] : []);
+  const windows = heroWindows.map(window => ({ ...window, scoped: scoped.has(window.label), ...(marked.has(window) ? { label: `${window.label} (${PAYING_FROM_CREDITS})` } : {}) }));
   const general = windows.filter(window => !window.scoped).sort(byRemaining);
   const model = windows.filter(window => window.scoped).sort(byRemaining);
   // The hero's limiting entry by position: the copies above keep heroWindows' order, and labels are not unique by contract.
   const limitingIndex = heroLimiting ? heroWindows.indexOf(heroLimiting) : -1;
   const limiting = limitingIndex >= 0 ? windows[limitingIndex] : null;
-  return { ...base, state: evidence.state, message: evidence.state === 'fresh' ? null : evidence.message, observedAt: result.fetchedAt || null, limiting, headline: general[0] ?? model[0] ?? null, windows: [...general, ...model] };
+  return { ...base, state: evidence.state, message: evidence.state === 'fresh' ? null : evidence.message, observedAt: result.fetchedAt || null, limiting, headline: general[0] ?? model[0] ?? null, windows: [...general, ...model], creditDrain: drain };
 }
 
 export function buildWidgetPayload({ usage, snapshot, now, timezone, staleAfterSeconds = WIDGET_STALE_AFTER_SECONDS }: {

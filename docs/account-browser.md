@@ -113,13 +113,32 @@ authenticates management writes as a client request, `client_key` is required.
 
 ### Quota guards
 
-`GET /api/guards` reports four up/down guards: no usable Claude quota from any
+`GET /api/guards` reports five up/down guards: no usable Claude quota from any
 source for more than 5 hours, proxy and website disagreeing on two consecutive
 checks (state, or more than 10 percentage points), the collector's hourly model
-probe, and configured quota links (`quota_snapshot_key`, a collector-shaped
-`proxy_account_id`, Claude/Codex binding members) that name nothing in the snapshot.
+probe, configured quota links (`quota_snapshot_key`, a collector-shaped
+`proxy_account_id`, Claude/Codex binding members) that name nothing in the snapshot,
+and Codex credits spent while another Codex account has room.
 A collector outage is reported as unchecked, not as drift. `collector/ai-bills-guards`
 relays them to push monitors.
+
+### Codex paying from credits
+
+A Codex account whose rate limit is used up keeps answering when it has credits:
+each request is charged to the credit balance, and no 429 reaches the proxy, so
+it neither cools the account down nor fails over. The account card, the Overview
+hero and the widget then say "paying from credits" instead of a bare 0 %, with
+the credits spent per hour (measured from the balances stored with the last hour
+of quota observations, starting after the last top-up) and the manual resets the
+provider would apply now. When the direct quota request fails and the proxy's
+headers stand in, the payload has no credits block; the newest stored observation
+of the last hour then decides whether the account can still pay (credits on hand,
+no spend cap or overage limit) and supplies the balance. The widget also adds "(paying from credits)" to the
+used-up window's label, so clients that predate the `creditDrain` field show it
+under the meter. The `credits` guard goes down while such an account is seen
+spending and another Codex login (a different workspace or seat) still has room;
+spending when every account is out is the expected fallback and stays up, and an
+unmeasured rate is reported as such, never as nothing spent.
 
 ### Credential renames
 
