@@ -1,4 +1,5 @@
 import type { AccountConfig } from './config';
+import { codexPaysFromCredits, creditDrainSentence, spendingCredits, type CreditDrain } from './codex-credits';
 
 export type ClaudeLimitWindow = {
   utilization?: number | null;
@@ -254,6 +255,8 @@ export type ProviderUsage = {
   /** How the direct request ended when `data` comes from a fallback; `fetchedAt` is then the fallback's own observation time. */
   direct?: { status: number | null; error: string; attemptedAt: string | null };
   proxyAuth?: ProxyAuthEvidence;
+  /** Codex only: the used-up account still answers and charges its credits; the burn rate comes from earlier stored observations. */
+  creditDrain?: CreditDrain;
 };
 
 export function usageUrl(account: ProviderConfig): string {
@@ -522,7 +525,7 @@ export function codexWindowDurationLabel(window: CodexRateWindow | null): string
   return `${window.limit_window_seconds}s usage`;
 }
 
-export function deriveCodexAvailability(data?: CodexUsagePayload | null, status?: number | null): CodingAvailability {
+export function deriveCodexAvailability(data?: CodexUsagePayload | null, status?: number | null, drain?: CreditDrain | null): CodingAvailability {
   if (!data || !data.rate_limit) {
     // A 5xx is WHAM being down, not a broken token — don't send the user to re-auth.
     if (typeof status === 'number' && status >= 500) {
@@ -541,6 +544,8 @@ export function deriveCodexAvailability(data?: CodexUsagePayload | null, status?
     };
   }
   const rl = data.rate_limit;
+  // Requests still succeed, so the account is available; the cost is the point, red once the balance is seen falling.
+  if (codexPaysFromCredits(data)) return { available: true, tone: spendingCredits(drain) ? 'danger' : 'warn', label: 'Paying from credits', detail: creditDrainSentence(drain ?? null) };
   if (rl.limit_reached || !rl.allowed) {
     const pct = rl.primary_window?.used_percent ?? 100;
     const resetIso = codexWindowResetIso(rl.primary_window);

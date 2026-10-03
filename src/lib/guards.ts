@@ -2,26 +2,33 @@ import { loadConfig, tenantAccounts, type AppConfig } from './config';
 import { quotaEntry } from './snapshot-keys';
 import { consistencyChecks, CHECK_INTERVAL_MS, type AccountCheck } from './quota-consistency';
 import { readSnapshot, type Scope } from './storage';
-import { CLAUDE_LAST_KNOWN_MS } from './usage-evidence';
+import { CLAUDE_LAST_KNOWN_MS, usageEvidence } from './usage-evidence';
 import { getUsageResponse } from './usage-service';
-import { isPendingObservation, type ProviderUsage } from './usage';
+import { isPendingObservation, type CodexUsagePayload, type ProviderUsage } from './usage';
+import { accountWindows } from './limits-hero';
+import { codexUsedUp, compactCredits, spendingCredits } from './codex-credits';
 
 /**
- * Three guards against a quota display that silently stops telling the truth. Each one is a plain up/down with a
- * message, so an external push monitor can relay it and deduplicate transitions:
+ * Five guards against a quota display that silently stops telling the truth, or money spent that need not be. Each one
+ * is a plain up/down with a message, so an external push monitor can relay it and deduplicate transitions:
  * - stale: an account had no usable quota observation from any source for longer than one Claude session window;
  * - consistency: the proxy and the website disagreed on consecutive cross-checks (see quota-consistency);
  * - probe: the collector's hourly synthetic call found a catalogued model that cannot be called;
  * - mapping: a configured link to a collector observation (quota_snapshot_key, a browser's proxy_account_id, a quota
  *   binding's members) names something the snapshot no longer has, e.g. after the proxy renamed a credential file.
  *   The card may still look right through the e-mail fallback; the configuration has drifted all the same.
+ * - credits: a Codex account pays from its credit balance (window used up, balance falling) while another Codex account
+ *   still has room. Codex answers instead of refusing, so the proxy never fails over on its own. Spending when every
+ *   account is out is the expected fallback: the card says so and the guard stays up.
  */
 export type GuardStatus = 'up' | 'down';
 export type Guard = { status: GuardStatus; message: string; lastRunAt: string | null };
 export type ProbeModel = { model: string; outcome: string; http_status: number | null; retried?: boolean; message?: string };
 export type GuardsReport = {
   generatedAt: string;
-  guards: { stale: Guard; consistency: Guard; probe: Guard; mapping: Guard };
+  guards: { stale: Guard; consistency: Guard; probe: Guard; mapping: Guard; credits: Guard };
+  /** Codex accounts paying from credits right now, with the burn rate when earlier balances were stored. */
+  credits: { accountKey: string; balance: number | null; perHour: number | null; manualResets: number }[];
   mapping: { subject: string; problem: string }[];
   /** Mapping checks that could not run because the snapshot did not carry their evidence (an outage, not drift). */
   mappingSkipped: string[];
@@ -154,11 +161,37 @@ function mappingGuard(problems: GuardsReport['mapping'], skipped: string[], now:
       : skipped.length ? `No drift found in what the snapshot carries${unchecked}` : 'Every configured quota link resolves in the snapshot' };
 }
 
+function creditsGuard(accounts: ProviderUsage[], now: number): { guard: Guard; credits: GuardsReport['credits'] } {
+  const lastRunAt = new Date(now).toISOString();
+  const all = accounts.filter((result) => result.account.provider === 'codex' && !isPendingObservation(result));
+  // An old observation can neither prove spending nor prove room.
+  const codex = all.filter((result) => usageEvidence(result, now).state === 'fresh');
+  const credits = codex.filter((result) => result.creditDrain).map((result) => ({ accountKey: result.account.key, balance: result.creditDrain!.balance, perHour: result.creditDrain!.perHour, manualResets: result.creditDrain!.manualResets }));
+  const spending = codex.filter((result) => spendingCredits(result.creditDrain));
+  if (!spending.length) {
+    const message = credits.length ? `Used up with credits on hand, none spent lately: ${credits.map((entry) => entry.accountKey).join(', ')}`
+      : codex.length ? `No Codex account is paying from credits (${codex.length} observed)` : all.length ? 'No fresh Codex observation to judge' : 'No Codex account configured';
+    return { credits, guard: { status: 'up', message, lastRunAt } };
+  }
+  // The same provider account can be configured twice (two keys, one login); it is no alternative to itself.
+  const identity = (result: ProviderUsage) => (result.data as CodexUsagePayload | undefined)?.account_id || result.account.email || result.account.key;
+  const room = codex.filter((result) => !codexUsedUp(result.data as CodexUsagePayload | undefined))
+    .map((result) => ({ result, left: accountWindows(result).limiting?.remainingPercent ?? null }))
+    .filter((entry): entry is { result: ProviderUsage; left: number } => entry.left !== null && entry.left > 0)
+    .sort((a, b) => b.left - a.left);
+  const spend = (result: ProviderUsage) => `${result.account.key} pays from credits (−${compactCredits(result.creditDrain!.perHour!)} credits/h)`;
+  const wasted = spending.map((result) => ({ result, other: room.find((entry) => identity(entry.result) !== identity(result)) })).filter((entry) => entry.other);
+  if (wasted.length) return { credits, guard: { status: 'down', lastRunAt,
+    message: `Credits spent while another Codex account has room: ${wasted.map(({ result, other }) => `${spend(result)} while ${other!.result.account.key} has ${Number(other!.left.toFixed(1))} % left`).join('; ')}` } };
+  return { credits, guard: { status: 'up', lastRunAt, message: `${spending.map(spend).join('; ')}; no other Codex account has room` } };
+}
+
 export function buildGuardsReport({ accounts, checks, snapshot, now, config }: { accounts: ProviderUsage[]; checks: AccountCheck[]; snapshot: unknown; now: number; config?: Pick<AppConfig, 'accounts' | 'account_browsers' | 'accounting'> }): GuardsReport {
   const { guard: stale, stale: staleAccounts } = staleGuard(accounts, now);
   const { guard: probe, probe: probeReport } = probeGuard(snapshot, now);
   const { problems: mapping, skipped: mappingSkipped } = config ? mappingCheck(config, snapshot) : { problems: [], skipped: [] };
-  return { generatedAt: new Date(now).toISOString(), guards: { stale, consistency: consistencyGuard(checks, now), probe, mapping: mappingGuard(mapping, mappingSkipped, now) }, stale: staleAccounts, checks, probe: probeReport, mapping, mappingSkipped };
+  const { guard: credits, credits: creditAccounts } = creditsGuard(accounts, now);
+  return { generatedAt: new Date(now).toISOString(), guards: { stale, consistency: consistencyGuard(checks, now), probe, mapping: mappingGuard(mapping, mappingSkipped, now), credits }, stale: staleAccounts, checks, probe: probeReport, mapping, mappingSkipped, credits: creditAccounts };
 }
 
 export async function guardsReport(scope: Scope, now = Date.now()): Promise<GuardsReport> {

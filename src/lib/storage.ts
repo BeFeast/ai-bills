@@ -1,7 +1,8 @@
 import { latestSnapshot } from './snapshot-store';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
-import { historyPoints, journalRecords, subscriptionOverrides } from '@/db/schema';
+import { historyPoints, journalRecords, quotaObservations, subscriptionOverrides } from '@/db/schema';
 import type { AppConfig } from './config';
+import type { CreditSample } from './codex-credits';
 import { getDb, withTenant, type Db } from './db';
 
 /**
@@ -88,6 +89,24 @@ export function dbHistoryStore(db: Db, tenantId: string): HistoryStore {
   };
 }
 export const historyStoreFor = (scope?: Scope): HistoryStore | null => { const target = dbFor(scope); return target ? dbHistoryStore(target.db, target.tenantId) : null; };
+
+// ---------------------------------------------------------------- Codex credit balances
+
+/** Codex credit balances stored with the quota observations since `cutoff`, oldest first. Header fallbacks carry no balance and are left out. */
+export type CreditHistoryStore = { since(cutoff: Date): Promise<CreditSample[]> };
+export function dbCreditHistoryStore(db: Db, tenantId: string): CreditHistoryStore {
+  return {
+    async since(cutoff) {
+      const balance = sql<string | null>`${quotaObservations.windows}->'credits'->>'balance'`;
+      const rows = await withTenant(db, tenantId, tx => tx.select({ accountKey: quotaObservations.accountKey, accountId: sql<string | null>`${quotaObservations.windows}->>'account_id'`, observedAt: quotaObservations.observedAt, balance })
+        .from(quotaObservations)
+        .where(and(eq(quotaObservations.tenantId, tenantId), eq(quotaObservations.provider, 'codex'), eq(quotaObservations.ok, true), gte(quotaObservations.observedAt, cutoff), sql`${balance} is not null`))
+        .orderBy(quotaObservations.observedAt));
+      return rows.map(row => ({ ...row, observedAt: row.observedAt.toISOString() }));
+    },
+  };
+}
+export const creditHistoryStoreFor = (scope?: Scope): CreditHistoryStore | null => { const target = dbFor(scope); return target ? dbCreditHistoryStore(target.db, target.tenantId) : null; };
 
 // ---------------------------------------------------------------- operator
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Report the app's guard verdicts to Uptime Kuma push monitors.
 
-The app computes each guard (stale snapshot, cross-source consistency, model probe) from
-what it already holds; this process only relays them, so the monitor goes red without
-anyone opening the dashboard. A guards endpoint that cannot be read is itself a failure:
+The app computes each guard (stale quota, cross-source consistency, model probe, configured
+quota links, Codex credits spent while another account has room) from what it already
+holds; this process only relays them, so the monitor goes red without anyone opening the
+dashboard. A guards endpoint that cannot be read is itself a failure:
 every configured monitor is pushed `down`, never left silent until Kuma's own timeout.
 Push URLs embed the monitor token and the guards endpoint may need a bearer, so neither
 is ever printed."""
@@ -16,7 +17,8 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 GUARDS = (('stale', 'AI_BILLS_KUMA_PUSH_STALE'), ('consistency', 'AI_BILLS_KUMA_PUSH_CONSISTENCY'),
-          ('probe', 'AI_BILLS_KUMA_PUSH_PROBE'), ('mapping', 'AI_BILLS_KUMA_PUSH_MAPPING'))
+          ('probe', 'AI_BILLS_KUMA_PUSH_PROBE'), ('mapping', 'AI_BILLS_KUMA_PUSH_MAPPING'),
+          ('credits', 'AI_BILLS_KUMA_PUSH_CREDITS'))
 MESSAGE_LIMIT = 200
 
 

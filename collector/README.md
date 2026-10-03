@@ -172,11 +172,12 @@ with `--summary`; `--dry-run` prints the evaluation without side effects.
 
 ## Guards
 
-`ai-bills-guards` relays the app's `/api/guards` verdicts (`stale`, `consistency`, `probe`, `mapping`)
-to Uptime Kuma push monitors, so a failing guard pages without anyone opening the dashboard.
+`ai-bills-guards` relays the app's `/api/guards` verdicts (`stale`, `consistency`, `probe`, `mapping`,
+`credits`) to Uptime Kuma push monitors, so a failing guard pages without anyone opening the dashboard.
 Configure `AI_BILLS_GUARDS_URL`, optionally `AI_BILLS_GUARDS_TOKEN` (bearer), and the push
-URLs `AI_BILLS_KUMA_PUSH_STALE`, `AI_BILLS_KUMA_PUSH_CONSISTENCY`, `AI_BILLS_KUMA_PUSH_PROBE`, `AI_BILLS_KUMA_PUSH_MAPPING`
-(an unset one is skipped); `AI_BILLS_GUARDS_ENV_FILE` names a private `KEY=VALUE` file read
+URLs `AI_BILLS_KUMA_PUSH_STALE`, `AI_BILLS_KUMA_PUSH_CONSISTENCY`, `AI_BILLS_KUMA_PUSH_PROBE`, `AI_BILLS_KUMA_PUSH_MAPPING`,
+`AI_BILLS_KUMA_PUSH_CREDITS` (an unset one is skipped; set a new one only after the app that reports
+the guard is deployed, or its monitor reads "guard missing"); `AI_BILLS_GUARDS_ENV_FILE` names a private `KEY=VALUE` file read
 without shell evaluation, explicit environment winning. Each push sets `status=up|down` and
 `msg` (200 chars), replacing those parameters if the copied push URL already has them. An
 unreadable endpoint pushes `down` to every monitor; a missing guard pushes `down`. Push

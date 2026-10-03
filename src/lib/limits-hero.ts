@@ -3,6 +3,7 @@ import type { OverviewRecentUsage, OverviewUpstreamActivity } from './overview';
 import { claudeWindows, isPendingObservation, codexPrimaryWindow, codexWindowDurationLabel, codexWindowResetIso, cursorCycleEnd, cursorUsagePercent, kimiCodingUsage, kimiUsagePercent, quotaTone,
   type ClaudeUsagePayload, type CodexRateWindow, type CodexUsagePayload, type CursorUsagePayload, type KimiQuotaDetail, type KimiUsagePayload, type ProviderUsage, type ProxyAuthEvidence, type QuotaTone, type UsageFallbackSource } from './usage';
 import { usageEvidence, type UsageEvidence } from './usage-evidence';
+import { creditDrain, type CreditDrain } from './codex-credits';
 
 /** One limit window of an account as the hero shows it. `remaining` is in `unit`; `remainingPercent` drives tone and order. */
 export type HeroWindow = { label: string; remaining: number | null; remainingPercent: number | null; unit: 'percent' | 'requests'; resetsAt: string | null; limiting: boolean; exhausted: boolean; tone: QuotaTone;
@@ -16,7 +17,9 @@ export type HeroFallback = { kind: UsageFallbackSource; status: number | null; e
 export type LimitsHeroCard =
   | { kind: 'quota'; id: string; account: HeroIdentity; windows: HeroWindow[]; limiting: HeroWindow; tone: QuotaTone; activity: HeroActivity | null; observedAt: string; fallback: HeroFallback | null;
       /** The windows are the last known ones (older than the freshness limit, inside the 5 h window); `observedAt` says when. */
-      lastKnown: boolean; proxyAuth: ProxyAuthEvidence | null }
+      lastKnown: boolean; proxyAuth: ProxyAuthEvidence | null;
+      /** Codex: the window is used up but the account still answers, charging its credits. */
+      creditDrain: CreditDrain | null }
   | { kind: 'error'; id: string; account: HeroIdentity; state: Exclude<UsageEvidence['state'], 'fresh'>; message: string; status: number | null; activity: HeroActivity | null; observedAt: string; proxyAuth: ProxyAuthEvidence | null;
       /** A stale observation still had windows: the last known limiting one stays visible, labelled as such. */
       lastKnown: HeroWindow | null }
@@ -137,7 +140,7 @@ export function buildLimitsHero({ usage, registry, last24h, now }: { usage: Prov
     const fallback: HeroFallback | null = result.source === 'proxy_headers' || result.source === 'retained' || result.source === 'web'
       ? { kind: result.source, status: result.direct?.status ?? null, error: result.direct?.error ?? 'The direct quota request failed' } : null;
     quota.push({ kind: 'quota', id: result.account.key, account: identity(result), windows, limiting, tone: limiting.tone, activity, observedAt: result.fetchedAt, fallback,
-      lastKnown: evidence.lastKnown === true, proxyAuth: result.proxyAuth ?? null });
+      lastKnown: evidence.lastKnown === true, proxyAuth: result.proxyAuth ?? null, creditDrain: result.creditDrain ?? creditDrain(result, []) });
   }
   const covered = new Set([...QUOTA_PROVIDERS, ...usage.map((result) => normalize(result.account.provider))]);
   for (const row of registry) {
