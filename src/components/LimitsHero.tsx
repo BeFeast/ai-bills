@@ -84,7 +84,6 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
         <span className="hero-card__window" title="The window currently constraining this account">{card.limiting.label}{asOf(card.limiting)}</span>
         <div className="hero-card__value"><span className="hero-card__num tabular">{remainingText(card.limiting)}</span>{card.limiting.exhausted ? null : <span className="t-small">left</span>}</div>
         <ResetChip reset={card.limiting.resetsAt} now={now} />
-        {drain ? <span className="t-small">{creditDrainSummary(drain)}</span> : null}
       </div>
       {others.length ? <ul className="hero-windows" aria-label="Other limit windows">{others.map((window) => <li className={`hero-window${window.tone ? ` hero-window--${window.tone}` : ''}`} key={window.label}>
         <span className="hero-window__label">{window.label}</span>
@@ -92,6 +91,7 @@ function HeroCard({ card, now, recencyKnown, subscriptions }: { card: LimitsHero
         <Progress value={window.remainingPercent ?? 0} tone={window.tone} label={`${window.label} remaining`} />
         <span className="hero-window__reset">{refillLabel(window.resetsAt, now) ? `↻ ${refillLabel(window.resetsAt, now)}` : 'refill time unknown'}{asOf(window)}</span>
       </li>)}</ul> : null}
+      {drain ? <span className="t-small hero-card__note">{creditDrainSummary(drain)}</span> : null}
     </div>
     <div className="hero-card__foot"><span className="t-small">{activityText(card.activity, recencyKnown, now)}{card.fallback ? ` · ${fallbackSource[card.fallback.kind]}` : ''}{card.fallback || card.lastKnown ? ` · observed ${fmtDate(card.observedAt, TZ)}` : ''}{card.proxyAuth ? ' · Proxy OAuth expired — re-login proxy' : ''}</span>{access}</div>
   </article>;
