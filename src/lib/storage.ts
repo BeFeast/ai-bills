@@ -92,7 +92,7 @@ export const historyStoreFor = (scope?: Scope): HistoryStore | null => { const t
 
 // ---------------------------------------------------------------- Codex credit balances
 
-/** Codex credit balances stored with the quota observations since `cutoff`, oldest first. Header fallbacks carry no balance and are left out. */
+/** Codex credit observations stored since `cutoff`, oldest first: every one with a credits block. Header fallbacks have none and are left out. */
 export type CreditHistoryStore = { since(cutoff: Date): Promise<CreditSample[]> };
 export function dbCreditHistoryStore(db: Db, tenantId: string): CreditHistoryStore {
   return {
@@ -103,7 +103,7 @@ export function dbCreditHistoryStore(db: Db, tenantId: string): CreditHistorySto
       const rows = await withTenant(db, tenantId, tx => tx.select({ accountKey: quotaObservations.accountKey, accountId: field('account_id'), userId: field('user_id'), observedAt: quotaObservations.observedAt, balance,
         hasCredits: field('credits', 'has_credits'), overage: field('credits', 'overage_limit_reached'), capped: field('spend_control', 'reached') })
         .from(quotaObservations)
-        .where(and(eq(quotaObservations.tenantId, tenantId), eq(quotaObservations.provider, 'codex'), eq(quotaObservations.ok, true), gte(quotaObservations.observedAt, cutoff), sql`${balance} is not null`))
+        .where(and(eq(quotaObservations.tenantId, tenantId), eq(quotaObservations.provider, 'codex'), eq(quotaObservations.ok, true), gte(quotaObservations.observedAt, cutoff), sql`jsonb_typeof(${quotaObservations.windows}->'credits') = 'object'`))
         .orderBy(quotaObservations.observedAt));
       // Booleans compared as text in code: a cast in SQL would fail the whole read on one odd payload.
       return rows.map(({ hasCredits, overage, capped, ...row }) => ({ ...row, observedAt: row.observedAt.toISOString(), canPay: hasCredits === 'true' && overage !== 'true' && capped !== 'true' }));

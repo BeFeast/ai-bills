@@ -89,6 +89,13 @@ describe('paying from credits', () => {
     expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, '0', 'acct-a', 'a@example.invalid', 'user-synthetic', false)])).toBeNull();
     expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, '3000', 'acct-a', 'a@example.invalid', 'user-synthetic', false)])).toBeNull();
     expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, '0')])).toBeNull();
+    expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, null, 'acct-a', 'a@example.invalid', 'user-synthetic', false)])).toBeNull();
+  });
+
+  it('lets a stored observation newer than the header fallback decide', () => {
+    // The proxy's headers were last seen before the cap; the direct check after it said the account can no longer pay.
+    expect(creditDrain(headerFallback('codex-a', 12), [sample(30, '500'), sample(10, '480', 'acct-a', 'a@example.invalid', 'user-synthetic', false)])).toBeNull();
+    expect(creditDrain(headerFallback('codex-a', 12), [sample(30, '500'), sample(10, '480')])).toEqual({ balance: 480, perHour: 60, since: at(30), manualResets: 0 });
   });
 
   it('keeps two seats of one workspace apart', () => {
@@ -195,16 +202,21 @@ describe('stored credit balances', () => {
 
   it('reads the tenant\'s Codex balances since a cutoff, without header fallbacks or other tenants', async () => {
     const mine = await ensureTenant(db, 'credits-a'); const theirs = await ensureTenant(db, 'credits-b');
-    const entry = (minutesAgo: number, balance: string) => ({ ok: true, status: 200, fetched_at: at(minutesAgo), source: 'direct', data: payload({ balance }) });
+    const entry = (minutesAgo: number, balance: string, extra: { credits?: boolean; overage?: boolean } = {}) => ({ ok: true, status: 200, fetched_at: at(minutesAgo), source: 'direct', data: payload({ balance, ...extra }) });
     const put = (tenant: string, body: unknown, minutesAgo: number) => storeSnapshot(db, tenant, JSON.stringify(body), at(minutesAgo), new Date(now - minutesAgo * 60_000));
     await put(mine.id, { codex_usage: { 'a@example.invalid': entry(90, '80000') } }, 90);
     await put(mine.id, { codex_usage: { 'a@example.invalid': entry(31, '43671.03') } }, 31);
     await put(mine.id, { codex_usage: { 'a@example.invalid': { ok: true, status: null, fetched_at: at(20), source: 'proxy_headers', data: { rate_limit: { limit_reached: true } } } } }, 20);
     await put(theirs.id, { codex_usage: { 'a@example.invalid': entry(25, '5') } }, 25);
-    await put(mine.id, { codex_usage: { 'a@example.invalid': { ok: true, status: 200, fetched_at: at(10), source: 'direct', data: { ...payload({ balance: '0', credits: false }), spend_control: { reached: true, individual_limit: null } } } } }, 10);
+    // Each refusal reason alone, so a wrong JSON path for any one of them fails: out of credits, overage limit, spend cap, and a refusal without a balance.
+    await put(mine.id, { codex_usage: { 'a@example.invalid': entry(15, '0', { credits: false }) } }, 15);
+    await put(mine.id, { codex_usage: { 'a@example.invalid': entry(12, '3000', { overage: true }) } }, 12);
+    await put(mine.id, { codex_usage: { 'a@example.invalid': { ...entry(10, '3000'), data: { ...payload({ balance: '3000' }), spend_control: { reached: true, individual_limit: null } } } } }, 10);
+    await put(mine.id, { codex_usage: { 'a@example.invalid': { ...entry(8, '0'), data: { ...payload({ credits: false }), credits: { has_credits: false, unlimited: false, overage_limit_reached: false, balance: null } } } } }, 8);
     const samples = await dbCreditHistoryStore(db, mine.id).since(new Date(now - 70 * 60_000));
-    expect(samples).toEqual([{ accountKey: 'a@example.invalid', accountId: 'acct-a', userId: 'user-synthetic', observedAt: at(31), balance: '43671.03', canPay: true },
-      { accountKey: 'a@example.invalid', accountId: 'acct-a', userId: 'user-synthetic', observedAt: at(10), balance: '0', canPay: false }]);
+    expect(samples[0]).toEqual({ accountKey: 'a@example.invalid', accountId: 'acct-a', userId: 'user-synthetic', observedAt: at(31), balance: '43671.03', canPay: true });
+    expect(samples.map(({ observedAt, balance, canPay }) => ({ observedAt, balance, canPay }))).toEqual([{ observedAt: at(31), balance: '43671.03', canPay: true },
+      { observedAt: at(15), balance: '0', canPay: false }, { observedAt: at(12), balance: '3000', canPay: false }, { observedAt: at(10), balance: '3000', canPay: false }, { observedAt: at(8), balance: null, canPay: false }]);
     expect(creditDrain(result('codex-a', payload()), samples.slice(0, 1))).toMatchObject({ perHour: 8000, since: at(31) });
   });
 });

@@ -83,17 +83,20 @@ export function creditDrain(result: ProviderUsage, samples: CreditSample[]): Cre
   const id = data.account_id || null; const user = data.user_id || null;
   const emails = new Set([data.email, result.account.email].filter(Boolean).map((email) => email.toLowerCase()));
   const sameLogin = (sample: CreditSample) => id && sample.accountId ? sample.accountId === id && (!user || !sample.userId || sample.userId === user) : emails.has(sample.accountKey.toLowerCase());
-  const points = samples.filter(sameLogin)
+  // A header fallback is stamped with the proxy's last request, which can be older than a stored direct observation:
+  // it sees every stored observation of the hour. A reported payload is the newest point itself.
+  const recent = samples.filter(sameLogin)
     .map((sample) => ({ at: Date.parse(sample.observedAt), balance: creditBalance(sample.balance), observedAt: sample.observedAt, canPay: sample.canPay }))
-    .filter((point): point is { at: number; balance: number; observedAt: string; canPay: boolean | null } => Number.isFinite(point.at) && point.balance !== null && point.at >= observed - CREDIT_RATE_WINDOW_MS && point.at < observed)
+    .filter((point) => Number.isFinite(point.at) && point.at >= observed - CREDIT_RATE_WINDOW_MS && (!reported || point.at < observed))
     .sort((a, b) => a.at - b.at);
+  const points = recent.filter((point): point is { at: number; balance: number; observedAt: string; canPay: boolean | null } => point.balance !== null);
   if (reported) {
     if (balance === null) return { balance, perHour: null, since: null, manualResets };
     points.push({ at: observed, balance, observedAt: result.fetchedAt, canPay: true });
   } else {
     // Nothing stored in the last hour, or the newest stored observation could no longer pay (credits gone, a cap reached): not paying as far as is known.
-    const newest = points[points.length - 1];
-    if (!newest || newest.canPay !== true || newest.balance <= 0) return null;
+    const newest = recent[recent.length - 1];
+    if (!newest || newest.canPay !== true || newest.balance === null || newest.balance <= 0) return null;
   }
   let start = 0;
   for (let index = 1; index < points.length; index++) if (points[index].balance > points[index - 1].balance) start = index;
