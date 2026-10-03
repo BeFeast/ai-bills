@@ -31,7 +31,8 @@ export type WidgetAccount = {
   windows: WidgetWindow[];
   /**
    * Codex: the window is used up but the account still answers, charging its credits. The used-up window's label
-   * also says "paying from credits", so a client that predates this field shows it under the meter anyway.
+   * also says "(paying from credits)", so a client that predates this field shows it under the meter anyway; the
+   * parentheses keep the clients' own "0% left" reading as the window's figure, not the credits'.
    */
   creditDrain: CreditDrain | null;
 };
@@ -137,7 +138,7 @@ function widgetAccount(result: ProviderUsage, now: number): WidgetAccount {
   // The spent window carries the note (the limiting one when the provider reports the limit without a 100 % window).
   const spent = drain ? heroWindows.filter(window => window.remainingPercent === 0) : [];
   const marked = new Set(spent.length ? spent : drain && heroLimiting ? [heroLimiting] : []);
-  const windows = heroWindows.map(window => ({ ...window, scoped: scoped.has(window.label), ...(marked.has(window) ? { label: `${window.label} · ${PAYING_FROM_CREDITS}` } : {}) }));
+  const windows = heroWindows.map(window => ({ ...window, scoped: scoped.has(window.label), ...(marked.has(window) ? { label: `${window.label} (${PAYING_FROM_CREDITS})` } : {}) }));
   const general = windows.filter(window => !window.scoped).sort(byRemaining);
   const model = windows.filter(window => window.scoped).sort(byRemaining);
   // The hero's limiting entry by position: the copies above keep heroWindows' order, and labels are not unique by contract.

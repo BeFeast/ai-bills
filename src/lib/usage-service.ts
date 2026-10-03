@@ -3,7 +3,7 @@ import { rememberUsageObservations } from './usage-observations';
 import { loadConfig, tenantAccounts } from './config';
 import { publicUsageAccount } from './account-auth';
 import { creditHistoryStoreFor, readSnapshot, type Scope } from './storage';
-import { CREDIT_RATE_MIN_SPAN_MS, CREDIT_RATE_WINDOW_MS, creditDrain, type CreditSample } from './codex-credits';
+import { CREDIT_RATE_MIN_SPAN_MS, CREDIT_RATE_WINDOW_MS, creditDrain, creditDrainCandidate, type CreditSample } from './codex-credits';
 import { apiShapeSummary, combinedOverview, type ProviderUsage, PENDING_OBSERVATION } from './usage';
 
 type UsageCache = { results: ProviderUsage[]; generatedAt: string };
@@ -48,8 +48,8 @@ export async function refreshUsage(scope?: Scope): Promise<UsageCache> {
     const update = async (account: typeof accounts[number], index: number) => {
       const result: ProviderUsage = { ...await fetchUsageThroughCdp(account, { snapshot: snapshot.body, scope: scope?.id ?? null, accounts }),
         account: publicUsageAccount(account, config.server.codex_proxy_management_url) };
-      // Only an account that pays from credits needs the history; read it once per refresh.
-      const drain = creditDrain(result, []) ? creditDrain(result, await (credits ??= creditSamples(scope))) : null;
+      // Only a used-up Codex account needs the history; read it once per refresh.
+      const drain = creditDrainCandidate(result) ? creditDrain(result, await (credits ??= creditSamples(scope))) : null;
       results[index] = drain ? { ...result, creditDrain: drain } : result;
       rememberUsageObservations([...results]);
     };

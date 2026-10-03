@@ -22,9 +22,9 @@ const now = Date.parse('2026-10-03T14:00:00Z');
 const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
 
 /** A Codex answer shaped like the provider's: weekly primary window, credits, manual resets. */
-function payload({ used = 100, reached = used >= 100, credits = true, balance = '39671.03', accountId = 'acct-a', email = 'a@example.invalid', resets = reached ? 3 : 0, overage = false }: {
-  used?: number; reached?: boolean; credits?: boolean; balance?: string; accountId?: string; email?: string; resets?: number; overage?: boolean } = {}): CodexUsagePayload {
-  return { user_id: 'user-synthetic', account_id: accountId, email, plan_type: 'pro',
+function payload({ used = 100, reached = used >= 100, credits = true, balance = '39671.03', accountId = 'acct-a', userId = 'user-synthetic', email = 'a@example.invalid', resets = reached ? 3 : 0, overage = false }: {
+  used?: number; reached?: boolean; credits?: boolean; balance?: string; accountId?: string; userId?: string; email?: string; resets?: number; overage?: boolean } = {}): CodexUsagePayload {
+  return { user_id: userId, account_id: accountId, email, plan_type: 'pro',
     rate_limit: { allowed: !reached, limit_reached: reached, primary_window: { used_percent: used, limit_window_seconds: 604800, reset_after_seconds: 3600, reset_at: Math.round(now / 1000) + 3600 }, secondary_window: null },
     code_review_rate_limit: null, additional_rate_limits: null,
     credits: { has_credits: credits, unlimited: false, overage_limit_reached: overage, balance, approx_local_messages: [], approx_cloud_messages: [] },
@@ -32,7 +32,10 @@ function payload({ used = 100, reached = used >= 100, credits = true, balance = 
     rate_limit_reset_credits: { available_count: 3, applicable_available_count: resets } } as unknown as CodexUsagePayload;
 }
 const result = (key: string, data: CodexUsagePayload, minutesAgo = 1): ProviderUsage => ({ account: { key, provider: 'codex', label: key, email: data.email }, ok: true, status: 200, fetchedAt: at(minutesAgo), sourceUrl: 'fixture', data });
-const sample = (minutesAgo: number, balance: string | null, accountId: string | null = 'acct-a', accountKey = 'a@example.invalid'): CreditSample => ({ accountKey, accountId, observedAt: at(minutesAgo), balance });
+const sample = (minutesAgo: number, balance: string | null, accountId: string | null = 'acct-a', accountKey = 'a@example.invalid', userId: string | null = 'user-synthetic'): CreditSample => ({ accountKey, accountId, userId, observedAt: at(minutesAgo), balance });
+/** The collector's header fallback: the proxy's rate-limit headers stood in, so there is no credits block. */
+const headerFallback = (key: string, minutesAgo = 1): ProviderUsage => ({ account: { key, provider: 'codex', label: key, email: 'a@example.invalid' }, ok: true, status: null as never, fetchedAt: at(minutesAgo), sourceUrl: 'fixture', source: 'proxy_headers',
+  data: { plan_type: 'pro', rate_limit: { allowed: false, limit_reached: true, primary_window: { used_percent: 100, limit_window_seconds: 604800, reset_after_seconds: 3600, reset_at: Math.round(now / 1000) + 3600 }, secondary_window: null } } as unknown as CodexUsagePayload });
 
 describe('paying from credits', () => {
   it('is a used-up window with credits on hand, and nothing else', () => {
@@ -61,6 +64,28 @@ describe('paying from credits', () => {
     const held = creditDrain(result('codex-a', payload()), [sample(30, '39671.03')])!;
     expect(held.perHour).toBe(0);
     expect(creditDrainSummary(held)).toBe('paying from credits · no credits spent lately · 3 manual resets available');
+  });
+
+  it('measures from after a top-up instead of losing the hour', () => {
+    // 46 000 → 43 000, then 50 000 bought: 93 000 → 87 000 over the last half hour is 12 000/h.
+    const drain = creditDrain(result('codex-a', payload({ balance: '87000' })), [sample(50, '46000'), sample(40, '43000'), sample(31, '93000'), sample(20, '90000')])!;
+    expect(drain).toMatchObject({ perHour: 12000, since: at(31) });
+    // A rise less than ten minutes ago leaves too short a span: unknown, not zero.
+    expect(creditDrain(result('codex-a', payload({ balance: '87000' })), [sample(40, '43000'), sample(6, '88000')])).toMatchObject({ perHour: null });
+  });
+
+  it('reads a header fallback from the stored balances: paying only when they fall', () => {
+    expect(creditDrain(headerFallback('codex-a'), [sample(31, '43671.03'), sample(6, '40337.70')])).toEqual({ balance: 40337.7, perHour: 8000, since: at(31), manualResets: 0 });
+    expect(creditDrain(headerFallback('codex-a'), [sample(31, '40338'), sample(6, '40338')])).toBeNull();
+    // The newest stored balance must be recent: an hour-old one says nothing about now.
+    expect(creditDrain(headerFallback('codex-a'), [sample(50, '43671.03'), sample(31, '40338')])).toBeNull();
+    expect(creditDrain(headerFallback('codex-a'), [])).toBeNull();
+  });
+
+  it('keeps two seats of one workspace apart', () => {
+    const seat = result('codex-a', payload({ userId: 'user-alice' }));
+    expect(creditDrain(seat, [sample(31, '43671.03', 'acct-a', 'b@example.invalid', 'user-bob')])).toMatchObject({ perHour: null });
+    expect(creditDrain(seat, [sample(31, '43671.03', 'acct-a', 'a@example.invalid', 'user-alice')])).toMatchObject({ perHour: 8000 });
   });
 
   it('falls back to the e-mail key when observations carry no account id', () => {
@@ -96,13 +121,21 @@ describe('credits guard', () => {
   it('stays up when every account is out, when nothing is spent, or when the other account is the same login', () => {
     expect(guard([paying([sample(31, '43671.03')]), roomy(100)]).guards.credits).toMatchObject({ status: 'up', message: 'codex-a pays from credits (−8k credits/h); no other Codex account has room' });
     expect(guard([paying([sample(30, '39671.03')]), roomy()]).guards.credits).toMatchObject({ status: 'up', message: 'Used up with credits on hand, none spent lately: codex-a' });
-    expect(guard([paying([]), roomy()]).guards.credits.status).toBe('up');
+    expect(guard([paying([]), roomy()]).guards.credits).toMatchObject({ status: 'up', message: 'Used up with credits on hand, spend not measured yet: codex-a' });
     const twin = { ...result('codex-a2', payload({ used: 5, reached: false })) };
     expect(guard([paying([sample(31, '43671.03')]), twin]).guards.credits.status).toBe('up');
   });
 
-  it('judges only fresh observations', () => {
-    expect(guard([paying([sample(31, '43671.03')]), roomy(2, 30)]).guards.credits.status).toBe('up');
+  it('counts another seat of the same workspace as room, and a header fallback that is seen spending', () => {
+    const bob = result('codex-b', payload({ used: 10, reached: false, userId: 'user-bob', email: 'b@example.invalid' }));
+    expect(guard([paying([sample(31, '43671.03')]), bob]).guards.credits).toMatchObject({ status: 'down', message: expect.stringContaining('while codex-b has 90 % left') });
+    const fallback = headerFallback('codex-a');
+    const spendingFallback = { ...fallback, creditDrain: creditDrain(fallback, [sample(31, '43671.03'), sample(6, '40337.70')])! };
+    expect(guard([spendingFallback, roomy()]).guards.credits.status).toBe('down');
+  });
+
+  it('judges only fresh observations, and says which it left out', () => {
+    expect(guard([paying([sample(31, '43671.03')]), roomy(2, 30)]).guards.credits).toMatchObject({ status: 'up', message: 'codex-a pays from credits (−8k credits/h); no other Codex account has room (not judged, no fresh observation: codex-b)' });
     expect(guard([roomy()]).guards.credits).toMatchObject({ status: 'up', message: 'No Codex account is paying from credits (1 observed)' });
     expect(guard([]).guards.credits.message).toBe('No Codex account configured');
   });
@@ -116,9 +149,9 @@ describe('surfaces', () => {
     const payloadOut = buildWidgetPayload({ usage: usage([spending()]), snapshot: { body: {}, version: at(2) }, now, timezone: 'UTC' });
     const row = payloadOut.accounts[0];
     expect(row.creditDrain).toMatchObject({ perHour: 8000, manualResets: 3 });
-    expect(row.headline).toMatchObject({ label: 'Weekly · paying from credits', remainingPercent: 0, exhausted: true });
-    expect(row.limiting?.label).toBe('Weekly · paying from credits');
-    expect(row.windows.map(window => window.label)).toEqual(['Weekly · paying from credits']);
+    expect(row.headline).toMatchObject({ label: 'Weekly (paying from credits)', remainingPercent: 0, exhausted: true });
+    expect(row.limiting?.label).toBe('Weekly (paying from credits)');
+    expect(row.windows.map(window => window.label)).toEqual(['Weekly (paying from credits)']);
     const plain = buildWidgetPayload({ usage: usage([result('codex-b', payload({ used: 40, reached: false }))]), snapshot: { body: {}, version: at(2) }, now, timezone: 'UTC' }).accounts[0];
     expect(plain).toMatchObject({ creditDrain: null, headline: { label: 'Weekly' } });
   });
@@ -158,7 +191,7 @@ describe('stored credit balances', () => {
     await put(mine.id, { codex_usage: { 'a@example.invalid': { ok: true, status: null, fetched_at: at(20), source: 'proxy_headers', data: { rate_limit: { limit_reached: true } } } } }, 20);
     await put(theirs.id, { codex_usage: { 'a@example.invalid': entry(25, '5') } }, 25);
     const samples = await dbCreditHistoryStore(db, mine.id).since(new Date(now - 70 * 60_000));
-    expect(samples).toEqual([{ accountKey: 'a@example.invalid', accountId: 'acct-a', observedAt: at(31), balance: '43671.03' }]);
+    expect(samples).toEqual([{ accountKey: 'a@example.invalid', accountId: 'acct-a', userId: 'user-synthetic', observedAt: at(31), balance: '43671.03' }]);
     expect(creditDrain(result('codex-a', payload()), samples)).toMatchObject({ perHour: 8000, since: at(31) });
   });
 });

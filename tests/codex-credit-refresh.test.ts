@@ -30,7 +30,9 @@ afterAll(async () => {
   await pg.close();
 });
 
-const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+// One clock for the stored history and the mocked observations: under load, two Date.now() reads drift apart by seconds.
+let base = Date.now();
+const minutesAgo = (minutes: number) => new Date(base - minutes * 60_000).toISOString();
 const codex = (email: string, used: number, balance: string): CodexUsagePayload => ({ account_id: `acct-${email}`, email, plan_type: 'pro',
   rate_limit: { allowed: used < 100, limit_reached: used >= 100, primary_window: { used_percent: used, limit_window_seconds: 604800, reset_after_seconds: 3600, reset_at: Math.round(Date.now() / 1000) + 3600 }, secondary_window: null },
   credits: { has_credits: true, unlimited: false, overage_limit_reached: false, balance }, spend_control: { reached: false, individual_limit: null },
@@ -38,11 +40,12 @@ const codex = (email: string, used: number, balance: string): CodexUsagePayload 
 
 describe('usage refresh', () => {
   it('attaches the credit drain to a used-up Codex account from its stored balances, and nothing to the others', async () => {
+    base = Date.now();
     const tenant = await ensureTenant(db, 'drain');
     const personal = 'codex-personal@example.com'; const work = 'codex-work@example.com';
     // Half an hour ago the personal account had 4 000 more credits; the snapshot it rode in is the tenant's history.
-    await storeSnapshot(db, tenant.id, JSON.stringify({ codex_usage: { [personal]: { ok: true, status: 200, fetched_at: minutesAgo(31), data: codex(personal, 100, '24000') } } }), minutesAgo(31), new Date(Date.now() - 31 * 60_000));
-    await storeSnapshot(db, tenant.id, JSON.stringify({ codex_usage: {} }), minutesAgo(1), new Date(Date.now() - 60_000));
+    await storeSnapshot(db, tenant.id, JSON.stringify({ codex_usage: { [personal]: { ok: true, status: 200, fetched_at: minutesAgo(31), data: codex(personal, 100, '24000') } } }), minutesAgo(31), new Date(base - 31 * 60_000));
+    await storeSnapshot(db, tenant.id, JSON.stringify({ codex_usage: {} }), minutesAgo(1), new Date(base - 60_000));
     vi.mocked(fetchUsageThroughCdp).mockImplementation(async account => ({ account, ok: true, status: 200, fetchedAt: minutesAgo(1), sourceUrl: 'snapshot',
       data: account.provider === 'codex' ? codex(account.email, account.email === personal ? 100 : 10, '20000') : { five_hour: { utilization: 10 }, seven_day: { utilization: 10 } } }) as ProviderUsage);
     resetUsageCacheForTests();

@@ -18,7 +18,7 @@ export type CreditDrain = {
   manualResets: number;
 };
 /** One earlier credit balance of a Codex account, as stored with its quota observation. */
-export type CreditSample = { accountKey: string; accountId: string | null; observedAt: string; balance: string | null };
+export type CreditSample = { accountKey: string; accountId: string | null; userId: string | null; observedAt: string; balance: string | null };
 
 /** How far back the burn rate looks, and the shortest span it is measured over (two collector ticks). */
 export const CREDIT_RATE_WINDOW_MS = 60 * 60_000;
@@ -48,32 +48,53 @@ export function codexPaysFromCredits(data?: CodexUsagePayload | null): boolean {
 }
 
 /**
- * The drain of one Codex result, or null unless it pays from credits. The rate comes from the earliest sample of the
- * same account between one hour and ten minutes before this observation; a balance that rose since (a top-up or the
- * plan's renewal) says nothing about the spend, so the rate is then unknown rather than zero.
+ * Whether a Codex result may be paying from credits and needs its history read. A header fallback (the direct quota
+ * request failed, the proxy's rate-limit headers stood in) says the window is used up but carries no credits block;
+ * only the stored balances can then tell whether the account still pays.
+ */
+export function creditDrainCandidate(result: ProviderUsage): boolean {
+  if (result.account.provider !== 'codex' || !result.ok) return false;
+  const data = result.data as CodexUsagePayload | undefined;
+  if (!data || !codexUsedUp(data)) return false;
+  return data.credits ? codexPaysFromCredits(data) : true;
+}
+
+/**
+ * The drain of one Codex result, or null unless it pays from credits. The rate runs from the earliest balance of the
+ * same login in the last hour to the current one, at least ten minutes apart. A balance that rose on the way (a
+ * top-up or the plan's renewal) says nothing about the spend before it, so the rate starts after the last rise; when
+ * that leaves too short a span, the rate is unknown rather than zero. Without a credits block in the payload (a header
+ * fallback) the current balance is the newest stored one, and only a balance seen falling counts as paying.
  */
 export function creditDrain(result: ProviderUsage, samples: CreditSample[]): CreditDrain | null {
-  if (result.account.provider !== 'codex' || !result.ok) return null;
-  const data = result.data as CodexUsagePayload | undefined;
-  if (!data || !codexPaysFromCredits(data)) return null;
-  const balance = creditBalance(data.credits.balance);
+  if (!creditDrainCandidate(result)) return null;
+  const data = result.data as CodexUsagePayload;
+  const reported = Boolean(data.credits);
   const applicable = data.rate_limit_reset_credits?.applicable_available_count;
   const manualResets = finite(applicable) ? Math.max(0, applicable) : 0;
-  const unmeasured: CreditDrain = { balance, perHour: null, since: null, manualResets };
   const observed = Date.parse(result.fetchedAt);
-  if (balance === null || !Number.isFinite(observed)) return unmeasured;
-  // The same account can sit under its e-mail and under an identity key; the provider's account id tells them apart from a second organisation.
-  const id = data.account_id || null;
+  const balance = reported ? creditBalance(data.credits.balance) : null;
+  const unmeasured = (value: number | null): CreditDrain | null => reported ? { balance: value, perHour: null, since: null, manualResets } : null;
+  if (!Number.isFinite(observed)) return unmeasured(balance);
+  // One login: the provider's account id is the workspace, the user id the member in it; old rows without ids fall back to the e-mail key.
+  const id = data.account_id || null; const user = data.user_id || null;
   const emails = new Set([data.email, result.account.email].filter(Boolean).map((email) => email.toLowerCase()));
-  const earliest = samples
-    .filter((sample) => id && sample.accountId ? sample.accountId === id : emails.has(sample.accountKey.toLowerCase()))
+  const sameLogin = (sample: CreditSample) => id && sample.accountId ? sample.accountId === id && (!user || !sample.userId || sample.userId === user) : emails.has(sample.accountKey.toLowerCase());
+  const points = samples.filter(sameLogin)
     .map((sample) => ({ at: Date.parse(sample.observedAt), balance: creditBalance(sample.balance), observedAt: sample.observedAt }))
-    .filter((sample) => Number.isFinite(sample.at) && sample.balance !== null && sample.at >= observed - CREDIT_RATE_WINDOW_MS && sample.at <= observed - CREDIT_RATE_MIN_SPAN_MS)
-    .sort((a, b) => a.at - b.at)[0];
-  if (!earliest) return unmeasured;
-  const spent = earliest.balance! - balance;
-  if (spent < 0) return unmeasured;
-  return { balance, perHour: Math.round(spent / ((observed - earliest.at) / 3_600_000)), since: earliest.observedAt, manualResets };
+    .filter((point): point is { at: number; balance: number; observedAt: string } => Number.isFinite(point.at) && point.balance !== null && point.at >= observed - CREDIT_RATE_WINDOW_MS && point.at < observed)
+    .sort((a, b) => a.at - b.at);
+  if (reported) {
+    if (balance === null) return unmeasured(null);
+    points.push({ at: observed, balance, observedAt: result.fetchedAt });
+  } else if (!points.length || points[points.length - 1].at < observed - CREDIT_RATE_MIN_SPAN_MS) return null;
+  let start = 0;
+  for (let index = 1; index < points.length; index++) if (points[index].balance > points[index - 1].balance) start = index;
+  const base = points[start]; const current = points[points.length - 1];
+  if (current.at - base.at < CREDIT_RATE_MIN_SPAN_MS) return unmeasured(current.balance);
+  const perHour = Math.round((base.balance - current.balance) / ((current.at - base.at) / 3_600_000));
+  if (!reported && perHour <= 0) return null;
+  return { balance: current.balance, perHour, since: base.observedAt, manualResets };
 }
 
 /** 8765 → "8.8k", 1250000 → "1.3M". */

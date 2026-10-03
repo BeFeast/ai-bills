@@ -98,7 +98,7 @@ export function dbCreditHistoryStore(db: Db, tenantId: string): CreditHistorySto
   return {
     async since(cutoff) {
       const balance = sql<string | null>`${quotaObservations.windows}->'credits'->>'balance'`;
-      const rows = await withTenant(db, tenantId, tx => tx.select({ accountKey: quotaObservations.accountKey, accountId: sql<string | null>`${quotaObservations.windows}->>'account_id'`, observedAt: quotaObservations.observedAt, balance })
+      const rows = await withTenant(db, tenantId, tx => tx.select({ accountKey: quotaObservations.accountKey, accountId: sql<string | null>`${quotaObservations.windows}->>'account_id'`, userId: sql<string | null>`${quotaObservations.windows}->>'user_id'`, observedAt: quotaObservations.observedAt, balance })
         .from(quotaObservations)
         .where(and(eq(quotaObservations.tenantId, tenantId), eq(quotaObservations.provider, 'codex'), eq(quotaObservations.ok, true), gte(quotaObservations.observedAt, cutoff), sql`${balance} is not null`))
         .orderBy(quotaObservations.observedAt));

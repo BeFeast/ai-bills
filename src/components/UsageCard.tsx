@@ -351,8 +351,9 @@ function CodexCardBody({ result, now, tz, evidence, tools, belowHeader }: Provid
   const resetIso = codexWindowResetIso(primary);
   const blocked = codexBlocked(data?.rate_limit);
   // Used up but still answering: the window is spent and every request is charged to the credits instead.
-  const paying = codexPaysFromCredits(data);
   const drain = result.creditDrain ?? null;
+  // A header fallback carries no credits block; a balance seen falling in the stored history says it all the same.
+  const paying = codexPaysFromCredits(data) || drain !== null;
   const payingTone: PillTone = spendingCredits(drain) ? 'bad' : 'warn';
   const fresh = evidence.state === 'fresh';
   const name = providerName(result.account.provider);

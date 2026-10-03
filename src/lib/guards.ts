@@ -164,17 +164,22 @@ function mappingGuard(problems: GuardsReport['mapping'], skipped: string[], now:
 function creditsGuard(accounts: ProviderUsage[], now: number): { guard: Guard; credits: GuardsReport['credits'] } {
   const lastRunAt = new Date(now).toISOString();
   const all = accounts.filter((result) => result.account.provider === 'codex' && !isPendingObservation(result));
-  // An old observation can neither prove spending nor prove room.
+  // An old observation can neither prove spending nor prove room; say which accounts were left out rather than vouch for them.
   const codex = all.filter((result) => usageEvidence(result, now).state === 'fresh');
+  const unjudged = all.filter((result) => !codex.includes(result)).map((result) => result.account.key);
+  const note = unjudged.length ? ` (not judged, no fresh observation: ${unjudged.join(', ')})` : '';
   const credits = codex.filter((result) => result.creditDrain).map((result) => ({ accountKey: result.account.key, balance: result.creditDrain!.balance, perHour: result.creditDrain!.perHour, manualResets: result.creditDrain!.manualResets }));
   const spending = codex.filter((result) => spendingCredits(result.creditDrain));
   if (!spending.length) {
-    const message = credits.length ? `Used up with credits on hand, none spent lately: ${credits.map((entry) => entry.accountKey).join(', ')}`
-      : codex.length ? `No Codex account is paying from credits (${codex.length} observed)` : all.length ? 'No fresh Codex observation to judge' : 'No Codex account configured';
-    return { credits, guard: { status: 'up', message, lastRunAt } };
+    // An unknown rate is not a zero one: the account may be spending while the history cannot show it yet.
+    const unmeasured = credits.filter((entry) => entry.perHour === null).map((entry) => entry.accountKey);
+    const idle = credits.filter((entry) => entry.perHour === 0).map((entry) => entry.accountKey);
+    const parts = [unmeasured.length ? `Used up with credits on hand, spend not measured yet: ${unmeasured.join(', ')}` : '', idle.length ? `Used up with credits on hand, none spent lately: ${idle.join(', ')}` : ''].filter(Boolean);
+    const message = parts.length ? parts.join('; ') : codex.length ? `No Codex account is paying from credits (${codex.length} observed)` : all.length ? 'No fresh Codex observation to judge' : 'No Codex account configured';
+    return { credits, guard: { status: 'up', message: message + (codex.length ? note : ''), lastRunAt } };
   }
-  // The same provider account can be configured twice (two keys, one login); it is no alternative to itself.
-  const identity = (result: ProviderUsage) => (result.data as CodexUsagePayload | undefined)?.account_id || result.account.email || result.account.key;
+  // One login, possibly configured twice, is no alternative to itself. The provider's account id is the workspace; two seats in it are two logins.
+  const identity = (result: ProviderUsage) => { const data = result.data as CodexUsagePayload | undefined; return [data?.account_id, data?.user_id].filter(Boolean).join(':') || result.account.email || result.account.key; };
   const room = codex.filter((result) => !codexUsedUp(result.data as CodexUsagePayload | undefined))
     .map((result) => ({ result, left: accountWindows(result).limiting?.remainingPercent ?? null }))
     .filter((entry): entry is { result: ProviderUsage; left: number } => entry.left !== null && entry.left > 0)
@@ -182,8 +187,8 @@ function creditsGuard(accounts: ProviderUsage[], now: number): { guard: Guard; c
   const spend = (result: ProviderUsage) => `${result.account.key} pays from credits (−${compactCredits(result.creditDrain!.perHour!)} credits/h)`;
   const wasted = spending.map((result) => ({ result, other: room.find((entry) => identity(entry.result) !== identity(result)) })).filter((entry) => entry.other);
   if (wasted.length) return { credits, guard: { status: 'down', lastRunAt,
-    message: `Credits spent while another Codex account has room: ${wasted.map(({ result, other }) => `${spend(result)} while ${other!.result.account.key} has ${Number(other!.left.toFixed(1))} % left`).join('; ')}` } };
-  return { credits, guard: { status: 'up', lastRunAt, message: `${spending.map(spend).join('; ')}; no other Codex account has room` } };
+    message: `Credits spent while another Codex account has room: ${wasted.map(({ result, other }) => `${spend(result)} while ${other!.result.account.key} has ${Number(other!.left.toFixed(1))} % left`).join('; ')}${note}` } };
+  return { credits, guard: { status: 'up', lastRunAt, message: `${spending.map(spend).join('; ')}; no other Codex account has room${note}` } };
 }
 
 export function buildGuardsReport({ accounts, checks, snapshot, now, config }: { accounts: ProviderUsage[]; checks: AccountCheck[]; snapshot: unknown; now: number; config?: Pick<AppConfig, 'accounts' | 'account_browsers' | 'accounting'> }): GuardsReport {

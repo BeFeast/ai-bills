@@ -545,7 +545,7 @@ export function deriveCodexAvailability(data?: CodexUsagePayload | null, status?
   }
   const rl = data.rate_limit;
   // Requests still succeed, so the account is available; the cost is the point, red once the balance is seen falling.
-  if (codexPaysFromCredits(data)) return { available: true, tone: spendingCredits(drain) ? 'danger' : 'warn', label: 'Paying from credits', detail: creditDrainSentence(drain ?? null) };
+  if (codexPaysFromCredits(data) || drain) return { available: true, tone: spendingCredits(drain) ? 'danger' : 'warn', label: 'Paying from credits', detail: creditDrainSentence(drain ?? null) };
   if (rl.limit_reached || !rl.allowed) {
     const pct = rl.primary_window?.used_percent ?? 100;
     const resetIso = codexWindowResetIso(rl.primary_window);
