@@ -201,6 +201,7 @@ button.stat-tile:focus-visible { box-shadow: var(--focus-ring); }
 .hero-card--warn .hero-card__num { color: var(--warn); }
 .hero-card--bad .hero-card__num { color: var(--bad); }
 .hero-chip { display: inline-flex; align-self: flex-start; font: 500 11px var(--font-mono); padding: 3px 8px; border-radius: 999px; background: var(--surface-1); border: 1px solid var(--border-1); color: var(--text-mute); white-space: nowrap; }
+.hero-card__note { flex: 1 1 100%; }
 .hero-windows { flex: 1 1 200px; min-width: 0; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .hero-window { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; align-items: center; font-size: 12px; }
 .hero-window__label { color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
