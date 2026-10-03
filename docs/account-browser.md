@@ -131,8 +131,9 @@ hero and the widget then say "paying from credits" instead of a bare 0 %, with
 the credits spent per hour (measured from the balances stored with the last hour
 of quota observations, starting after the last top-up) and the manual resets the
 provider would apply now. When the direct quota request fails and the proxy's
-headers stand in, the payload has no credits block; a balance seen falling in the
-stored history still counts. The widget also adds "(paying from credits)" to the
+headers stand in, the payload has no credits block; the newest stored observation
+of the last hour then decides whether the account can still pay (credits on hand,
+no spend cap or overage limit) and supplies the balance. The widget also adds "(paying from credits)" to the
 used-up window's label, so clients that predate the `creditDrain` field show it
 under the meter. The `credits` guard goes down while such an account is seen
 spending and another Codex login (a different workspace or seat) still has room;

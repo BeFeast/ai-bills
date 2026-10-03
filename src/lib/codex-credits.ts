@@ -17,8 +17,11 @@ export type CreditDrain = {
   /** Manual resets the provider would apply now; each restores the window without spending credits. */
   manualResets: number;
 };
-/** One earlier credit balance of a Codex account, as stored with its quota observation. */
-export type CreditSample = { accountKey: string; accountId: string | null; userId: string | null; observedAt: string; balance: string | null };
+/**
+ * One earlier credit balance of a Codex account, as stored with its quota observation. `canPay` is that observation's
+ * own verdict (credits on hand, no overage or spend cap reached), null when it carried no credits block.
+ */
+export type CreditSample = { accountKey: string; accountId: string | null; userId: string | null; observedAt: string; balance: string | null; canPay: boolean | null };
 
 /** How far back the burn rate looks, and the shortest span it is measured over (two collector ticks). */
 export const CREDIT_RATE_WINDOW_MS = 60 * 60_000;
@@ -50,7 +53,7 @@ export function codexPaysFromCredits(data?: CodexUsagePayload | null): boolean {
 /**
  * Whether a Codex result may be paying from credits and needs its history read. A header fallback (the direct quota
  * request failed, the proxy's rate-limit headers stood in) says the window is used up but carries no credits block;
- * only the stored balances can then tell whether the account still pays.
+ * only the stored observations can then tell whether the account still pays.
  */
 export function creditDrainCandidate(result: ProviderUsage): boolean {
   if (result.account.provider !== 'codex' || !result.ok) return false;
@@ -64,7 +67,8 @@ export function creditDrainCandidate(result: ProviderUsage): boolean {
  * same login in the last hour to the current one, at least ten minutes apart. A balance that rose on the way (a
  * top-up or the plan's renewal) says nothing about the spend before it, so the rate starts after the last rise; when
  * that leaves too short a span, the rate is unknown rather than zero. Without a credits block in the payload (a header
- * fallback) the current balance is the newest stored one, and only a balance seen falling counts as paying.
+ * fallback) the newest stored observation of the last hour stands in: it decides whether the account can still pay,
+ * and its balance is the current one.
  */
 export function creditDrain(result: ProviderUsage, samples: CreditSample[]): CreditDrain | null {
   if (!creditDrainCandidate(result)) return null;
@@ -74,27 +78,28 @@ export function creditDrain(result: ProviderUsage, samples: CreditSample[]): Cre
   const manualResets = finite(applicable) ? Math.max(0, applicable) : 0;
   const observed = Date.parse(result.fetchedAt);
   const balance = reported ? creditBalance(data.credits.balance) : null;
-  const unmeasured = (value: number | null): CreditDrain | null => reported ? { balance: value, perHour: null, since: null, manualResets } : null;
-  if (!Number.isFinite(observed)) return unmeasured(balance);
+  if (!Number.isFinite(observed)) return reported ? { balance, perHour: null, since: null, manualResets } : null;
   // One login: the provider's account id is the workspace, the user id the member in it; old rows without ids fall back to the e-mail key.
   const id = data.account_id || null; const user = data.user_id || null;
   const emails = new Set([data.email, result.account.email].filter(Boolean).map((email) => email.toLowerCase()));
   const sameLogin = (sample: CreditSample) => id && sample.accountId ? sample.accountId === id && (!user || !sample.userId || sample.userId === user) : emails.has(sample.accountKey.toLowerCase());
   const points = samples.filter(sameLogin)
-    .map((sample) => ({ at: Date.parse(sample.observedAt), balance: creditBalance(sample.balance), observedAt: sample.observedAt }))
-    .filter((point): point is { at: number; balance: number; observedAt: string } => Number.isFinite(point.at) && point.balance !== null && point.at >= observed - CREDIT_RATE_WINDOW_MS && point.at < observed)
+    .map((sample) => ({ at: Date.parse(sample.observedAt), balance: creditBalance(sample.balance), observedAt: sample.observedAt, canPay: sample.canPay }))
+    .filter((point): point is { at: number; balance: number; observedAt: string; canPay: boolean | null } => Number.isFinite(point.at) && point.balance !== null && point.at >= observed - CREDIT_RATE_WINDOW_MS && point.at < observed)
     .sort((a, b) => a.at - b.at);
   if (reported) {
-    if (balance === null) return unmeasured(null);
-    points.push({ at: observed, balance, observedAt: result.fetchedAt });
-  } else if (!points.length || points[points.length - 1].at < observed - CREDIT_RATE_MIN_SPAN_MS) return null;
+    if (balance === null) return { balance, perHour: null, since: null, manualResets };
+    points.push({ at: observed, balance, observedAt: result.fetchedAt, canPay: true });
+  } else {
+    // Nothing stored in the last hour, or the newest stored observation could no longer pay (credits gone, a cap reached): not paying as far as is known.
+    const newest = points[points.length - 1];
+    if (!newest || newest.canPay !== true || newest.balance <= 0) return null;
+  }
   let start = 0;
   for (let index = 1; index < points.length; index++) if (points[index].balance > points[index - 1].balance) start = index;
   const base = points[start]; const current = points[points.length - 1];
-  if (current.at - base.at < CREDIT_RATE_MIN_SPAN_MS) return unmeasured(current.balance);
-  const perHour = Math.round((base.balance - current.balance) / ((current.at - base.at) / 3_600_000));
-  if (!reported && perHour <= 0) return null;
-  return { balance: current.balance, perHour, since: base.observedAt, manualResets };
+  if (current.at - base.at < CREDIT_RATE_MIN_SPAN_MS) return { balance: current.balance, perHour: null, since: null, manualResets };
+  return { balance: current.balance, perHour: Math.round((base.balance - current.balance) / ((current.at - base.at) / 3_600_000)), since: base.observedAt, manualResets };
 }
 
 /** 8765 → "8.8k", 1250000 → "1.3M". */

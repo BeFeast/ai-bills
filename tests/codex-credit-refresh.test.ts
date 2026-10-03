@@ -56,6 +56,22 @@ describe('usage refresh', () => {
     expect(byKey.get('claude-work')?.creditDrain).toBeUndefined();
   });
 
+  it('attaches a drain to a header fallback whose stored balance is falling', async () => {
+    base = Date.now();
+    const tenant = await ensureTenant(db, 'fallback');
+    const personal = 'codex-personal@example.com';
+    for (const [minutes, balance] of [[31, '24000'], [6, '20000']] as const) {
+      await storeSnapshot(db, tenant.id, JSON.stringify({ codex_usage: { [personal]: { ok: true, status: 200, fetched_at: minutesAgo(minutes), data: codex(personal, 100, balance) } } }), minutesAgo(minutes), new Date(base - minutes * 60_000));
+    }
+    // The direct request failed; the proxy's rate-limit headers stood in, with no credits block.
+    vi.mocked(fetchUsageThroughCdp).mockImplementation(async account => (account.provider === 'codex' && account.email === personal
+      ? { account, ok: true, source: 'proxy_headers', fetchedAt: minutesAgo(1), sourceUrl: 'snapshot', data: { plan_type: 'pro', rate_limit: { allowed: false, limit_reached: true, primary_window: { used_percent: 100, limit_window_seconds: 604800, reset_after_seconds: 3600, reset_at: Math.round(base / 1000) + 3600 } } } }
+      : { account, ok: true, status: 200, fetchedAt: minutesAgo(1), sourceUrl: 'snapshot', data: account.provider === 'codex' ? codex(account.email, 10, '20000') : { five_hour: { utilization: 10 }, seven_day: { utilization: 10 } } }) as ProviderUsage);
+    resetUsageCacheForTests();
+    const { results } = await refreshUsage({ id: tenant.id });
+    expect(results.find(result => result.account.key === 'codex-personal')?.creditDrain).toMatchObject({ balance: 20000, perHour: 9600 });
+  });
+
   it('still answers, without a rate, when the history cannot be read', async () => {
     const tenant = await ensureTenant(db, 'drain');
     vi.mocked(fetchUsageThroughCdp).mockImplementation(async account => ({ account, ok: true, status: 200, fetchedAt: minutesAgo(1), sourceUrl: 'snapshot',

@@ -32,7 +32,7 @@ function payload({ used = 100, reached = used >= 100, credits = true, balance = 
     rate_limit_reset_credits: { available_count: 3, applicable_available_count: resets } } as unknown as CodexUsagePayload;
 }
 const result = (key: string, data: CodexUsagePayload, minutesAgo = 1): ProviderUsage => ({ account: { key, provider: 'codex', label: key, email: data.email }, ok: true, status: 200, fetchedAt: at(minutesAgo), sourceUrl: 'fixture', data });
-const sample = (minutesAgo: number, balance: string | null, accountId: string | null = 'acct-a', accountKey = 'a@example.invalid', userId: string | null = 'user-synthetic'): CreditSample => ({ accountKey, accountId, userId, observedAt: at(minutesAgo), balance });
+const sample = (minutesAgo: number, balance: string | null, accountId: string | null = 'acct-a', accountKey = 'a@example.invalid', userId: string | null = 'user-synthetic', canPay: boolean | null = true): CreditSample => ({ accountKey, accountId, userId, observedAt: at(minutesAgo), balance, canPay });
 /** The collector's header fallback: the proxy's rate-limit headers stood in, so there is no credits block. */
 const headerFallback = (key: string, minutesAgo = 1): ProviderUsage => ({ account: { key, provider: 'codex', label: key, email: 'a@example.invalid' }, ok: true, status: null as never, fetchedAt: at(minutesAgo), sourceUrl: 'fixture', source: 'proxy_headers',
   data: { plan_type: 'pro', rate_limit: { allowed: false, limit_reached: true, primary_window: { used_percent: 100, limit_window_seconds: 604800, reset_after_seconds: 3600, reset_at: Math.round(now / 1000) + 3600 }, secondary_window: null } } as unknown as CodexUsagePayload });
@@ -74,12 +74,21 @@ describe('paying from credits', () => {
     expect(creditDrain(result('codex-a', payload({ balance: '87000' })), [sample(40, '43000'), sample(6, '88000')])).toMatchObject({ perHour: null });
   });
 
-  it('reads a header fallback from the stored balances: paying only when they fall', () => {
+  it('reads a header fallback from the stored observations of the last hour', () => {
     expect(creditDrain(headerFallback('codex-a'), [sample(31, '43671.03'), sample(6, '40337.70')])).toEqual({ balance: 40337.7, perHour: 8000, since: at(31), manualResets: 0 });
-    expect(creditDrain(headerFallback('codex-a'), [sample(31, '40338'), sample(6, '40338')])).toBeNull();
-    // The newest stored balance must be recent: an hour-old one says nothing about now.
-    expect(creditDrain(headerFallback('codex-a'), [sample(50, '43671.03'), sample(31, '40338')])).toBeNull();
+    expect(creditDrain(headerFallback('codex-a'), [sample(31, '40338'), sample(6, '40338')])).toMatchObject({ perHour: 0 });
+    // A direct outage longer than one tick keeps the last measured rate for the hour, then says it is unknown.
+    expect(creditDrain(headerFallback('codex-a'), [sample(55, '43671.03'), sample(25, '39671.03')])).toMatchObject({ perHour: 8000, balance: 39671.03 });
+    expect(creditDrain(headerFallback('codex-a'), [sample(25, '39671.03')])).toEqual({ balance: 39671.03, perHour: null, since: null, manualResets: 0 });
+    expect(creditDrain(headerFallback('codex-a'), [sample(70, '43671.03')])).toBeNull();
     expect(creditDrain(headerFallback('codex-a'), [])).toBeNull();
+  });
+
+  it('does not call a header fallback paying when the last direct observation could no longer pay', () => {
+    // Credits ran out, or a spend cap or overage limit was reached: the provider now refuses instead of charging.
+    expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, '0', 'acct-a', 'a@example.invalid', 'user-synthetic', false)])).toBeNull();
+    expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, '3000', 'acct-a', 'a@example.invalid', 'user-synthetic', false)])).toBeNull();
+    expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, '0')])).toBeNull();
   });
 
   it('keeps two seats of one workspace apart', () => {
@@ -132,6 +141,8 @@ describe('credits guard', () => {
     const fallback = headerFallback('codex-a');
     const spendingFallback = { ...fallback, creditDrain: creditDrain(fallback, [sample(31, '43671.03'), sample(6, '40337.70')])! };
     expect(guard([spendingFallback, roomy()]).guards.credits.status).toBe('down');
+    expect(deriveCodexAvailability(spendingFallback.data as CodexUsagePayload, undefined, spendingFallback.creditDrain)).toMatchObject({ available: true, label: 'Paying from credits', tone: 'danger' });
+    expect(renderToStaticMarkup(<UsageCard result={spendingFallback} now={now} tz="UTC" onAuthorized={() => {}} />)).toContain('Paying from credits');
   });
 
   it('judges only fresh observations, and says which it left out', () => {
@@ -190,8 +201,10 @@ describe('stored credit balances', () => {
     await put(mine.id, { codex_usage: { 'a@example.invalid': entry(31, '43671.03') } }, 31);
     await put(mine.id, { codex_usage: { 'a@example.invalid': { ok: true, status: null, fetched_at: at(20), source: 'proxy_headers', data: { rate_limit: { limit_reached: true } } } } }, 20);
     await put(theirs.id, { codex_usage: { 'a@example.invalid': entry(25, '5') } }, 25);
+    await put(mine.id, { codex_usage: { 'a@example.invalid': { ok: true, status: 200, fetched_at: at(10), source: 'direct', data: { ...payload({ balance: '0', credits: false }), spend_control: { reached: true, individual_limit: null } } } } }, 10);
     const samples = await dbCreditHistoryStore(db, mine.id).since(new Date(now - 70 * 60_000));
-    expect(samples).toEqual([{ accountKey: 'a@example.invalid', accountId: 'acct-a', userId: 'user-synthetic', observedAt: at(31), balance: '43671.03' }]);
-    expect(creditDrain(result('codex-a', payload()), samples)).toMatchObject({ perHour: 8000, since: at(31) });
+    expect(samples).toEqual([{ accountKey: 'a@example.invalid', accountId: 'acct-a', userId: 'user-synthetic', observedAt: at(31), balance: '43671.03', canPay: true },
+      { accountKey: 'a@example.invalid', accountId: 'acct-a', userId: 'user-synthetic', observedAt: at(10), balance: '0', canPay: false }]);
+    expect(creditDrain(result('codex-a', payload()), samples.slice(0, 1))).toMatchObject({ perHour: 8000, since: at(31) });
   });
 });

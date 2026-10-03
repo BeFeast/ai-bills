@@ -97,12 +97,16 @@ export type CreditHistoryStore = { since(cutoff: Date): Promise<CreditSample[]> 
 export function dbCreditHistoryStore(db: Db, tenantId: string): CreditHistoryStore {
   return {
     async since(cutoff) {
-      const balance = sql<string | null>`${quotaObservations.windows}->'credits'->>'balance'`;
-      const rows = await withTenant(db, tenantId, tx => tx.select({ accountKey: quotaObservations.accountKey, accountId: sql<string | null>`${quotaObservations.windows}->>'account_id'`, userId: sql<string | null>`${quotaObservations.windows}->>'user_id'`, observedAt: quotaObservations.observedAt, balance })
+      // A text field of the stored payload; the keys are constants of this function, never input.
+      const field = (...keys: string[]) => sql<string | null>`${quotaObservations.windows}${sql.raw(keys.map((key, index) => `${index === keys.length - 1 ? '->>' : '->'}'${key}'`).join(''))}`;
+      const balance = field('credits', 'balance');
+      const rows = await withTenant(db, tenantId, tx => tx.select({ accountKey: quotaObservations.accountKey, accountId: field('account_id'), userId: field('user_id'), observedAt: quotaObservations.observedAt, balance,
+        hasCredits: field('credits', 'has_credits'), overage: field('credits', 'overage_limit_reached'), capped: field('spend_control', 'reached') })
         .from(quotaObservations)
         .where(and(eq(quotaObservations.tenantId, tenantId), eq(quotaObservations.provider, 'codex'), eq(quotaObservations.ok, true), gte(quotaObservations.observedAt, cutoff), sql`${balance} is not null`))
         .orderBy(quotaObservations.observedAt));
-      return rows.map(row => ({ ...row, observedAt: row.observedAt.toISOString() }));
+      // Booleans compared as text in code: a cast in SQL would fail the whole read on one odd payload.
+      return rows.map(({ hasCredits, overage, capped, ...row }) => ({ ...row, observedAt: row.observedAt.toISOString(), canPay: hasCredits === 'true' && overage !== 'true' && capped !== 'true' }));
     },
   };
 }
