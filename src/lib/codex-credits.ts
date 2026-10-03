@@ -96,7 +96,9 @@ export function creditDrain(result: ProviderUsage, samples: CreditSample[]): Cre
   } else {
     // Nothing stored in the last hour, or the newest stored observation could no longer pay (credits gone, a cap reached): not paying as far as is known.
     const newest = recent[recent.length - 1];
-    if (!newest || newest.canPay !== true || newest.balance === null || newest.balance <= 0) return null;
+    if (!newest || newest.canPay !== true || (newest.balance !== null && newest.balance <= 0)) return null;
+    // It can pay but reported no balance: paying, the amount unknown (an older balance is no longer the current one).
+    if (newest.balance === null) return { balance: null, perHour: null, since: null, manualResets };
   }
   let start = 0;
   for (let index = 1; index < points.length; index++) if (points[index].balance > points[index - 1].balance) start = index;

@@ -90,6 +90,8 @@ describe('paying from credits', () => {
     expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, '3000', 'acct-a', 'a@example.invalid', 'user-synthetic', false)])).toBeNull();
     expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, '0')])).toBeNull();
     expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, null, 'acct-a', 'a@example.invalid', 'user-synthetic', false)])).toBeNull();
+    // Able to pay but without a balance, as a direct payload of that shape would read: paying, amount unknown.
+    expect(creditDrain(headerFallback('codex-a'), [sample(31, '4000'), sample(6, null)])).toEqual({ balance: null, perHour: null, since: null, manualResets: 0 });
   });
 
   it('lets a stored observation newer than the header fallback decide', () => {
