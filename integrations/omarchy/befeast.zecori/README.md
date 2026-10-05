@@ -3,7 +3,13 @@
 One bar icon and one panel for the limits your Zecori instance already knows:
 every account's remaining allowance and reset time, and today's usage per
 client label (the machines and tools behind your proxy keys). The bar shows the
-Zecori mark with the tightest remaining percentage; the panel lists the rest.
+Zecori mark with narrow monochrome quota meters, one per selected provider.
+Full means quota remains, an empty outline means zero, and a dash means unknown.
+Names and exact percentages live in the tooltip and account panel. An exclamation
+mark signals stale data or a fetch error. Choose providers and their left-to-right
+order in the service's **Desktop bar** section; all clients follow the next refresh.
+Each known account has equal weight within its provider, not a capacity-weighted pool.
+Older servers use an automatic alphabetical selection of up to eight providers.
 
 The widget is a display only. It polls `GET /api/widget` of your instance with
 a **device token** — a read-only credential that can do nothing else: it cannot

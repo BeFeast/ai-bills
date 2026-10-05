@@ -349,3 +349,13 @@ button.stat-tile:focus-visible { box-shadow: var(--focus-ring); }
 .table-section { display: flex; flex-direction: column; gap: 10px; }
 .spark { color: var(--accent-blue); display: inline-block; vertical-align: middle; overflow: visible; }
 .diag-pre { margin: 12px 0 0; font: 400 11px/1.5 var(--font-mono); color: var(--code-text); background: var(--code-bg); border: 1px solid var(--border-1); border-radius: 8px; padding: 12px 14px; overflow: auto; white-space: pre-wrap; max-height: 480px; }
+
+.desktop-bar-settings { max-width: 640px; }
+.desktop-bar-settings p { margin: 12px 0; }
+.desktop-bar-settings fieldset { border: 0; padding: 0; margin: 24px 0; }
+.desktop-bar-provider { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+.desktop-bar-provider label { flex: 1; }
+.desktop-bar-preview { display: flex; align-items: center; gap: 5px; padding: 16px 0; }
+.desktop-bar-preview .muted { margin-left: 12px; font-size: 12px; }
+.desktop-bar-meter { display: inline-flex; align-items: flex-end; width: 6px; height: 16px; border: 1px solid currentColor; border-radius: 2px; padding: 1px; }
+.desktop-bar-meter > span { width: 100%; height: 60%; background: currentColor; }

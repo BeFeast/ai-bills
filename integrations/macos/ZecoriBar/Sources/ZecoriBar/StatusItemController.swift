@@ -3,7 +3,7 @@ import Combine
 import SwiftUI
 import ZecoriCore
 
-/// The menu bar item: the coin glyph and the tightest headline percentage, red when a limit is out,
+/// The menu bar item: the coin glyph and provider average percentages, red when a provider average is below 10%,
 /// the snapshot is stale or the instance cannot be read. Left click toggles the panel, middle or
 /// Option-click refreshes, right click opens a small menu.
 @MainActor
@@ -40,7 +40,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func render() {
         guard let button = item.button else { return }
         let presenter = store.presenter
-        button.image = Glyph.statusImage(label: presenter.barLabel, alarming: presenter.alarming)
+        button.image = Glyph.statusImage(presenter: presenter)
         button.toolTip = presenter.barTooltip
         if popover.isShown { popover.contentSize = fittedSize() }
     }

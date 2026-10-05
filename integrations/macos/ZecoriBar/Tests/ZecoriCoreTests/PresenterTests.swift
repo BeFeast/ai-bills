@@ -9,12 +9,27 @@ final class PresenterTests: XCTestCase {
     private let now = Presenter.parseDate("2026-09-24T14:00:00.000Z")!
     private let utc = TimeZone(identifier: "UTC")!
 
-    func testBarLeadsWithTheTightestAccountWideWindowNotTheModelScopedOne() throws {
+    func testBarShowsSeparateProviderAverages() throws {
         let p = Presenter(payload: try fixture(), now: now, timeZone: utc)
-        XCTAssertEqual(p.worst?.key, "claude-personal")
-        XCTAssertEqual(p.barLabel, "19%")
-        XCTAssertEqual(p.barTooltip, "Zecori: Claude · one@example.test · Weekly all models · 19% left · Fable 25% (Claude · two@example.test)")
+        XCTAssertEqual(p.barLabel, "Claude 27% · Codex 81% · Cursor – · Kimi –")
+        XCTAssertEqual(p.barTooltip, "Zecori: average remaining per provider (equal weight per account) · Claude 27% (2/2 accounts known) · Codex 81% (2/2 accounts known) · Cursor – (0/1 accounts known) · Kimi – (0/1 accounts known) · Fable 25% (Claude · two@example.test)")
         XCTAssertFalse(p.alarming, "warn is not urgent; a 0 % Fable weekly must not turn the bar red")
+    }
+
+    func testSharedProviderAverageCases() throws {
+        struct Case: Decodable {
+            let name: String
+            let payload: WidgetPayload
+            let label: String
+            let alarming: Bool
+        }
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "provider-averages", withExtension: "json", subdirectory: "Fixtures"))
+        let cases = try JSONDecoder().decode([Case].self, from: Data(contentsOf: url))
+        for entry in cases {
+            let p = Presenter(payload: entry.payload)
+            XCTAssertEqual(p.barLabel, entry.label, entry.name)
+            XCTAssertEqual(p.alarming, entry.alarming, entry.name)
+        }
     }
 
     func testAccountLinesMatchTheOmarchyPanel() throws {
@@ -89,7 +104,7 @@ final class PresenterTests: XCTestCase {
         XCTAssertEqual(p.bannerText, "The collector snapshot is 20m old; limits may have moved since.")
         payload.snapshot?.stale = false
         for i in payload.accounts.indices { payload.accounts[i].headline = nil }
-        XCTAssertEqual(Presenter(payload: payload, now: now).barLabel, "0%")
+        XCTAssertEqual(Presenter(payload: payload, now: now).barLabel, "Claude 13% · Codex 81% · Cursor – · Kimi –")
     }
 
     func testFormattingAndFailureWording() {
@@ -106,7 +121,7 @@ final class PresenterTests: XCTestCase {
         let payload = try PayloadDecoder.decode(Data(json.utf8))
         XCTAssertEqual(payload.accounts.first?.label, "x")
         XCTAssertEqual(payload.models, [], "an older server sends no models: no section, no tooltip tail")
-        XCTAssertEqual(Presenter(payload: payload, now: now).barLabel, "–")
+        XCTAssertEqual(Presenter(payload: payload, now: now).barLabel, "Other –")
         XCTAssertEqual(Presenter(payload: payload, now: now).modelsTooltip, "")
     }
 }

@@ -112,4 +112,11 @@ export const historyPoints = pgTable('history_points', {
   estUsdToday: doublePrecision('est_usd_today'),
 }, table => [index('history_points_tenant_at_idx').on(table.tenantId, table.at)]);
 
-export const schema = { tenants, memberships, ingestTokens, deviceTokens, snapshots, quotaObservations, journalRecords, subscriptionOverrides, historyPoints };
+/** Shared desktop-bar selection; null means automatic, [] means the glyph only. */
+export const widgetPreferences = pgTable('widget_preferences', {
+  tenantId: uuid('tenant_id').primaryKey().references(() => tenants.id, { onDelete: 'cascade' }),
+  providers: jsonb('providers').$type<string[] | null>(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const schema = { widgetPreferences, tenants, memberships, ingestTokens, deviceTokens, snapshots, quotaObservations, journalRecords, subscriptionOverrides, historyPoints };

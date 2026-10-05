@@ -20,12 +20,13 @@ import type { AccountRegistry } from '@/lib/accounts';
 import { AppShell, useTheme } from './shell/AppShell';
 import type { SidebarItem } from './shell/Sidebar';
 import { ButtonLink, Notice, navIcons, type PillTone } from './ui';
+import { DesktopBarSettings } from './DesktopBarSettings';
 import pkg from '../../package.json';
 
 const AUTO_REFRESH_MS = 60_000;
 
 type StatusTone = '' | 'ok' | 'warn' | 'danger';
-type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'alerts' | 'routing' | 'details';
+type View = 'overview' | 'subscriptions' | 'accounts' | 'usage' | 'alerts' | 'routing' | 'details' | 'desktop';
 
 const VIEWS: Record<View, { label: string; subtitle: string }> = {
   overview: { label: 'Overview', subtitle: 'Where you stand against your limits' },
@@ -34,6 +35,7 @@ const VIEWS: Record<View, { label: string; subtitle: string }> = {
   usage: { label: 'Usage', subtitle: 'Where your usage goes this month' },
   alerts: { label: 'Alerts', subtitle: 'What Zecori would tell you about, and what it already has' },
   routing: { label: 'Models & routing', subtitle: 'Request routing policy and daily allowance' },
+  desktop: { label: 'Desktop bar', subtitle: 'Choose the meters shown on your computers' },
   details: { label: 'Accounting details', subtitle: 'Month overview, records and billing snapshot' },
 };
 
@@ -165,7 +167,7 @@ export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
     .map<SidebarItem<View>>((id) => ({
       id,
       label: VIEWS[id].label,
-      icon: navIcons[id],
+      icon: id === 'desktop' ? navIcons.overview : navIcons[id],
       count: id === 'subscriptions' ? activeSubscriptions : id === 'accounts' ? usage?.accounts.length : id === 'alerts' && alerts?.active.length ? alerts.active.length : undefined,
     }));
   const attention = status.tone === 'warn' || status.tone === 'danger';
@@ -199,7 +201,7 @@ export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
       {view === 'overview' && alerts?.active.length ? <Notice tone={alerts.active.some(c => c.state === 'bad') ? 'bad' : 'warn'} role="status">{alerts.active.length} alert{alerts.active.length === 1 ? '' : 's'} active: {alerts.active.slice(0, 3).map(c => c.title).join(' · ')}{alerts.active.length > 3 ? ' · …' : ''} <button type="button" className="text-link" onClick={() => setView('alerts')}>Open alerts →</button></Notice> : null}
       {view === 'overview' && guardsDown.length ? <Notice tone="bad" role="status">Quota guard down: {guardsDown.map(([, guard]) => guard.message).join(' · ')} <button type="button" className="text-link" onClick={() => setView('alerts')}>Open alerts →</button></Notice> : null}
       {view === 'alerts' ? <><QuotaGuards report={guards} tz={tz} /><AlertsSection report={alerts} now={now} tz={tz} /></> : null}
-      {view !== 'accounts' && view !== 'alerts' ? <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} /> : null}
+      {view !== 'accounts' && view !== 'alerts' && view !== 'desktop' ? <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} /> : null}
 
       {view === 'accounts' ? <>
         {proxyExpired.length ? <Notice tone="bad" role="alert">Proxy OAuth expired for {proxyExpired.map((result) => result.account.label).join(', ')} — re-login the proxy credential. The account browser sign-in is separate and does not fix it.</Notice> : null}
@@ -209,6 +211,7 @@ export function Dashboard({ hosted = false }: { hosted?: boolean } = {}) {
         {!usage ? <p className="t-small">Loading account quotas…</p> : null}
         <ProductOverviewPanel data={overview} accounts={usage?.accounts ?? []} registry={registry?.accounts ?? []} view={view} onView={setView} error={overviewError} onUpdated={refreshOverview} />
       </> : null}
+      {view === 'desktop' ? <DesktopBarSettings providers={[...new Set((usage?.accounts ?? []).map(a => a.account.provider))]} /> : null}
       {view === 'routing' ? <RoutingSection tz={tz} /> : null}
       {view === 'details' ? <>
         <AccountOverview tz={tz} />

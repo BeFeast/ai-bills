@@ -3,6 +3,7 @@ import Foundation
 /// The answer of GET /api/widget (src/lib/widget.ts). Every field is optional or defaulted so an
 /// older or newer server never breaks the client: an unknown field is ignored, a missing one reads as absent.
 public struct WidgetPayload: Decodable, Equatable {
+    public var bar: BarPreferences?
     public var now: String?
     public var snapshot: SnapshotInfo?
     public var usage: UsageInfo?
@@ -11,9 +12,10 @@ public struct WidgetPayload: Decodable, Equatable {
     public var models: [WidgetModel]
     public var today: Today?
 
-    enum CodingKeys: String, CodingKey { case now, snapshot, usage, accounts, models, today }
+    enum CodingKeys: String, CodingKey { case now, snapshot, usage, accounts, models, today, bar }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        bar = try c.decodeIfPresent(BarPreferences.self, forKey: .bar)
         now = try c.decodeIfPresent(String.self, forKey: .now)
         snapshot = try c.decodeIfPresent(SnapshotInfo.self, forKey: .snapshot)
         usage = try c.decodeIfPresent(UsageInfo.self, forKey: .usage)
@@ -149,4 +151,8 @@ public enum PayloadDecoder {
     public static func decode(_ data: Data) throws -> WidgetPayload {
         try JSONDecoder().decode(WidgetPayload.self, from: data)
     }
+}
+
+public struct BarPreferences: Decodable, Equatable {
+    public var providers: [String]
 }

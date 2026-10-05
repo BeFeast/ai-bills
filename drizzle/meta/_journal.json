@@ -36,6 +36,13 @@
       "when": 1790183035294,
       "tag": "0004_device-tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791198000000,
+      "tag": "0005_widget-preferences",
+      "breakpoints": true
     }
   ]
 }

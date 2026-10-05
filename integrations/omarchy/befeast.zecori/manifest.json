@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "befeast.zecori",
   "name": "Zecori",
-  "version": "0.2.1",
+  "version": "0.2.4",
   "author": "BeFeast",
   "license": "MIT",
   "description": "Remaining AI subscription limits, reset times and today's spend per machine, read from your Zecori instance.",
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "Zecori",
-    "description": "One bar icon with the tightest remaining allowance and one panel: every account's limit windows with reset countdowns, plus today's usage by client label.",
+    "description": "One bar icon with compact monochrome quota meters per selected provider and one panel: every account's limit windows with reset countdowns, plus today's usage by client label.",
     "category": "AI",
     "aliases": [
       "zecori",

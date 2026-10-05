@@ -1,0 +1,456 @@
+[
+  {
+    "name": "separate provider averages",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ]
+    },
+    "label": "Claude 30% \u00b7 Codex 20%",
+    "alarming": false
+  },
+  {
+    "name": "unknown limits excluded",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": null
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 50
+          }
+        },
+        {
+          "key": "example",
+          "provider": "kimi",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": null
+          }
+        }
+      ]
+    },
+    "label": "Claude 50% \u00b7 Kimi \u2013",
+    "alarming": false
+  },
+  {
+    "name": "all unknown",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": null
+          }
+        }
+      ]
+    },
+    "label": "Claude \u2013",
+    "alarming": false
+  },
+  {
+    "name": "empty",
+    "payload": {
+      "accounts": []
+    },
+    "label": "\u2013",
+    "alarming": false
+  },
+  {
+    "name": "exhausted provider",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 100
+          }
+        }
+      ]
+    },
+    "label": "Claude 0% \u00b7 Codex 100%",
+    "alarming": true
+  },
+  {
+    "name": "threshold",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 20
+          }
+        }
+      ]
+    },
+    "label": "Claude 10%",
+    "alarming": false
+  },
+  {
+    "name": "below threshold",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 19
+          }
+        }
+      ]
+    },
+    "label": "Claude 10%",
+    "alarming": true
+  },
+  {
+    "name": "clamped percentages",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": -20
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 140
+          }
+        }
+      ]
+    },
+    "label": "Claude 50%",
+    "alarming": false
+  },
+  {
+    "name": "older server",
+    "payload": {
+      "accounts": [
+        {
+          "key": "a",
+          "provider": "codex",
+          "limiting": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 70
+          }
+        }
+      ]
+    },
+    "label": "Codex 50%",
+    "alarming": false
+  },
+  {
+    "name": "headline beats scoped limit",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 80
+          },
+          "limiting": {
+            "label": "Model weekly",
+            "remainingPercent": 0
+          }
+        }
+      ]
+    },
+    "label": "Claude 80%",
+    "alarming": false
+  },
+  {
+    "name": "future provider",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "new-provider",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 40
+          }
+        }
+      ]
+    },
+    "label": "new-provider 40%",
+    "alarming": false
+  },
+  {
+    "name": "selected order",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ],
+      "bar": {
+        "providers": [
+          "codex",
+          "claude"
+        ]
+      }
+    },
+    "label": "Codex 20% \u00b7 Claude 30%",
+    "alarming": false
+  },
+  {
+    "name": "unknown selected provider",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ],
+      "bar": {
+        "providers": [
+          "kimi",
+          "claude"
+        ]
+      }
+    },
+    "label": "Kimi \u2013 \u00b7 Claude 30%",
+    "alarming": false
+  },
+  {
+    "name": "glyph only",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ],
+      "bar": {
+        "providers": []
+      }
+    },
+    "label": "\u2013",
+    "alarming": false
+  },
+  {
+    "name": "hidden exhausted provider",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ],
+      "bar": {
+        "providers": [
+          "codex"
+        ]
+      }
+    },
+    "label": "Codex 20%",
+    "alarming": false
+  }
+]

@@ -1,3 +1,4 @@
+import { readWidgetPreferences } from './widget-preferences';
 import { loadConfig } from './config';
 import { accountWindows, LOW_REMAINING_PERCENT, type HeroWindow } from './limits-hero';
 import { claudeWindows, type ClaudeUsagePayload, type QuotaTone } from './usage';
@@ -67,6 +68,7 @@ export type WidgetPayload = {
   snapshot: { generatedAt: string | null; receivedAt: string | null; ageSeconds: number | null; stale: boolean; reason: 'no-snapshot' | 'snapshot-age' | null };
   usage: { refreshedAt: string | null; refreshing: boolean; timezone: string };
   accounts: WidgetAccount[];
+  bar?: { providers: string[] };
   /** Model-scoped allowances aggregated across the pool, one per provider and window label; empty when no account reports one. */
   models: WidgetModel[];
   /** Today's ledger by client label, or null when the stored ledger is not for today in the instance's timezone. */
@@ -175,5 +177,8 @@ export function buildWidgetPayload({ usage, snapshot, now, timezone, staleAfterS
 export async function widgetPayload(scope: Scope, now = Date.now()): Promise<WidgetPayload> {
   const config = loadConfig();
   const [usage, snapshot] = await Promise.all([getUsageResponse(false, scope), readSnapshot(config, scope)]);
-  return buildWidgetPayload({ usage, snapshot, now, timezone: config.server.timezone });
+  const payload = buildWidgetPayload({ usage, snapshot, now, timezone: config.server.timezone });
+  const selected = await readWidgetPreferences(scope);
+  payload.bar = { providers: selected ?? [...new Set(payload.accounts.map(a => a.provider))].sort().slice(0, 8) };
+  return payload;
 }
