@@ -3,7 +3,11 @@
 One bar icon and one panel for the limits your Zecori instance already knows:
 every account's remaining allowance and reset time, and today's usage per
 client label (the machines and tools behind your proxy keys). The bar shows the
-Zecori mark with the tightest remaining percentage; the panel lists the rest.
+Zecori mark with a separate average remaining percentage per provider; the panel lists individual accounts.
+Each known account headline has equal weight within its provider (not a capacity-weighted pool).
+Unknown limits are excluded from the average and shown as `–` when none are known;
+the tooltip reports coverage. A provider average below 10% makes the bar urgent,
+as do stale snapshots and fetch errors.
 
 The widget is a display only. It polls `GET /api/widget` of your instance with
 a **device token** — a read-only credential that can do nothing else: it cannot

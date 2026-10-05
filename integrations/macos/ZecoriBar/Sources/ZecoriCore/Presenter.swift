@@ -26,39 +26,40 @@ public struct Presenter {
         return account.headline ?? account.limiting
     }
 
-    /// The account whose headline has the least left decides the bar; the first wins a tie.
-    public var worst: Account? {
-        var best: Account?
-        for account in accounts {
-            guard let head = Self.headlineOf(account), let left = head.remainingPercent else { continue }
-            if best == nil || left < (Self.headlineOf(best)?.remainingPercent ?? .infinity) { best = account }
-        }
-        return best
+    /// Equal-weight account averages, separately per provider. Unknown limits do not count as zero.
+    public var providers: [ProviderSummary] {
+        Dictionary(grouping: accounts, by: \.provider).map { provider, entries in
+            let values = entries.compactMap { account -> Double? in
+                guard let left = Self.headlineOf(account)?.remainingPercent, left.isFinite else { return nil }
+                return min(100, max(0, left))
+            }
+            return ProviderSummary(provider: provider, count: values.count, total: entries.count,
+                                   remainingPercent: values.isEmpty ? nil : values.reduce(0, +) / Double(values.count))
+        }.sorted { $0.provider < $1.provider }
     }
 
     public var stale: Bool { payload?.snapshot?.stale == true }
 
     public var alarming: Bool {
-        if !errorText.isEmpty || stale { return true }
-        guard let head = Self.headlineOf(worst) else { return false }
-        return head.tone == "bad" || head.exhausted == true
+        !errorText.isEmpty || stale || providers.contains { ($0.remainingPercent ?? 100) < 10 }
     }
 
     public var barLabel: String {
         if !errorText.isEmpty && payload == nil { return "!" }
         if payload == nil { return "…" }
-        guard let head = Self.headlineOf(worst), let left = head.remainingPercent else { return "–" }
-        return "\(Int(left.rounded()))%"
+        return providers.isEmpty ? "–" : providers.map { "\($0.label) \($0.value)" }.joined(separator: " · ")
     }
 
     public var barTooltip: String {
         if !errorText.isEmpty { return "Zecori: \(errorText)" }
         if payload == nil { return "Zecori: loading" }
-        guard let worst, let head = Self.headlineOf(worst), let left = head.remainingPercent else { return "Zecori: no limit windows observed" }
-        return "Zecori: \(worst.label) · \(head.label) · \(Int(left.rounded()))% left" + modelsTooltip
+        if providers.isEmpty { return "Zecori: no limit windows observed" }
+        return "Zecori: average remaining per provider (equal weight per account) · " + providers.map {
+            "\($0.label) \($0.value) (\($0.count)/\($0.total) accounts known)"
+        }.joined(separator: " · ") + modelsTooltip
     }
 
-    /// The pool's answer per model, after the account headline: which account still has the model, or none.
+    /// The pool's answer per model, after the provider averages: which account still has the model, or none.
     public var modelsTooltip: String {
         let parts = models.map { model -> String in
             if model.usable == true, let best = model.best, let left = best.remainingPercent { return "\(model.model) \(Int(left.rounded()))% (\(best.label))" }
@@ -244,4 +245,24 @@ public enum FetchFailure {
     public static let missingCredential = "No device token yet: open Settings and paste the token for this Mac"
     public static let unexpected = "Unexpected answer from /api/widget"
     public static func unreachable(_ base: String, _ reason: String) -> String { "Could not reach \(base): \(reason)" }
+}
+
+/// A percentage average describes accounts, not pooled tokens or money across different plans.
+public struct ProviderSummary {
+    public var provider: String
+    public var count: Int
+    public var total: Int
+    public var remainingPercent: Double?
+
+    public var label: String {
+        switch provider {
+        case "claude": return "Claude"
+        case "codex": return "Codex"
+        case "cursor": return "Cursor"
+        case "kimi": return "Kimi"
+        case "": return "Other"
+        default: return provider
+        }
+    }
+    public var value: String { remainingPercent.map { "\(Int($0.rounded()))%" } ?? "–" }
 }

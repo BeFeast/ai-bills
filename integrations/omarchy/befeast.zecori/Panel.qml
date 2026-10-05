@@ -6,7 +6,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Zecori in the bar: the tightest remaining allowance next to the mark, and a
+// Zecori in the bar: average remaining quota per provider next to the mark, and a
 // panel with every account's limit windows and today's spend by client label.
 // The panel is strictly a display of what `GET /api/widget` answers; the
 // device token lives in a private file and never touches shell.json.
@@ -47,9 +47,9 @@ Panel {
   readonly property var todayRows: payload && payload.today && payload.today.byClient ? payload.today.byClient : []
   // Model-scoped allowances across the pool (Claude's per-model weekly); an older server sends none.
   readonly property var models: payload && payload.models ? payload.models : []
-  readonly property var worst: worstAccount(accounts)
+  readonly property var providers: providerSummaries(accounts)
   readonly property bool stale: !!payload && !!payload.snapshot && payload.snapshot.stale === true
-  readonly property bool alarming: errorText !== "" || stale || (!!worst && !!headlineOf(worst) && (headlineOf(worst).tone === "bad" || headlineOf(worst).exhausted === true))
+  readonly property bool alarming: errorText !== "" || stale || providers.some(function(p) { return p.remainingPercent !== null && p.remainingPercent < 10 })
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
@@ -95,33 +95,57 @@ Panel {
     return account.headline || account.limiting || null
   }
 
-  // The account whose headline window has the least left decides the bar label.
-  function worstAccount(list) {
-    var best = null
+  // Equal-weight account averages per provider; missing limits are not zero.
+  function providerSummaries(list) {
+    var groups = []
     for (var i = 0; i < list.length; i++) {
-      var entry = list[i]
-      var head = headlineOf(entry)
-      if (!head || head.remainingPercent === null || head.remainingPercent === undefined) continue
-      if (!best || Number(head.remainingPercent) < Number(headlineOf(best).remainingPercent)) best = entry
+      var provider = list[i].provider || ""
+      var group = groups.find(function(p) { return p.provider === provider })
+      if (!group) {
+        group = { provider: provider, label: providerName(provider), count: 0, total: 0, sum: 0, remainingPercent: null }
+        groups.push(group)
+      }
+      group.total++
+      var head = headlineOf(list[i])
+      if (!head || typeof head.remainingPercent !== "number" || !isFinite(head.remainingPercent)) continue
+      group.sum += Math.max(0, Math.min(100, head.remainingPercent))
+      group.count++
+      group.remainingPercent = group.sum / group.count
     }
-    return best
+    return groups.sort(function(a, b) { return a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0 })
+  }
+
+  function providerName(provider) {
+    switch (provider) {
+    case "claude": return "Claude"
+    case "codex": return "Codex"
+    case "cursor": return "Cursor"
+    case "kimi": return "Kimi"
+    case "": return "Other"
+    default: return provider
+    }
+  }
+
+  function providerValue(provider) {
+    return provider.remainingPercent === null ? "–" : Math.round(provider.remainingPercent) + "%"
   }
 
   function barLabel() {
     if (errorText !== "" && !payload) return "!"
     if (!payload) return "…"
-    if (!worst) return "–"
-    return Math.round(Number(headlineOf(worst).remainingPercent)) + "%"
+    return providers.length ? providers.map(function(p) { return p.label + " " + providerValue(p) }).join(" · ") : "–"
   }
 
   function barTooltip() {
     if (errorText !== "") return "Zecori: " + errorText
     if (!payload) return "Zecori: loading"
-    if (!worst) return "Zecori: no limit windows observed"
-    return "Zecori: " + worst.label + " · " + headlineOf(worst).label + " · " + Math.round(Number(headlineOf(worst).remainingPercent)) + "% left" + modelsTooltip()
+    if (!providers.length) return "Zecori: no limit windows observed"
+    return "Zecori: average remaining per provider (equal weight per account) · " + providers.map(function(p) {
+      return p.label + " " + providerValue(p) + " (" + p.count + "/" + p.total + " accounts known)"
+    }).join(" · ") + modelsTooltip()
   }
 
-  // The pool's answer per model, after the account headline: which account still has the model, or none.
+  // The pool's answer per model, after the provider averages: which account still has the model, or none.
   function modelsTooltip() {
     var parts = []
     for (var i = 0; i < models.length; i++) {
