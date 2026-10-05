@@ -47,13 +47,13 @@ export function DesktopBarSettings({ providers }: { providers: string[] }) {
       <legend>Providers · left to right</legend>
       {shown.map((p, i) => <div key={p} className="desktop-bar-provider">
         <label><input type="checkbox" checked onChange={() => { setSelection(shown.filter(x => x !== p)); setMessage(''); }} /> {names[p] ?? p}</label>
-        <Button size="sm" disabled={i === 0} aria-label={`Move ${names[p] ?? p} left`} onClick={() => move(i, -1)}>←</Button>
-        <Button size="sm" disabled={i === shown.length - 1} aria-label={`Move ${names[p] ?? p} right`} onClick={() => move(i, 1)}>→</Button>
+        <Button variant="ghost" size="sm" disabled={i === 0} aria-label={`Move ${names[p] ?? p} left`} onClick={() => move(i, -1)}>←</Button>
+        <Button variant="ghost" size="sm" disabled={i === shown.length - 1} aria-label={`Move ${names[p] ?? p} right`} onClick={() => move(i, 1)}>→</Button>
       </div>)}
       {available.filter(p => !shown.includes(p)).map(p => <div key={p} className="desktop-bar-provider"><label><input type="checkbox" checked={false} disabled={shown.length >= 8} onChange={() => { setSelection([...shown, p]); setMessage(''); }} /> {names[p] ?? p}</label></div>)}
       {!shown.length && <p>Only the Zecori icon will appear.</p>}
       <p>Each meter averages known accounts equally. Hover over the bar for exact values; click for account details.</p>
-      <div className="toolbar"><Button onClick={save}>{busy ? 'Saving…' : 'Save'}</Button><Button onClick={() => { setSelection(null); setMessage(''); }}>Use automatic selection</Button></div>
+      <div className="toolbar"><Button onClick={save}>{busy ? 'Saving…' : 'Save'}</Button><Button variant="secondary" onClick={() => { setSelection(null); setMessage(''); }}>Use automatic selection</Button></div>
     </fieldset>
   </section>;
 }
