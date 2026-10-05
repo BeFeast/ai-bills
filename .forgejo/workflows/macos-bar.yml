@@ -15,10 +15,19 @@ on:
       - "integrations/macos/**"
       - ".forgejo/workflows/macos-bar.yml"
   workflow_dispatch:
+    inputs:
+      install_on_runner:
+        description: "Install the notarized package on this runner (explicit operator approval required)"
+        type: boolean
+        default: false
+      expected_commit:
+        description: "Full approved commit SHA; required when installing"
+        type: string
+        required: false
 
 concurrency:
   group: macos-bar-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   app:
@@ -35,6 +44,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Check explicit installation target
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.install_on_runner == true }}
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          test -n "$EXPECTED_COMMIT"
+          test "$EXPECTED_COMMIT" = "$GITHUB_SHA"
+          test -n "$ZECORI_SIGNING_IDENTITY"
+          test -n "$ZECORI_NOTARY_PROFILE"
       - name: Host toolchain
         run: |
           set -euo pipefail
@@ -60,6 +78,12 @@ jobs:
             mode=release
           fi
           scripts/package.sh "$mode" "$RUNNER_TEMP/build/Zecori.app" "$RUNNER_TEMP/out"
+      - name: Install the approved notarized package
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.install_on_runner == true }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          scripts/install-package.sh "$RUNNER_TEMP/out/Zecori-${version}-macos-arm64.zip" | tee "$RUNNER_TEMP/out/installation.txt"
       - name: Upload app and renders
         if: always()
         uses: https://code.forgejo.org/forgejo/upload-artifact@v4
