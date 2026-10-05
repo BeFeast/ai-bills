@@ -39,11 +39,9 @@ private struct BarPreview: View {
     let presenter: Presenter
     @Environment(\.colorScheme) private var scheme
     var body: some View {
-        let color: Color = presenter.alarming ? .red : (scheme == .dark ? .white : .black)
-        HStack(spacing: 4) {
-            Image(nsImage: Glyph.image()).renderingMode(.template).foregroundStyle(color)
-            Text(presenter.barLabel).font(.system(size: 13).monospacedDigit()).foregroundStyle(color)
-        }
+        Image(nsImage: Glyph.statusImage(presenter: presenter))
+            .renderingMode(.template)
+            .foregroundStyle(scheme == .dark ? Color.white : Color.black)
         .padding(.horizontal, 10).frame(height: 24)
         .background(scheme == .dark ? Color(white: 0.12) : Color(white: 0.92))
     }

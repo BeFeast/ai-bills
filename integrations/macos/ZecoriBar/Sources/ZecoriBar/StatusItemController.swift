@@ -40,7 +40,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func render() {
         guard let button = item.button else { return }
         let presenter = store.presenter
-        button.image = Glyph.statusImage(label: presenter.barLabel, alarming: presenter.alarming)
+        button.image = Glyph.statusImage(presenter: presenter)
         button.toolTip = presenter.barTooltip
         if popover.isShown { popover.contentSize = fittedSize() }
     }

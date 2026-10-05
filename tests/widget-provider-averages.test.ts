@@ -12,7 +12,7 @@ const cases = JSON.parse(readFileSync(fixtureRoot + 'provider-averages.json', 'u
 function present(payload: any, errorText = '') {
   const context = { payload, accounts: payload?.accounts ?? [], models: payload?.models ?? [], errorText, stale: payload?.snapshot?.stale === true };
   return runInNewContext(`${helpers}
-    var providers = providerSummaries(accounts);
+    var providers = selectedProviders(providerSummaries(accounts));
     ({ label: barLabel(), tooltip: barTooltip(), alarming: ${alarmExpression} });`, context);
 }
 

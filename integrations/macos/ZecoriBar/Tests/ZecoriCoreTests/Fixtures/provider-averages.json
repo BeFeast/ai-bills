@@ -268,5 +268,189 @@
     },
     "label": "new-provider 40%",
     "alarming": false
+  },
+  {
+    "name": "selected order",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ],
+      "bar": {
+        "providers": [
+          "codex",
+          "claude"
+        ]
+      }
+    },
+    "label": "Codex 20% \u00b7 Claude 30%",
+    "alarming": false
+  },
+  {
+    "name": "unknown selected provider",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ],
+      "bar": {
+        "providers": [
+          "kimi",
+          "claude"
+        ]
+      }
+    },
+    "label": "Kimi \u2013 \u00b7 Claude 30%",
+    "alarming": false
+  },
+  {
+    "name": "glyph only",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ],
+      "bar": {
+        "providers": []
+      }
+    },
+    "label": "\u2013",
+    "alarming": false
+  },
+  {
+    "name": "hidden exhausted provider",
+    "payload": {
+      "accounts": [
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 0
+          }
+        },
+        {
+          "key": "example",
+          "provider": "claude",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 60
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 10
+          }
+        },
+        {
+          "key": "example",
+          "provider": "codex",
+          "headline": {
+            "label": "Weekly",
+            "remainingPercent": 30
+          }
+        }
+      ],
+      "bar": {
+        "providers": [
+          "codex"
+        ]
+      }
+    },
+    "label": "Codex 20%",
+    "alarming": false
   }
 ]

@@ -1,4 +1,5 @@
 import AppKit
+import ZecoriCore
 
 /// The approved bar mark (integrations/omarchy/befeast.zecori/assets/zecori-glyph-coin.svg): a Z in a
 /// coin ring with the mascot's two ear discs. Drawn from the same 24×24 geometry, as a template image,
@@ -75,6 +76,40 @@ enum Glyph {
         }
         result.isTemplate = !alarming
         result.accessibilityDescription = "Zecori \(label)"
+        return result
+    }
+
+    /// Fixed-width monochrome slots: filled quota, empty outline, or unknown dash.
+    static func statusImage(presenter: Presenter) -> NSImage {
+        guard presenter.payload != nil else { return statusImage(label: presenter.barLabel, alarming: false) }
+        let providers = presenter.providers
+        let width = CGFloat(16 + (providers.isEmpty ? 0 : 4 + providers.count * 10) + (presenter.barAttention ? 8 : 0))
+        let glyph = image()
+        let result = NSImage(size: NSSize(width: width, height: 22), flipped: false) { _ in
+            NSColor.black.set()
+            glyph.draw(in: NSRect(x: 0, y: 3, width: 16, height: 16))
+            for (index, provider) in providers.enumerated() {
+                let x = CGFloat(20 + index * 10)
+                if let remaining = provider.remainingPercent {
+                    let frame = NSRect(x: x + 0.5, y: 3.5, width: 5, height: 15)
+                    let border = NSBezierPath(roundedRect: frame, xRadius: 1, yRadius: 1)
+                    border.lineWidth = 1
+                    border.stroke()
+                    if remaining > 0 {
+                        NSRect(x: x + 2, y: 5, width: 2, height: max(1, 12 * remaining / 100)).fill()
+                    }
+                } else {
+                    NSRect(x: x, y: 10, width: 6, height: 1).fill()
+                }
+            }
+            if presenter.barAttention {
+                let text = NSAttributedString(string: "!", attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.black])
+                text.draw(at: NSPoint(x: width - 7, y: 4))
+            }
+            return true
+        }
+        result.isTemplate = true
+        result.accessibilityDescription = presenter.barTooltip
         return result
     }
 

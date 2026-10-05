@@ -47,7 +47,7 @@ Panel {
   readonly property var todayRows: payload && payload.today && payload.today.byClient ? payload.today.byClient : []
   // Model-scoped allowances across the pool (Claude's per-model weekly); an older server sends none.
   readonly property var models: payload && payload.models ? payload.models : []
-  readonly property var providers: providerSummaries(accounts)
+  readonly property var providers: selectedProviders(providerSummaries(accounts))
   readonly property bool stale: !!payload && !!payload.snapshot && payload.snapshot.stale === true
   readonly property bool alarming: errorText !== "" || stale || providers.some(function(p) { return p.remainingPercent !== null && p.remainingPercent < 10 })
 
@@ -115,6 +115,19 @@ Panel {
     return groups.sort(function(a, b) { return a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0 })
   }
 
+  function selectedProviders(summaries) {
+    if (!payload || !payload.bar || !Array.isArray(payload.bar.providers)) return summaries.slice(0, 8)
+    var result = []
+    var seen = []
+    for (var i = 0; i < payload.bar.providers.length && result.length < 8; i++) {
+      var name = payload.bar.providers[i]
+      if (seen.indexOf(name) >= 0) continue
+      seen.push(name)
+      result.push(summaries.find(function(p) { return p.provider === name }) || { provider: name, label: providerName(name), count: 0, total: 0, remainingPercent: null })
+    }
+    return result
+  }
+
   function providerName(provider) {
     switch (provider) {
     case "claude": return "Claude"
@@ -139,7 +152,7 @@ Panel {
   function barTooltip() {
     if (errorText !== "") return "Zecori: " + errorText
     if (!payload) return "Zecori: loading"
-    if (!providers.length) return "Zecori: no limit windows observed"
+    if (!providers.length) return accounts.length ? "Zecori: no providers selected · click for account details" : "Zecori: no limit windows observed"
     return "Zecori: average remaining per provider (equal weight per account) · " + providers.map(function(p) {
       return p.label + " " + providerValue(p) + " (" + p.count + "/" + p.total + " accounts known)"
     }).join(" · ") + modelsTooltip()
@@ -371,7 +384,7 @@ Panel {
     BarIconButton {
       id: button
       bar: root.bar
-      active: root.alarming
+      active: false
       tooltipText: root.barTooltip()
       // A schematic monochrome mark in the bar's own colour, like every other bar icon; the
       // portrait stays for the panel hero. The SVG fills the icon canvas (its ink is about the
@@ -408,10 +421,56 @@ Panel {
     WidgetButton {
       id: labelButton
       bar: root.bar
-      text: root.barLabel()
-      active: root.alarming
-      horizontalMargin: 4
+      text: !root.payload ? root.barLabel() : (root.errorText !== "" || root.stale ? "!" : "")
+      active: false
+      labelVisible: false
+      hasVisualContent: root.providers.length > 0 || text !== ""
+      fixedWidth: meters.implicitWidth + Style.space(4)
       tooltipText: root.barTooltip()
+      Accessible.name: root.barTooltip()
+      Row {
+        id: meters
+        anchors.centerIn: parent
+        spacing: Style.space(4)
+        Repeater {
+          model: root.providers
+          Item {
+            required property var modelData
+            width: Style.space(6)
+            height: Style.space(16)
+            Rectangle {
+              anchors.fill: parent
+              visible: modelData.remainingPercent !== null
+              color: "transparent"
+              border.color: root.foreground
+              border.width: 1
+              radius: 1
+            }
+            Rectangle {
+              visible: modelData.remainingPercent !== null && modelData.remainingPercent > 0
+              anchors.horizontalCenter: parent.horizontalCenter
+              anchors.bottom: parent.bottom
+              anchors.bottomMargin: Style.space(2)
+              width: Style.space(2)
+              height: Math.max(1, Style.space(12) * (modelData.remainingPercent || 0) / 100)
+              color: root.foreground
+            }
+            Rectangle {
+              visible: modelData.remainingPercent === null
+              anchors.centerIn: parent
+              width: parent.width
+              height: 1
+              color: root.foreground
+            }
+          }
+        }
+        Text {
+          visible: text !== ""
+          text: labelButton.text
+          color: root.foreground
+          font.pixelSize: Style.font.body
+        }
+      }
       onPressed: function(buttonCode) {
         if (buttonCode === Qt.MiddleButton) root.refreshNow()
         else root.toggle()

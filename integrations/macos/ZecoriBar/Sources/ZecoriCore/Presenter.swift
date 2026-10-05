@@ -28,7 +28,7 @@ public struct Presenter {
 
     /// Equal-weight account averages, separately per provider. Unknown limits do not count as zero.
     public var providers: [ProviderSummary] {
-        Dictionary(grouping: accounts, by: \.provider).map { provider, entries in
+        let summaries = Dictionary(grouping: accounts, by: \.provider).map { provider, entries in
             let values = entries.compactMap { account -> Double? in
                 guard let left = Self.headlineOf(account)?.remainingPercent, left.isFinite else { return nil }
                 return min(100, max(0, left))
@@ -36,7 +36,14 @@ public struct Presenter {
             return ProviderSummary(provider: provider, count: values.count, total: entries.count,
                                    remainingPercent: values.isEmpty ? nil : values.reduce(0, +) / Double(values.count))
         }.sorted { $0.provider < $1.provider }
+        guard let selection = payload?.bar?.providers else { return Array(summaries.prefix(8)) }
+        var seen = Set<String>()
+        return selection.filter { seen.insert($0).inserted }.prefix(8).map { provider in
+            summaries.first { $0.provider == provider } ?? ProviderSummary(provider: provider, count: 0, total: 0, remainingPercent: nil)
+        }
     }
+
+    public var barAttention: Bool { !errorText.isEmpty || stale }
 
     public var stale: Bool { payload?.snapshot?.stale == true }
 
@@ -53,7 +60,7 @@ public struct Presenter {
     public var barTooltip: String {
         if !errorText.isEmpty { return "Zecori: \(errorText)" }
         if payload == nil { return "Zecori: loading" }
-        if providers.isEmpty { return "Zecori: no limit windows observed" }
+        if providers.isEmpty { return accounts.isEmpty ? "Zecori: no limit windows observed" : "Zecori: no providers selected · click for account details" }
         return "Zecori: average remaining per provider (equal weight per account) · " + providers.map {
             "\($0.label) \($0.value) (\($0.count)/\($0.total) accounts known)"
         }.joined(separator: " · ") + modelsTooltip
