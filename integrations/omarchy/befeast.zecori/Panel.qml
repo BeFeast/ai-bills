@@ -442,7 +442,7 @@ Panel {
               anchors.fill: parent
               visible: modelData.remainingPercent !== null
               color: "transparent"
-              border.color: root.foreground
+              border.color: labelButton.foreground
               border.width: 1
               radius: 1
             }
@@ -453,21 +453,21 @@ Panel {
               anchors.bottomMargin: Style.space(2)
               width: Style.space(2)
               height: Math.max(1, Style.space(12) * (modelData.remainingPercent || 0) / 100)
-              color: root.foreground
+              color: labelButton.foreground
             }
             Rectangle {
               visible: modelData.remainingPercent === null
               anchors.centerIn: parent
               width: parent.width
               height: 1
-              color: root.foreground
+              color: labelButton.foreground
             }
           }
         }
         Text {
           visible: text !== ""
           text: labelButton.text
-          color: root.foreground
+          color: labelButton.foreground
           font.pixelSize: Style.font.body
         }
       }
