@@ -1,7 +1,7 @@
 import { openRouterFunds } from './openrouter';
 import { loadConfig, tenantAccounts, type AccountConfig } from './config';
 import { peekUsageObservations } from './usage-observations';
-import { CLAUDE_LAST_KNOWN_MS } from './usage-evidence';
+import { BROWSER_LAST_KNOWN_MS, BROWSER_PROVIDERS, CLAUDE_LAST_KNOWN_MS } from './usage-evidence';
 import { quotaEntry } from './snapshot-keys';
 
 type SnapshotQuota = { ok?: boolean; fetched_at?: string; source?: string };
@@ -43,13 +43,15 @@ export function sourceHealth(now = Date.now(), snapshot: unknown = {}) {
     const observedAt = chosen?.observedAt ?? null;
     const time = Date.parse(observedAt || '');
     const current = Number.isFinite(time) && time <= now + 60_000 && now - time <= 600_000;
-    // Claude keeps its last good numbers on screen for 5 h (a 429 is not an outage); health says so instead of degrading.
-    const lastKnown = account.provider === 'claude' && chosen?.ok === true && Number.isFinite(time) && time <= now + 60_000 && now - time <= CLAUDE_LAST_KNOWN_MS;
+    // Claude keeps its last good numbers on screen for 5 h (a 429 is not an outage), Kimi and Cursor a retained browser
+    // reading for 2 h (the profile was busy); health says so instead of degrading.
+    const browser = BROWSER_PROVIDERS.includes(account.provider);
+    const lastKnownMs = account.provider === 'claude' ? CLAUDE_LAST_KNOWN_MS : browser && chosen?.source === 'retained' ? BROWSER_LAST_KNOWN_MS : 0;
+    const lastKnown = lastKnownMs > 0 && chosen?.ok === true && Number.isFinite(time) && time <= now + 60_000 && now - time <= lastKnownMs;
     const status = !observedAt ? 'missing' : current && chosen!.ok && !chosen!.source ? 'fresh' : lastKnown ? 'fallback' : !current ? 'stale' : chosen!.ok ? 'fresh' : 'error';
-    const browser = ['kimi', 'cursor'].includes(account.provider);
     // The browser path describes this process's own session, never a collector observation.
     const browserCurrent = Boolean(inProcess) && current;
-    return { id: account.key, provider: account.provider as string, expected: true, status, observedAt, maxAgeSeconds: status === 'fallback' ? CLAUDE_LAST_KNOWN_MS / 1000 : 600,
+    return { id: account.key, provider: account.provider as string, expected: true, status, observedAt, maxAgeSeconds: status === 'fallback' ? lastKnownMs / 1000 : 600,
       ...(status === 'fallback' ? { fallback: { source: chosen?.source ?? 'last_known' } } : {}),
       ...(browser ? { cdp_path: { mode: !inProcess ? 'idle' : browserCurrent ? 'observed' : 'stale', observedAt,
         ok: observation ? observation.ok : null, live: false } } : {}) };

@@ -4,6 +4,7 @@ import { loadConfig, tenantAccounts } from './config';
 import { publicUsageAccount } from './account-auth';
 import { creditHistoryStoreFor, readSnapshot, type Scope } from './storage';
 import { CREDIT_RATE_MIN_SPAN_MS, CREDIT_RATE_WINDOW_MS, creditDrain, creditDrainCandidate, type CreditSample } from './codex-credits';
+import { BROWSER_LAST_KNOWN_MS, BROWSER_PROVIDERS } from './usage-evidence';
 import { apiShapeSummary, combinedOverview, type ProviderUsage, PENDING_OBSERVATION } from './usage';
 
 type UsageCache = { results: ProviderUsage[]; generatedAt: string };
@@ -20,6 +21,21 @@ const slotFor = (scope?: Scope): Slot => { const key = scope?.id ?? null; let sl
  * No readable snapshot: there is nothing newer to read, so this must not force a refresh per request.
  */
 const snapshotReplaced = (slot: Slot, version: string | null): boolean => version !== null && version !== slot.version;
+
+/**
+ * A browser read that fails must not wipe a good reading: a busy profile (another read, or a person's account-browser
+ * session, which blocks automatic reads for its whole lease) clears on its own. The previous answer stays, marked as
+ * retained with why the newest read failed. A signed-out answer (401/403) replaces it at once, and anything replaces it
+ * once the kept answer is older than BROWSER_LAST_KNOWN_MS.
+ */
+export function retainBrowserReading(previous: ProviderUsage | undefined, next: ProviderUsage, now = Date.now()): ProviderUsage {
+  if (next.ok || !previous?.ok || !previous.data || !BROWSER_PROVIDERS.includes(next.account.provider)) return next;
+  if (next.status === 401 || next.status === 403) return next;
+  const observed = Date.parse(previous.fetchedAt);
+  if (!Number.isFinite(observed) || now - observed > BROWSER_LAST_KNOWN_MS) return next;
+  return { ...previous, account: next.account, source: 'retained',
+    direct: { status: next.status ?? null, error: next.error || 'The browser read failed', attemptedAt: next.fetchedAt || null } };
+}
 
 /** Earlier Codex credit balances for the burn rate. The rate refines a card; a failed read must never hold or fail the quota itself. */
 async function creditSamples(scope?: Scope): Promise<CreditSample[]> {
@@ -46,17 +62,17 @@ export async function refreshUsage(scope?: Scope): Promise<UsageCache> {
     slot.cache = { results, generatedAt: new Date().toISOString() };
     let credits: Promise<CreditSample[]> | null = null;
     const update = async (account: typeof accounts[number], index: number) => {
-      const result: ProviderUsage = { ...await fetchUsageThroughCdp(account, { snapshot: snapshot.body, scope: scope?.id ?? null, accounts }),
-        account: publicUsageAccount(account, config.server.codex_proxy_management_url) };
+      const result = retainBrowserReading(previous.get(account.key), { ...await fetchUsageThroughCdp(account, { snapshot: snapshot.body, scope: scope?.id ?? null, accounts }),
+        account: publicUsageAccount(account, config.server.codex_proxy_management_url) });
       // Only a used-up Codex account needs the history; read it once per refresh.
       const drain = creditDrainCandidate(result) ? creditDrain(result, await (credits ??= creditSamples(scope))) : null;
       results[index] = drain ? { ...result, creditDrain: drain } : result;
       rememberUsageObservations([...results]);
     };
     const indexed = accounts.map((account, index) => ({ account, index }));
-    const browserSources = indexed.filter(({ account }) => ['kimi', 'cursor'].includes(account.provider));
+    const browserSources = indexed.filter(({ account }) => BROWSER_PROVIDERS.includes(account.provider));
     await Promise.all([
-      ...indexed.filter(({ account }) => !['kimi', 'cursor'].includes(account.provider)).map(({ account, index }) => update(account, index)),
+      ...indexed.filter(({ account }) => !BROWSER_PROVIDERS.includes(account.provider)).map(({ account, index }) => update(account, index)),
       (async () => { for (const { account, index } of browserSources) await update(account, index); })(),
     ]);
     rememberUsageObservations(results);
