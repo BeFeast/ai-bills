@@ -91,3 +91,20 @@ describe('claude.ai as the second Claude quota source', () => {
     expect(consistencyChecks(null)[0]).toMatchObject({ verdict: 'mismatch', streak: 2, flagged: true });
   });
 });
+
+describe('the checker read never holds a current proxy answer', () => {
+  it('returns the proxy answer at once while the website read waits for the browser', async () => {
+    let finish!: (value: ProviderUsage) => void;
+    const readWeb = vi.fn(() => new Promise<ProviderUsage>((resolve) => { finish = resolve; }));
+    const entry = { ok: true, status: 200, source: 'direct', fetched_at: at(2), data: payload(11, 60, 79) };
+    const result = await fetchClaude(account, { snapshot: snapshot(entry) }, readWeb, now);
+    expect(result).toMatchObject({ ok: true, data: payload(11, 60, 79) });
+    expect(result.source).toBeUndefined();
+    // A refresh while the read is still waiting does not start a second one.
+    await fetchClaude(account, { snapshot: snapshot(entry) }, readWeb, now + 60_000);
+    expect(readWeb).toHaveBeenCalledTimes(1);
+    expect(consistencyChecks(null)).toEqual([]);
+    finish(web(payload(11, 60, 79)));
+    await vi.waitFor(() => expect(consistencyChecks(null)).toMatchObject([{ accountKey: 'claude-personal', verdict: 'consistent' }]));
+  });
+});

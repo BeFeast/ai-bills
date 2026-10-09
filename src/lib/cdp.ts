@@ -732,6 +732,8 @@ export function fetchClaudeFromSnapshot(account: ProviderConfig, provided?: unkn
 }
 
 const webReads = new Map<string, { result: ProviderUsage; at: number }>();
+/** Checker website reads still running in the background, so a slow one is not started again on the next refresh. */
+const webChecks = new Map<string, Promise<unknown>>();
 const age = (result: ProviderUsage, now: number) => now - (Date.parse(result.fetchedAt) || 0);
 const isDirect = (result: ProviderUsage) => result.source === undefined || result.source === 'direct';
 
@@ -747,18 +749,29 @@ export async function fetchClaude(account: ProviderConfig, options: CdpFetchOpti
   const scope = options.scope ?? null;
   const proxyCurrent = proxy.ok && isDirect(proxy) && age(proxy, now) <= FRESH_MS && !proxy.proxyAuth;
   const cached = webReads.get(account.key);
-  const due = checkDue(scope, account.key, now);
-  let web = cached?.result;
-  if (due || (!proxyCurrent && (!cached || now - cached.at >= CLAUDE_WEB_FALLBACK_INTERVAL_MS))) {
+  const due = checkDue(scope, account.key, now) && !webChecks.has(account.key);
+  const readWebNow = async (): Promise<ProviderUsage> => {
     const read = await readWeb(account, options.signal);
     // A transient failure must not discard a good recent read; only a signed-out answer replaces it.
     const signedOut = read.status === 401 || read.status === 403;
-    web = read.ok || signedOut || !cached?.result.ok ? read : cached.result;
-    webReads.set(account.key, { result: web, at: now });
+    const kept = read.ok || signedOut || !cached?.result.ok ? read : cached.result;
+    webReads.set(account.key, { result: kept, at: now });
     // Fallback reads in between only feed the card; the checker counts one run per interval.
     if (due) recordCheck(scope, account.key, account.provider, compareReadings(proxyClaudeReading(proxy, now), webClaudeReading(read)), now);
+    return kept;
+  };
+  if (proxyCurrent) {
+    // The proxy already answers: the checker's website read must not hold the card. It can wait up to a minute and a
+    // half for the shared profile (another read, a person's sign-in session), so it finishes in the background.
+    if (due) {
+      const check = readWebNow().catch(() => undefined).finally(() => { if (webChecks.get(account.key) === check) webChecks.delete(account.key); });
+      webChecks.set(account.key, check);
+    }
+    return proxy;
   }
-  if (proxyCurrent || !web?.ok || age(web, now) > CLAUDE_LAST_KNOWN_MS) return proxy;
+  let web = cached?.result;
+  if (due || !cached || now - cached.at >= CLAUDE_WEB_FALLBACK_INTERVAL_MS) web = await readWebNow();
+  if (!web?.ok || age(web, now) > CLAUDE_LAST_KNOWN_MS) return proxy;
   if (proxy.ok && age(proxy, now) <= age(web, now)) return proxy;
   const failure = proxy.ok ? proxy.direct : undefined;
   return { ...web, source: 'web',
@@ -809,7 +822,7 @@ async function evaluateClaudeFetch(session: CdpSession, path: string) {
 }
 
 /** Test hook: forget website reads. */
-export function resetClaudeWebReadsForTests(): void { webReads.clear(); }
+export function resetClaudeWebReadsForTests(): void { webReads.clear(); webChecks.clear(); }
 
 /** Test hook: forget which endpoints were swept and which tabs this process created. */
 export function resetCdpHousekeepingForTests(): void { sweptEndpoints.clear(); ownTargets.clear(); }
