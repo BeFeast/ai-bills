@@ -6,6 +6,10 @@ export type UsageEvidence = { state: 'fresh' | 'stale' | 'error' | 'unknown'; me
 export const FRESH_MS = 600_000;
 /** Claude: the last good observation from any source stays on screen for one session window (5 h), then it is an error. */
 export const CLAUDE_LAST_KNOWN_MS = 5 * 3600_000;
+/** Sources read in a shared browser profile (one read at a time, none while a person's account-browser session is open). */
+export const BROWSER_PROVIDERS: readonly string[] = ['kimi', 'cursor'];
+/** Kimi, Cursor: a good reading kept through failed browser reads stays on screen this long (a 30 min sign-in session plus extensions). */
+export const BROWSER_LAST_KNOWN_MS = 2 * 3600_000;
 
 export function usageEvidence(result: ProviderUsage, now: number, maxAgeSeconds = FRESH_MS / 1000): UsageEvidence {
   if (!result.ok || (result.status !== undefined && result.status >= 400)) return { state: 'error', message: result.error || `Provider request failed (HTTP ${result.status ?? 'unknown'}). Quota and availability are unknown.` };
@@ -15,6 +19,9 @@ export function usageEvidence(result: ProviderUsage, now: number, maxAgeSeconds 
     if (now - observed > CLAUDE_LAST_KNOWN_MS) return { state: 'error', message: 'No fresh Claude quota from any source for more than 5 hours. Current quota and availability are unknown.' };
     const data = result.data as ClaudeUsagePayload | undefined;
     if (data && (data.five_hour || data.seven_day || data.limits?.length)) return { state: 'stale', lastKnown: true, message: `Showing the last known quota; the newest refresh failed: ${result.direct?.error ?? 'no newer observation'}.` };
+  }
+  if (now - observed > maxAgeSeconds * 1000 && result.source === 'retained' && BROWSER_PROVIDERS.includes(result.account.provider) && now - observed <= BROWSER_LAST_KNOWN_MS) {
+    return { state: 'stale', lastKnown: true, message: `Last known quota; the newest read failed: ${result.direct?.error ?? 'no newer observation'}.` };
   }
   if (now - observed > maxAgeSeconds * 1000) return { state: 'stale', message: 'The last provider observation is stale. Current quota and availability are unknown.' };
   if (!result.data || !Object.keys(result.data).length) return { state: 'unknown', message: 'The provider returned no quota data. Availability is unknown.' };
